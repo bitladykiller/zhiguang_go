@@ -21,11 +21,6 @@ type CounterClient interface {
 	IsFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 }
 
-// RagIndexer 定义内容变更后触发 RAG 建索引的依赖接口。
-type RagIndexer interface {
-	EnsureIndexed(postID uint64) error
-}
-
 // KnowPostService 负责 knowpost 的写路径、详情读取编排以及缓存协同。
 //
 // WHY：虽然文件被拆分了，但运行时依赖仍属于同一个服务对象；
@@ -39,7 +34,6 @@ type KnowPostService struct {
 	hotKey       *cache.HotKeyDetector
 	ossCfg       *config.OssConfig
 	counter      CounterClient
-	ragIndexer   RagIndexer
 	feedCache    FeedCacheInvalidator
 	singleFlight sync.Map // key -> *sync.Mutex for stampede prevention
 }
@@ -76,9 +70,6 @@ func NewKnowPostService(
 
 // SetCounterClient 注入计数器依赖。
 func (s *KnowPostService) SetCounterClient(c CounterClient) { s.counter = c }
-
-// SetRagIndexer 注入 RAG 索引依赖。
-func (s *KnowPostService) SetRagIndexer(r RagIndexer) { s.ragIndexer = r }
 
 // SetFeedCacheInvalidator 注入 feed 缓存失效依赖。
 func (s *KnowPostService) SetFeedCacheInvalidator(f FeedCacheInvalidator) { s.feedCache = f }

@@ -16,7 +16,7 @@ const SearchPage = () => {
   const [q, setQ] = useState("");
   const [size] = useState<number>(20);
   const [items, setItems] = useState<FeedItem[]>([]);
-  const [page, setPage] = useState<number>(1);
+  const [nextAfter, setNextAfter] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState<boolean>(false);
   const [loading, setLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -34,13 +34,13 @@ const SearchPage = () => {
     setQ(text);
     setLoading(true);
     try {
-      const resp = await searchService.query({ q: text, size, page: 1 });
+      const resp = await searchService.query({ q: text, size, after: null });
       setItems(resp.items ?? []);
-      setPage(resp.page ?? 1);
+      setNextAfter(resp.nextAfter ?? null);
       setHasMore(!!resp.hasMore);
     } catch {
       setItems([]);
-      setPage(1);
+      setNextAfter(null);
       setHasMore(false);
     } finally {
       setLoading(false);
@@ -124,10 +124,9 @@ const SearchPage = () => {
               if (!q.trim()) return;
               setLoading(true);
               try {
-                const nextPage = page + 1;
-                const resp = await searchService.query({ q: q.trim(), size, page: nextPage });
+                const resp = await searchService.query({ q: q.trim(), size, after: nextAfter });
                 setItems(prev => [...prev, ...(resp.items ?? [])]);
-                setPage(resp.page ?? nextPage);
+                setNextAfter(resp.nextAfter ?? null);
                 setHasMore(!!resp.hasMore);
               } catch {
                 // 保持已有数据

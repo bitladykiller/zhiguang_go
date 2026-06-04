@@ -22,24 +22,6 @@ func (r *RelationRepository) WithDB(db sqlx.Ext) *RelationRepository {
 	return &RelationRepository{db: db}
 }
 
-func (r *RelationRepository) InsertFollowing(id, fromUserID, toUserID uint64, status int) error {
-	now := time.Now()
-	_, err := r.db.Exec(
-		"INSERT INTO following (id, from_user_id, to_user_id, rel_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-		id, fromUserID, toUserID, status, now, now,
-	)
-	return err
-}
-
-func (r *RelationRepository) InsertFollower(id, toUserID, fromUserID uint64, status int) error {
-	now := time.Now()
-	_, err := r.db.Exec(
-		"INSERT INTO follower (id, to_user_id, from_user_id, rel_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-		id, toUserID, fromUserID, status, now, now,
-	)
-	return err
-}
-
 func (r *RelationRepository) UpsertFollowing(id, fromUserID, toUserID uint64, status int) error {
 	now := time.Now()
 	_, err := r.db.Exec(`
