@@ -29,7 +29,24 @@ type ApiResponse[T any] struct {
 	Data    T      `json:"data,omitempty"`
 }
 
-// Success 写入一个 HTTP 200 响应，响应码固定为 code=0，并携带业务数据。
+// Success 写入 HTTP 200 OK 响应，响应码固定为 0，并携带业务数据。
+//
+// 参数:
+//   - c: Gin 上下文
+//   - data: 任意类型的业务数据，通过泛型 T 确保类型安全
+//
+// 响应体格式:
+//   { "code": 0, "message": "success", "data": T }
+//
+// 使用说明:
+//   Go 1.18+ 泛型使调用方无需做类型断言：
+//   response.Success(c, user)           // data 为 *auth.User
+//   response.Success(c, gin.H{...})     // data 为 map
+//   response.Success(c, []string{...})  // data 为 slice
+//
+// 边界情况:
+//   - data 为 nil 时 JSON 序列化为 null（而非缺失字段）
+//   - 如果 data 实现了 json.Marshaler 接口，使用自定义序列化逻辑
 func Success[T any](c *gin.Context, data T) {
 	c.JSON(http.StatusOK, ApiResponse[T]{
 		Code:    0,
@@ -38,7 +55,22 @@ func Success[T any](c *gin.Context, data T) {
 	})
 }
 
-// Created 写入一个 HTTP 201 响应，并返回给定的数据。
+// Created 写入 HTTP 201 Created 响应，用于资源创建成功后的响应。
+//
+// 参数:
+//   - c: Gin 上下文
+//   - data: 任意类型的业务数据（如新创建的资源 ID 或完整资源信息）
+//
+// 响应体格式:
+//   { "code": 0, "message": "created", "data": T }
+//
+// 使用场景:
+//   - 用户注册成功
+//   - 知文发布成功
+//   - 预签名 URL 生成成功（storage handler）
+//
+// 与 Success 的区别:
+//   HTTP 状态码为 201 而非 200，语义上表示"资源已创建"而非"请求已处理"。
 func Created[T any](c *gin.Context, data T) {
 	c.JSON(http.StatusCreated, ApiResponse[T]{
 		Code:    0,
@@ -47,13 +79,42 @@ func Created[T any](c *gin.Context, data T) {
 	})
 }
 
-// NoContent 写入一个 HTTP 204 响应，不返回响应体。
+// NoContent 写入 HTTP 204 No Content 响应，不返回响应体。
+//
+// 参数:
+//   - c: Gin 上下文
+//
+// 使用场景:
+//   - 删除操作成功（DELETE 方法）
+//   - 某些更新操作不需要返回数据
+//
+// 说明:
+//   使用 c.Status() 而非 c.JSON()，确保不输出响应体。
+//   HTTP 204 规范要求响应体必须为空。
 func NoContent(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// Error 根据 AppError 中的业务错误码推导合适的 HTTP 状态码并返回错误响应。
-// 响应体中只包含错误码和错误信息，不包含 data 字段。
+// Error 根据 AppError 中的业务错误码自动推导合适的 HTTP 状态码并返回错误响应。
+//
+// 参数:
+//   - c: Gin 上下文
+//   - appErr: 包含业务错误码和错误消息的 AppError 实例
+//
+// 响应体格式:
+//   { "code": appErr.Code, "message": appErr.Message }
+//   注意不包含 data 字段（错误场景下无业务数据）
+//
+// 状态码推导:
+//   通过 httpStatusFromCode 函数自动映射：
+//   - 0       → 200 OK（理论上不会走入 Error 分支）
+//   - 4xx     → 对应 HTTP 4xx
+//   - 5xxxx   → 先归一为前 3 位再按 3 位码映射
+//   - 5xx     → 500 Internal Server Error
+//
+// 设计说明:
+//   使用 c.AbortWithStatusJSON 而非 c.JSON，确保后续中间件（如日志记录）
+//   能感知到请求已被中止（Aborted 状态），不会继续执行后续 handler 链。
 func Error(c *gin.Context, appErr *errcode.AppError) {
 	httpStatus := httpStatusFromCode(appErr.Code)
 	c.AbortWithStatusJSON(httpStatus, ApiResponse[any]{
@@ -63,7 +124,26 @@ func Error(c *gin.Context, appErr *errcode.AppError) {
 }
 
 // Fail 使用显式指定的 HTTP 状态码和错误消息返回失败响应。
-// 适用于参数校验失败等无法直接映射到预定义 AppError 的场景。
+//
+// 参数:
+//   - c: Gin 上下文
+//   - httpStatus: 显式指定的 HTTP 状态码（如 400、503 等）
+//   - msg: 错误描述信息
+//
+// 响应体格式:
+//   { "code": httpStatus, "message": msg }
+//
+// 与 Error 的区别:
+//   - Fail: 手动指定 HTTP 状态码和消息字符串，适合无法映射到预定义 AppError 的场景
+//   - Error: 根据 AppError 自动推导状态码，适合已定义业务错误码的场景
+//
+// 使用场景:
+//   - handler 层参数校验失败（400）
+//   - 可选服务未初始化（503）
+//   - 请求体 JSON 解析失败（400）
+//
+// 注意:
+//   虽然 code 字段的值等于 HTTP 状态码，但客户端应使用 code 而非 HTTP 状态码来判断业务结果。
 func Fail(c *gin.Context, httpStatus int, msg string) {
 	c.AbortWithStatusJSON(httpStatus, ApiResponse[any]{
 		Code:    httpStatus,
@@ -73,13 +153,34 @@ func Fail(c *gin.Context, httpStatus int, msg string) {
 
 // httpStatusFromCode 将 AppError 的业务错误码映射为最合适的 HTTP 状态码。
 //
-// 映射规则：
-//   - 5 位错误码（如 40901）先归一化为前 3 位（409），再按 3 位码映射。
-//   - 0 → 200（成功），4xx → 对应 HTTP 4xx，5xx → 500。
+// 参数:
+//   - code: 业务错误码，可能是 3 位（如 400）或 5 位（如 40901）
 //
-// WHY：错误码的号段（4xxxx 与 5xxxx）决定了 HTTP 状态类别，
-// 这样客户端才能区分可自行修复的请求错误与需要重试的服务端错误。
-// 如果不做归一化，40901 会被 fallthrough 到 default 分支并返回 500。
+// 返回值:
+//   - int: HTTP 状态码
+//
+// 映射规则:
+//   1. 如果 code >= 1000（5 位错误码），先归一化为前 3 位：
+//       40901 → 409（整数除法），40401 → 404
+//   2. 归一化/原始 code 按以下顺序匹配：
+//       CodeSuccess(0)     → 200 OK
+//       CodeUnauthorized   → 401
+//       CodeForbidden      → 403
+//       CodeNotFound       → 404
+//       CodeConflict       → 409
+//       CodeTooManyRequests → 429
+//       >= 500             → 500（服务端错误）
+//       >= 400             → 400（客户端错误）
+//       default            → 500（fallback）
+//
+// WHY 需要归一化:
+//   40901 是 5 位错误码，如果直接 switch case，由于它不等于 CodeConflict(409)，
+//   会走 fallthrough 到 default 分支并返回 500。归一化后 40901/100 = 409，
+//   可以正确匹配 CodeConflict 分支，返回 HTTP 409。
+//
+// 设计决策:
+//   错误码的号段（4xxxx 表示客户端错误、5xxxx 表示服务端错误）决定了大致的 HTTP 状态类别。
+//   这样客户端才能区分"可自行修复的请求错误"与"需要重试的服务端错误"。
 func httpStatusFromCode(code errcode.ErrorCode) int {
 	if code >= 1000 {
 		code = code / 100

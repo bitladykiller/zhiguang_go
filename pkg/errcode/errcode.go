@@ -92,17 +92,57 @@ type AppError struct {
 }
 
 // Error 实现标准 error 接口。
+//
+// 功能：返回格式为 "[{code}] {message}" 的字符串，例如 "[404] not found"。
+// 这使得 AppError 可以作为 error 类型在函数间传递，并用于日志记录。
+//
+// 实现 error 接口的意义：
+// Go 的错误处理惯例是函数返回 error，统一的 AppError 类型实现了 error 接口，
+// 使得业务逻辑可以在服务层之间传递结构化的错误信息（包含业务错误码和可读消息），
+// handler 层再从中提取错误码映射为 HTTP 状态码。
+//
+// 返回值：string，格式化为 "[{Code}] {Message}" 的文本。
 func (e *AppError) Error() string {
 	return fmt.Sprintf("[%d] %s", e.Code, e.Message)
 }
 
 // WithMsg 返回一个携带新错误消息的 AppError 副本。
-// 适合在预定义错误码基础上追加具体上下文。
+//
+// 功能：在预定义错误实例（如 ErrNotFound、ErrBadRequest）的基础上，
+// 创建一个新 AppError 对象，消息替换为自定义内容。
+// 这比直接修改全局单例更安全，因为全局单例被多个请求共享。
+//
+// 为什么是副本而非修改原对象：
+//   预定义的错误实例（如 ErrNotFound）是包级变量，多个请求可能同时使用。
+//   如果直接修改 Message 字段，会造成并发读写冲突（data race）。
+//   WithMsg 创建新对象，是线程安全的。
+//
+// 参数：
+//   - msg: string，自定义的错误消息内容。
+//
+// 返回值：
+//   - *AppError: 新的 AppError 实例，错误码不变，消息替换为 msg。
+//
+// 使用示例：
+//   errcode.ErrNotFound.WithMsg("user id %d not found", userID)
 func (e *AppError) WithMsg(msg string) *AppError {
 	return &AppError{Code: e.Code, Message: msg}
 }
 
-// NewAppError 根据给定错误码和错误信息创建新的 AppError。
+// NewAppError 根据给定错误码和错误信息创建新的 AppError 实例。
+//
+// 功能：直接构造一个 AppError，适合辅助函数中需要动态生成错误码的场景。
+//
+// 与 WithMsg 的区别：
+//   WithMsg 基于已有的预定义错误实例创建一个副本，错误码不变。
+//   NewAppError 需要显式指定错误码，适合完全自定义错误信息的场景。
+//
+// 参数：
+//   - code: ErrorCode，业务错误码（如 400、404、50001 等）。
+//   - msg: string，可读的错误描述信息。
+//
+// 返回值：
+//   - *AppError: 新创建的 AppError 实例。
 func NewAppError(code ErrorCode, msg string) *AppError {
 	return &AppError{Code: code, Message: msg}
 }
