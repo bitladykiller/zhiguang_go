@@ -1,0 +1,147 @@
+// Package auth 实现基于 JWT 的鉴权体系，包含 RS256 签名、
+// 验证码流程、刷新令牌白名单以及审计日志能力。
+//
+// 架构组成：
+//   - JwtService：负责 RSA 密钥管理、令牌签发与校验
+//   - VerificationService：基于 Redis 的验证码生成与校验
+//   - AuthService：编排注册、登录、刷新令牌等业务流程
+//   - RefreshTokenStore：基于 Redis 管理刷新令牌生命周期
+package auth
+
+import (
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+)
+
+// ============================================================================
+// 数据模型
+// ============================================================================
+
+// User 映射到 users 表。
+// PasswordHash 出于安全考虑不会参与 JSON 序列化（json:"-"）。
+// 指针字段表示数据库中允许为 NULL 的列。
+type User struct {
+	ID           uint64     `db:"id" json:"id"`
+	Phone        *string    `db:"phone" json:"phone,omitempty"`
+	Email        *string    `db:"email" json:"email,omitempty"`
+	PasswordHash *string    `db:"password_hash" json:"-"`
+	Nickname     string     `db:"nickname" json:"nickname"`
+	Avatar       *string    `db:"avatar" json:"avatar,omitempty"`
+	Bio          *string    `db:"bio" json:"bio,omitempty"`
+	ZgId         *string    `db:"zg_id" json:"zg_id,omitempty"`
+	Gender       *string    `db:"gender" json:"gender,omitempty"`
+	Birthday     *time.Time `db:"birthday" json:"birthday,omitempty"`
+	School       *string    `db:"school" json:"school,omitempty"`
+	TagsJson     *string    `db:"tags_json" json:"tags_json,omitempty"`
+	CreatedAt    time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt    time.Time  `db:"updated_at" json:"updated_at"`
+}
+
+// LoginLog 映射到登录审计表 login_logs。
+type LoginLog struct {
+	ID         uint64    `db:"id" json:"id"`
+	UserID     *uint64   `db:"user_id" json:"user_id,omitempty"`
+	Identifier string    `db:"identifier" json:"identifier"`
+	Channel    string    `db:"channel" json:"channel"`
+	IP         *string   `db:"ip" json:"ip,omitempty"`
+	UserAgent  *string   `db:"user_agent" json:"user_agent,omitempty"`
+	Status     string    `db:"status" json:"status"`
+	CreatedAt  time.Time `db:"created_at" json:"created_at"`
+}
+
+// ============================================================================
+// 非模型类型
+// ============================================================================
+
+// ClientInfo 携带从 HTTP 请求中提取出的客户端 IP 和 User-Agent。
+type ClientInfo struct {
+	IP        string
+	UserAgent string
+}
+
+// ============================================================================
+// 枚举类型
+// ============================================================================
+
+// IdentifierType 用于区分手机号登录和邮箱登录。
+type IdentifierType string
+
+const (
+	IdentifierPhone IdentifierType = "PHONE"
+	IdentifierEmail IdentifierType = "EMAIL"
+)
+
+// VerificationScene 表示验证码发送所处的业务场景。
+type VerificationScene string
+
+const (
+	SceneRegister      VerificationScene = "REGISTER"
+	SceneLogin         VerificationScene = "LOGIN"
+	SceneResetPassword VerificationScene = "RESET_PASSWORD"
+)
+
+// VerificationCodeStatus 表示一次验证码校验的结果状态。
+type VerificationCodeStatus string
+
+const (
+	StatusNotFound        VerificationCodeStatus = "NOT_FOUND"
+	StatusExpired         VerificationCodeStatus = "EXPIRED"
+	StatusMismatch        VerificationCodeStatus = "MISMATCH"
+	StatusTooManyAttempts VerificationCodeStatus = "TOO_MANY_ATTEMPTS"
+	StatusSuccess         VerificationCodeStatus = "SUCCESS"
+)
+
+// 登录渠道常量
+const (
+	ChannelPassword = "PASSWORD"
+	ChannelCode     = "CODE"
+)
+
+// 登录状态常量
+const (
+	LoginStatusSuccess = "SUCCESS"
+	LoginStatusFailed  = "FAILED"
+)
+
+// ============================================================================
+// 结果类型
+// ============================================================================
+
+// VerificationCheckResult 封装 Verify() 的校验结果。
+type VerificationCheckResult struct {
+	Success bool                   `json:"success"`
+	Status  VerificationCodeStatus `json:"status"`
+}
+
+// SendCodeResult 封装 SendCode() 的返回结果。
+type SendCodeResult struct {
+	Identifier    string            `json:"identifier"`
+	Scene         VerificationScene `json:"scene"`
+	ExpireSeconds int               `json:"expire_seconds"`
+}
+
+// TokenPair 保存访问令牌、刷新令牌及其过期信息。
+type TokenPair struct {
+	AccessToken           string    `json:"access_token"`
+	AccessTokenExpiresAt  time.Time `json:"access_token_expires_at"`
+	RefreshToken          string    `json:"refresh_token"`
+	RefreshTokenExpiresAt time.Time `json:"refresh_token_expires_at"`
+	RefreshTokenID        string    `json:"-"`
+}
+
+// JwtClaims 在 jwt.RegisteredClaims 基础上扩展了业务字段。
+// UID 与 TokenKind 是内部字段名；JSON tag 仍保持为 "uid" 与 "token_type"，
+// 以兼容现有 JWT 协议格式。UserID() 与 TokenType() 用于实现 middleware.TokenClaims。
+type JwtClaims struct {
+	jwt.RegisteredClaims
+	UID       uint64 `json:"uid"`
+	TokenKind string `json:"token_type"`
+	Nickname  string `json:"nickname,omitempty"`
+}
+
+// UserID 返回内嵌的用户 ID，用于实现 middleware.TokenClaims。
+func (c *JwtClaims) UserID() uint64 { return c.UID }
+
+// TokenType 返回令牌类型字符串，用于实现 middleware.TokenClaims。
+func (c *JwtClaims) TokenType() string { return c.TokenKind }
