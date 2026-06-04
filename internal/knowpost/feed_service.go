@@ -22,20 +22,27 @@ const (
 	mineFeedVersionKey   = "feed:mine:version:%d"
 )
 
-// KnowPostFeedService 实现基于碎片缓存架构的 Feed 流读取。
+// KnowPostFeedService 实现基于碎片缓存架构的 Feed 列表流读取。
 //
 // 缓存架构（三级、碎片化）：
 //
-//	L1（freecache）：整页响应，约 50ns
+//	L1（freecache）：整页响应缓存，约 50ns。
 //	L2（Redis 碎片缓存）：
-//	  - IDs 列表（按小时分槽）：保存某一页的有序帖子 ID 列表
-//	  - Item 缓存（按帖子维度）：保存单篇帖子的元信息
-//	  - hasMore 软缓存：标记是否还有下一页
-//	L3（MySQL）：真实数据源
+//	  - IDs 列表（按小时分槽）：保存某一页的有序帖子 ID 列表。
+//	  - Item 缓存（按帖子维度）：保存单篇帖子的元信息（标题、描述、封面等）。
+//	  - hasMore 软缓存：标记是否还有下一页数据。
+//	L3（MySQL）：权威数据源，只会在 singleflight 锁内回源。
 //
-// WHY：使用碎片缓存而不是整页缓存，是因为单篇帖子更新时只需要失效该帖子的碎片；
-// 如果使用整页缓存，则所有包含该帖子的分页结果都要失效。
-// WHY：按小时分槽保存 IDs，可以控制热门页失效时的影响范围。
+// WHY 使用碎片缓存而非整页缓存：
+//   - 整页缓存方案中，单篇帖子更新会致使所有包含该帖子的分页结果失效，
+//     缓存失效范围大，命中率低。
+//   - 碎片缓存方案中，帖子创建/更新只需要失效该帖子的 Item 碎片，
+//     以及递增 feed version（让旧分页整页缓存整体过期），
+//     不会影响其他帖子的缓存。
+//
+// WHY 按小时分槽保存 IDs：
+// 可以控制热门时间窗口失效时的影响范围——只影响该小时的槽，
+// 其他小时的缓存不受影响。
 type KnowPostFeedService struct {
 	repo         *KnowPostRepository
 	redis        *redis.Client
@@ -43,7 +50,7 @@ type KnowPostFeedService struct {
 	l1Mine       *freecache.Cache
 	hotKey       *cache.HotKeyDetector
 	counter      CounterClient
-	singleFlight sync.Map // key → *sync.Mutex
+	singleFlight sync.Map // key → *sync.Mutex（防止缓存击穿的锁）
 }
 
 // FeedCacheInvalidator 暴露知文写操作所需的 feed 缓存失效能力。

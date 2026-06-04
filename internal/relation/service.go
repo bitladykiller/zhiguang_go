@@ -44,16 +44,18 @@ const bigVThreshold = 500
 
 // RelationService 实现带多级缓存的关注/取关能力。
 //
-// 架构：
+// 缓存架构：
 //
-//	L1（freecache）：BigV 用户的前 500 条列表，约 50ns
-//	L2（Redis ZSet）：按 created_at 排序，约 1ms
-//	L3（MySQL）：真实数据源
+//	L1（freecache）：BigV 用户的前 500 条关注/粉丝列表，约 50ns 响应
+//	L2（Redis ZSet）：按关注/创建时间排序（created_at 的毫秒时间戳作为 score），约 1ms 响应
+//	L3（MySQL）：真实数据源，通过 offset 分页
 //
 // 设计模式：
-//   - Transactional Outbox：关注/取关与 outbox 在同一事务内落库
-//   - Token Bucket：基于 Lua 的用户级限流
-//   - Read-Through Cache：缓存未命中时回源 DB 并回填
+//   - Transactional Outbox：关注/取关操作与 outbox 事件写入在同一个数据库事务内完成，
+//     确保不会出现「关注已建立但事件未发出」的不一致情况。
+//   - Token Bucket（令牌桶限流）：通过 Lua 脚本实现用户级别的关注频率控制，
+//     防止单用户短时间内大量关注导致全局限流或数据写入压力。
+//   - Read-Through Cache：缓存未命中时回源 DB 查询并回填 L2 ZSet 和 L1 freecache。
 type RelationService struct {
 	db    *sqlx.DB
 	redis *redis.Client

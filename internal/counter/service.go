@@ -11,8 +11,16 @@ import (
 )
 
 // TOGGLE_LUA 以原子方式切换位图中的单个位，并返回状态是否发生变化。
-// KEYS[1] 是位图键；ARGV[1] 是位偏移；ARGV[2] 是 "add" 或 "remove"。
-// 返回：1 表示发生变化，0 表示无变化，-1 表示未知操作。
+//
+// 功能：如果操作是 "add"，当前位为 0 则设为 1 并返回 1；已为 1 则返回 0。
+// 如果操作是 "remove"，当前位为 1 则设为 0 并返回 1；已为 0 则返回 0。
+// 无效的操作（非 add/remove）返回 -1。
+//
+// KEYS[1]：位图键（bm:{metric}:{entityType}:{entityID}:{chunk}）
+// ARGV[1]：位偏移（用户 ID 在分片内的位置）
+// ARGV[2]：操作类型（"add" 或 "remove"）
+//
+// 返回值：1=状态发生变化，0=无变化，-1=未知操作
 const TOGGLE_LUA = `
 local bmKey = KEYS[1]
 local offset = tonumber(ARGV[1])
@@ -62,9 +70,16 @@ return 1
 // CounterService 提供原子化的计数开关操作。
 //
 // 设计模式：
-//   - Strategy：Like/Unlike/Fav/Unfav 都是 toggle(add/remove) 的不同变体
-//   - Circuit Breaker：SDS 重建失败后采用指数退避
-//   - Distributed Lock：通过 Redis SETNX 防止重建时出现惊群
+//   - Strategy（策略模式）：Like/Unlike/Fav/Unfav 都是 toggle(add/remove) 的不同变体，
+//     共用同一套位图操作逻辑，只是传入的 metric 和 op 参数不同。
+//   - Circuit Breaker（断路器模式）：SDS 重建失败后采用指数退避，
+//     退避时间呈指数增长（500ms → 1s → 2s → ... → 30s cap），
+//     避免持续失败的请求压迫数据库。
+//   - Distributed Lock（分布式锁模式）：通过 Redis SETNX 防止多个服务实例
+//     同时对同一个 SDS 执行重建操作。
+//
+// 数据流：
+//   toggle (Lua) → 修改位图 → 失效 SDS（触发按需重建） → 发送 Kafka 事件（异步）
 type CounterService struct {
 	redis    *redis.Client
 	producer *CounterEventProducer

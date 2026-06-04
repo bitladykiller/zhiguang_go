@@ -8,11 +8,18 @@ import (
 )
 
 const authUserSelectColumns = `
-SELECT id, phone, email, password_hash, nickname, avatar, bio, zg_id, gender, birthday, school, tags_json, created_at, updated_at
-FROM users
+	SELECT id, phone, email, password_hash, nickname, avatar, bio, zg_id, gender, birthday, school, tags_json, created_at, updated_at
+	FROM users
 `
 
 // AuthRepository 封装鉴权领域的数据访问操作。
+//
+// 提供以下能力：
+//   - 创建用户（INSERT users）
+//   - 通过 ID 或标识（手机号/邮箱）查询用户
+//   - 检查标识是否已存在
+//   - 更新密码
+//   - 记录登录审计日志
 type AuthRepository struct {
 	db *sqlx.DB
 }

@@ -1,4 +1,14 @@
 // Package messaging 提供 Kafka 生产者与消费者的创建工厂。
+//
+// 封装 segmentio/kafka-go 库的初始化逻辑，确保所有模块都能以一致的方式
+// 创建 Writer 和 Reader。同一模块内的多个 writer 可以共享同一个 KafkaConfig。
+//
+// 设计决策：
+//   - 计数事件写入使用异步模式（async=true）以提升吞吐，
+//     因为计数事件可以容忍偶尔丢失（位图是权威数据源）。
+//   - outbox Canal 主题的写入使用同步模式（async=false），
+//     因为 outbox 的消费可靠性要求更高。
+//   - 消费者使用 consumer group 做协调，支持水平扩展消费者实例。
 package messaging
 
 import (

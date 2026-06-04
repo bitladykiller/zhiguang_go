@@ -1,5 +1,13 @@
 // Package database 提供 MySQL（基于 sqlx）与 Redis（基于 go-redis）的连接工厂。
-// 这些工厂函数会被启动装配流程直接调用。
+//
+// 这些工厂函数会在启动装配流程（bootstrap.InitializeApp）中被直接调用。
+// 连接池参数从 config 中读取，确保与 YAML 配置联动。
+//
+// 设计决策：
+//   - 不使用 ORM，而是用 sqlx 做轻量映射，以获得对 SQL 的完全控制力。
+//   - 连接池的三个核心参数（MaxOpenConns、MaxIdleConns、ConnMaxLifetime）
+//     都会在 NewDB 中设置，避免走 Go 默认值（默认不限制，可能耗尽数据库连接数）。
+//   - Redis 目前只使用一个 DB 实例，后续有压力瓶颈时可以考虑读写分离。
 package database
 
 import (

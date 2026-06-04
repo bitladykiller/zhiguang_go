@@ -16,10 +16,15 @@ import (
 
 // GetDetail 返回知文详情，并补充当前用户维度的点赞/收藏状态。
 //
-// 读取流程：
-// 1. 先查 L1（freecache）
-// 2. 再查 L2（Redis）
-// 3. 都未命中时进入 singleflight 锁，再回源数据库
+// 三级缓存读取路径：
+//  1. L1（freecache）：进程级缓存，约 50ns 可返回，不经过网络。
+//  2. L2（Redis）：分布式缓存，约 1ms 响应，跨服务实例共享。
+//  3. Singleflight 锁 + L3（MySQL）：缓存同时失效时防止击穿。
+//
+// 权限判定：
+//   - 公开（public）+ 已发布（published）→ 任何人可查看
+//   - 非公开 → 仅作者本人可查看（owner check）
+//   - 已删除（deleted）→ 返回 404
 func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	ctx := context.Background()
 	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)

@@ -20,11 +20,18 @@ import (
 //
 // WHY：当热门键同时在 L1 和 L2 失效时，大量并发请求可能会同时打到数据库。
 // singleflight 能保证同一时刻只有一个 goroutine 真正回源，其余请求等待结果即可。
+//
+// 使用方式：
+//
+//	cache := NewMultiLevelCache(10*1024*1024, 60, redisClient)
+//	val, err := cache.Get(ctx, "mykey", func() (string, error) {
+//	    return loadFromDB()
+//	})
 type MultiLevelCache struct {
 	l1      *freecache.Cache
 	l2      *redis.Client
 	ttl     time.Duration
-	flights sync.Map // key → *call (singleflight)
+	flights sync.Map // key → *call (singleflight 锁)
 }
 
 // call 表示一次正在进行中的缓存加载操作。

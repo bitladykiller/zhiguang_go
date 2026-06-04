@@ -7,7 +7,8 @@ import (
 	"github.com/zhiguang/app/pkg/response"
 )
 
-// AuthHandler 负责鉴权模块的 HTTP 路由与请求适配。
+// AuthHandler 负责鉴权模块的 HTTP 路由注册与请求适配。
+// 它将 HTTP 请求参数反序列化、验证后传递给 AuthService 处理，再组装响应。
 type AuthHandler struct {
 	svc    *AuthService
 	jwtSvc *JwtService
@@ -18,7 +19,14 @@ func NewAuthHandler(svc *AuthService, jwtSvc *JwtService) *AuthHandler {
 }
 
 // RegisterRoutes 注册鉴权模块的全部路由。
-// 公开接口不要求鉴权中间件，`/me` 则要求合法的 access token。
+//
+// 路由说明：
+//   - `/send-code`、`/register`、`/login`、`/refresh`、`/logout`、`/reset-password`：
+//     公开接口，不需要 JWT 鉴权。
+//   - `/me`：受保护接口，通过 middleware.AuthMiddleware 要求合法的 access token。
+//
+// WHY：/me 需要单独加 AuthMiddleware，而不是在全局注入，
+// 因为全局使用的是 OptionalAuthMiddleware（允许匿名访问）。
 func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
 	auth := r.Group("/auth")
 	{

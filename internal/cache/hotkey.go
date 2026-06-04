@@ -1,11 +1,13 @@
-// Package cache 提供热点键识别与多级缓存能力。
+// Package cache 提供热点键识别（HotKeyDetector）与多级缓存（MultiLevelCache）能力。
 //
-// HotKeyDetector：使用滑动窗口计数识别高频访问键。
-// 当某个键的访问频次超过阈值时，会动态延长缓存 TTL，
-// 从而降低数据库压力。当前分为 LOW（+20s）、MEDIUM（+60s）、HIGH（+120s）三级。
+// HotKeyDetector：使用分段滑动窗口识别高频访问键，当某个键的访问频次超过阈值时，
+// 动态延长缓存 TTL，从而降低数据库压力。热度分为三级：
+//   - LOW（+20s）：低热度，QPS 略高于背景水平
+//   - MEDIUM（+60s）：中等热度，QPS 明显高于背景水平
+//   - HIGH（+120s）：高热度，QPS 极高，会显著延长缓存以减少数据库查询
 //
 // MultiLevelCache：两级缓存（进程内 L1 freecache + 分布式 L2 Redis），
-// 并通过 singleflight 防止缓存击穿。
+// 通过 singleflight 机制防止缓存击穿。
 package cache
 
 import (

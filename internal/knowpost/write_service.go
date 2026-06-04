@@ -10,7 +10,13 @@ import (
 
 // --- [写操作] --- //
 
-// CreateDraft 创建一篇新的知文草稿，并返回其雪花 ID。
+// CreateDraft 创建一篇新的知文草稿，并返回其雪花算法生成的 ID。
+//
+// 草稿的初始状态：
+//   - Status: "draft"（草稿状态）
+//   - Type: "image_text"（图文类型，当前仅支持这一种知文类型）
+//   - Visible: "public"（默认公开可见）
+//   - IsTop: false（默认不置顶）
 func (s *KnowPostService) CreateDraft(creatorID uint64) (uint64, error) {
 	id := s.idGen.NextID()
 	now := time.Now()

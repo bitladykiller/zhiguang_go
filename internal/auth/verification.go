@@ -12,6 +12,12 @@ import (
 )
 
 // 验证码相关 Redis 键前缀。
+//
+// 每种类型使用独立前缀，避免不同场景的验证码键冲突：
+//   - code：存储实际验证码值
+//   - interval：发送间隔锁，防止短时间内重复发送
+//   - daily：每天发送次数计数
+//   - attempts：验证尝试次数，用于暴力破解防护
 const (
 	prefixCode     = "vc:code:"
 	prefixInterval = "vc:interval:"
@@ -20,8 +26,13 @@ const (
 )
 
 // VerificationService 负责管理验证码的完整生命周期。
-// 验证码存储在 Redis 中，依赖 TTL 自动过期。
-// 同时会执行频率限制，包括发送间隔限制和每日发送上限。
+//
+// 功能特性：
+//   - 生成具备密码学安全性的随机数字验证码（crypto/rand）
+//   - Redis 存储 + TTL 自动过期
+//   - 发送间隔限制：防止短信接口被频繁调用造成资损
+//   - 每日发送上限：防止单个标识被大量发送验证码
+//   - 验证尝试次数限制：防暴力枚举
 type VerificationService struct {
 	redis  *redis.Client
 	config *config.VerificationConfig

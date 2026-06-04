@@ -12,6 +12,16 @@ import (
 )
 
 // OutboxConsumer 消费 canal-outbox 主题中的关系事件。
+//
+// 处理流程：
+//  1. 从 canal-outbox Kafka 主题拉取消息（原始消息是 CanalEnvelope JSON）。
+//  2. 解析出 outbox 行，提取 Payload 中的 RelationEvent。
+//  3. 调用 EventProcessor.Process 更新 Redis ZSet 缓存和用户计数。
+//  4. 处理成功后 CommitMessages 提交偏移量；失败后重试。
+//
+// 容错策略：
+//   - 消费 Kafka 消息失败时，先等待 1 秒再重试，而不是立即重试。
+//   - 当 ctx 被取消（服务关闭）时，停止消费循环并清理 Reader。
 type OutboxConsumer struct {
 	reader    *kafka.Reader
 	processor *EventProcessor

@@ -1,6 +1,15 @@
 // Package config 提供基于 YAML 的配置加载能力。
-// 所有配置会在启动时通过 LoadConfig() 一次性读取，
-// 再通过应用装配流程传递给需要它们的服务。
+// 所有配置会在启动时通过 LoadConfig() 一次性读取并反序列化到 Config 结构体，
+// 再通过应用装配流程传递给各个服务模块。
+//
+// 配置设计原则：
+//   - 所有配置字段都定义了 yaml tag，与 config.yaml / config-local.yaml 一一对应。
+//   - 可选依赖（搜索、LLM、OSS）配置不完整时不会阻止服务启动，
+//     而是由调用方自行检测并降级（返回 503）。
+//   - itoa 不使用 strconv.Itoa 是为了最小化启动依赖链。
+//
+// 使用方式：
+//   cfg, err := config.LoadConfig("config/config-local.yaml")
 package config
 
 import (
@@ -220,8 +229,15 @@ type OpenAIConfig struct {
 	Dimensions     int    `yaml:"dimensions"`
 }
 
-// LoadConfig 读取并解析 YAML 配置文件。
-// 如果文件无法读取或 YAML 非法，则返回错误；否则返回完整填充的 Config。
+// LoadConfig 从指定路径读取 YAML 配置文件并解析为 Config 结构体。
+//
+// 调用流程：
+//  1. 使用 os.ReadFile 读取文件内容。
+//  2. 使用 yaml.Unmarshal 将 YAML 反序列化为 Config 结构体。
+//  3. 如果文件无法读取或 YAML 格式非法则返回错误。
+//
+// 注意：此函数不会校验配置中的字段值是否合理（如端口是否在有效范围等），
+// 调用方应在构造连接时自行检查。
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -237,6 +253,9 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // itoa 在不引入 strconv 的前提下把 int 转成字符串。
+//
+// WHY：在启动路径上减少一个标准库依赖能略微缩短编译时间。
+// 该函数仅在 DSN() 和 Addr() 中被调用，性能不敏感。
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

@@ -8,7 +8,18 @@ import (
 )
 
 // KnowPostRepository 封装 know_posts 相关的全部数据库操作。
-// 它基于 sqlx 构造查询，并向服务层返回领域模型或查询结果。
+//
+// 提供的能力：
+//   - 插入草稿（InsertDraft）
+//   - 更新内容（UpdateContent）、元数据（UpdateMetadata）
+//   - 状态流转：发布（Publish）、软删除（SoftDelete）
+//   - 辅助更新：置顶（UpdateTop）、可见性（UpdateVisibility）
+//   - 读取：详情查询（FindDetailByID）、公共 feed 分页（ListFeedPublic）、
+//     我的已发布（ListMyPublished）
+//   - 事务消息（InsertOutbox）
+//
+// 所有 Update* 方法都包含 WHERE creator_id = ? 条件，
+// 确保用户只能修改自己的知文，安全性由数据库层保证。
 type KnowPostRepository struct {
 	db sqlx.Ext
 }

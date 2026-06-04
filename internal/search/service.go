@@ -3,9 +3,18 @@
 //
 // 主要特性：
 //   - 基于 BM25 相关性评分的全文检索
-//   - 使用 function_score 融合 BM25 与 like_count 权重
-//   - 使用 from/size 的标准分页查询
-//   - 基于 completion suggester 的前缀自动补全
+//   - 使用 function_score 融合 BM25 与 like_count / view_count 的权重，
+//     使热门内容能获得合理的排序提升。
+//   - 使用 search_after 游标分页，替代传统的 from/size 深分页，
+//     避免深分页场景下 ES 集群的排序性能问题。
+//   - 基于 completion suggester 的前缀自动补全，
+//     同时支持标题和标签作为补全建议的来源。
+//   - 索引映射与 Java 版对齐，确保同集群下混用 Java/Go 应用时索引兼容。
+//
+// 数据同步流程：
+//
+//	写操作（事务内） → outbox 表 → Canal 捕获 binlog → Kafka canal-outbox 主题
+//	→ search.OutboxConsumer → search.KnowPostProjector → Elasticsearch
 package search
 
 import (

@@ -9,7 +9,7 @@ import (
 	"github.com/zhiguang/app/pkg/response"
 )
 
-// KnowPostHandler 暴露知文模块的 HTTP 接口。
+// KnowPostHandler 暴露知文模块的 HTTP 接口，负责请求参数解析和响应组装。
 type KnowPostHandler struct {
 	svc     *KnowPostService
 	feedSvc *KnowPostFeedService
@@ -21,6 +21,15 @@ func NewKnowPostHandler(svc *KnowPostService, feedSvc *KnowPostFeedService) *Kno
 }
 
 // RegisterRoutes 注册知文模块的全部路由。
+//
+// 路由分类：
+//   - 写操作（需要 JWT 登录）：
+//     /draft（创建草稿）、/:id/content（确认内容）、/:id/publish（发布）等
+//   - 读操作（可选登录，使用全局 OptionalAuthMiddleware）：
+//     /:id（详情）、/feed/public（公共 feed）、/feed/mine（我的已发布）
+//
+// 写操作在处理器内通过 middleware.GetUserID 显式鉴权。
+// 读操作中 /feed/mine 也必须登录（因为 "我的" 需要知道是谁）。
 func (h *KnowPostHandler) RegisterRoutes(r *gin.RouterGroup) {
 	kp := r.Group("/knowposts")
 	{

@@ -15,6 +15,10 @@ import (
 const detailLayoutVer = 1
 
 // CounterClient 定义 KnowPostService 所依赖的计数器读写接口。
+//
+// 使用接口而非具体类型注入的原因：
+//   - 解耦：knowpost 包无需 import counter 包，避免循环依赖。
+//   - 可测试：测试时可以传入 MockCounterClient 避免依赖 Redis 和 Kafka。
 type CounterClient interface {
 	GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
 	IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
@@ -23,8 +27,10 @@ type CounterClient interface {
 
 // KnowPostService 负责 knowpost 的写路径、详情读取编排以及缓存协同。
 //
-// WHY：虽然文件被拆分了，但运行时依赖仍属于同一个服务对象；
-// 这样既能保持依赖关系集中，又能让文件级职责更清晰、更容易定位和测试。
+// WHY：虽然文件按职责拆分为 cache.go、detail_service.go、write_service.go 等多个文件，
+// 但运行时依赖仍属于同一个 KnowPostService 结构体。
+// 这种拆分方式既能保持依赖关系集中在一处（service.go 的构造函数），
+// 又能让每个文件内的函数职责更清晰，更容易定位和单独测试。
 type KnowPostService struct {
 	db           *sqlx.DB
 	repo         *KnowPostRepository
@@ -35,7 +41,7 @@ type KnowPostService struct {
 	ossCfg       *config.OssConfig
 	counter      CounterClient
 	feedCache    FeedCacheInvalidator
-	singleFlight sync.Map // key -> *sync.Mutex for stampede prevention
+	singleFlight sync.Map // key -> *sync.Mutex，用于防止缓存击穿时的惊群效应
 }
 
 const (

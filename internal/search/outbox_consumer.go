@@ -10,7 +10,16 @@ import (
 	"github.com/zhiguang/app/internal/outbox"
 )
 
-// OutboxConsumer 消费 canal-outbox 主题，并驱动搜索索引更新。
+// OutboxConsumer 消费 canal-outbox 主题中的 search 事件，并驱动搜索索引更新。
+//
+// 处理流程：
+//  1. 从 canal-outbox Kafka 主题拉取消息。
+//  2. 通过 outbox.ExtractRows 解析出 outbox 行数组。
+//  3. 对每一行，调用 KnowPostProjector.ProjectPayload 执行 upsert/delete 操作。
+//  4. 处理成功后 CommitMessages；失败后等待 1 秒重试。
+//
+// 搜索索引同步是最终一致（eventual consistency）的：
+// 写操作完成后到索引可见有一个短暂延迟（通常 < 1s）。
 type OutboxConsumer struct {
 	reader    *kafka.Reader
 	projector *KnowPostProjector

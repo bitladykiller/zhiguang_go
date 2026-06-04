@@ -12,10 +12,17 @@ import (
 )
 
 // CounterReader 定义搜索索引投影过程中所需的计数读取接口子集。
+//
+// WHY：只声明 GetCounts 一个方法，而不是直接引用 counter.CounterService。
+// 这样可以避免 search 包和 counter 包之间产生稳定的编译依赖，
+// 同时也是对接口隔离原则（ISP）的实践——投影器只需要知道如何读取计数，
+// 不需要知道切换开关状态的细节。
 type CounterReader interface {
 	GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
 }
 
+// searchIndexSourceRow 是索引投影时从 know_posts JOIN users 查回来的原始行。
+// 包含搜索引擎索引所需的全部字段，从 MySQL 联表查询一次性加载。
 type searchIndexSourceRow struct {
 	ID             uint64     `db:"id"`
 	TagID          *uint64    `db:"tag_id"`
@@ -33,6 +40,9 @@ type searchIndexSourceRow struct {
 	PublishTime    *time.Time `db:"publish_time"`
 }
 
+// payloadEnvelope 是从 outbox 事件的 Payload 字段解析出的通用信封结构。
+// Entity 标识聚合类型（如 knowpost），Op 表示操作类型（upsert/delete），
+// ID 是聚合根 ID。投影器根据 Op 值决定执行 upsert 还是软删除。
 type payloadEnvelope struct {
 	Entity string `json:"entity"`
 	Op     string `json:"op"`
@@ -40,6 +50,11 @@ type payloadEnvelope struct {
 }
 
 // KnowPostProjector 负责把 knowpost 事件投影到搜索索引。
+//
+// 接收从 canal-outbox 主题消费到的 outbox 事件，
+// 解析 payload 后执行 upsert 或 delete 操作更新 ES 索引。
+// 每次投影都会重新从 MySQL 查询完整的数据并补充实时计数，
+// 确保 ES 索引中的数据是最终一致的（eventual consistency）。
 type KnowPostProjector struct {
 	db        *sqlx.DB
 	searchSvc *SearchService

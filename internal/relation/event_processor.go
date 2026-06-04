@@ -16,6 +16,15 @@ type UserCounterUpdater interface {
 }
 
 // EventProcessor 处理由 canal-outbox 驱动的关系事件。
+//
+// 负责消费 FollowCreated 和 FollowCanceled 事件，并执行以下操作：
+//  1. 幂等校验（基于 Redis SETNX 的 10 分钟去重窗口）
+//  2. 更新 Redis 中的关注/粉丝 ZSet 缓存
+//  3. 更新用户维度的关注/粉丝计数（通过 CounterService）
+//
+// WHY：不直接在关注/取关 API 中更新缓存，是因为 Redis 缓存可能已过期，
+// 或者 API 请求可能在缓存更新前就失败了。通过事件驱动的异步更新，
+// 可以使关注/粉丝列表的缓存最终一致。
 type EventProcessor struct {
 	redis   *redis.Client
 	counter UserCounterUpdater

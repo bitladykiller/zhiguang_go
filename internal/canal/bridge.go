@@ -1,3 +1,12 @@
+// Package canal 负责将阿里云 Canal 捕获的 MySQL binlog 变更桥接到 Kafka。
+//
+// 核心流程：
+//
+//	Canal client -> 订阅 outbox 表 binlog -> 解析 row events -> 打包 JSON -> 写入 Kafka
+//
+// 当 canal.enabled = true 时，该桥接器会在 background runner 中启动，
+// 与 Java 版保持一致的「Canal -> Kafka -> relation/search consumers」链路。
+// 当 canal.enabled = false 时，不会启动该桥接器。
 package canal
 
 import (
@@ -17,7 +26,16 @@ const (
 	defaultCanalIdleTimeoutMs   = 60 * 60 * 1000
 )
 
-// Bridge 负责把 Canal 中的 outbox 变更桥接到 Kafka。
+// Bridge 负责把 Canal 中的 outbox 表变更桥接到 Kafka。
+//
+// 启动后会持续连接到 Canal Server，轮询订阅的 binlog 变更（filter 配置过滤规则）。
+// 每次从 Canal 获取一批变更后，会按以下流程处理：
+//  1. 调用 parseEntries 将 protobuf Entry 转为 JSON 格式的 CanalEnvelope
+//  2. 将消息批量写入 Kafka 的 canal-outbox 主题
+//  3. ACK 该 batchID，告知 Canal Server 已完成消费
+//  4. 如果写入 Kafka 失败则 ROLLBACK batchID，后续重试会重新获取该批次
+//
+// 中断重连策略：当连接意外断开时，会以 IntervalMs 间隔无限重试，直到 ctx 被取消。
 type Bridge struct {
 	cfg    *config.CanalConfig
 	writer *kafka.Writer

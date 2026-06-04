@@ -1,9 +1,14 @@
 // Package knowpost 实现知文领域模型与相关能力：
-//   - 渐进式发布流程下的 CRUD（草稿 → 内容 → 元数据 → 发布）
+//   - 渐进式发布流程下的 CRUD：草稿 → 内容上传 → 元数据编辑 → 发布
 //   - 基于三级缓存的 Feed 流（L1 freecache / L2 Redis 碎片缓存 / L3 DB）
-//   - 使用 singleflight 防止缓存击穿
-//   - 基于热点键的 TTL 动态延长
-//   - 通过 outbox 事件驱动搜索索引同步
+//   - 使用 singleflight 机制防止缓存击穿
+//   - 基于热点键探测的 TTL 动态延长
+//   - 通过事务内 outbox 事件驱动搜索索引异步同步
+//
+// 领域术语：
+//   - 知文（KnowPost）：知识帖子的简称，是平台的核心内容载体。
+//   - 草稿（Draft）：未发布的知文，支持多次编辑。
+//   - Feed：知文的列表流，分为公共 feed 和「我的已发布」feed。
 package knowpost
 
 import "time"
@@ -12,7 +17,12 @@ import "time"
 // 数据模型
 // ============================================================================
 
-// KnowPost 映射 `know_posts` 表，主键 ID 由雪花算法生成，而不是数据库自增。
+// KnowPost 映射 know_posts 表，主键 ID 由雪花算法生成而非数据库自增。
+//
+// 设计决策：
+//   - 使用雪花 ID 而非自增主键，可以提前确定 ID，简化 outbox 事件的引用逻辑。
+//   - 指针字段（*string / *uint64）：对应数据库中允许 NULL 的列。
+//   - Status 管理知文的生命周期状态：draft → published / deleted。
 type KnowPost struct {
 	ID               uint64     `db:"id" json:"id"`
 	TagID            *uint64    `db:"tag_id" json:"tag_id,omitempty"`

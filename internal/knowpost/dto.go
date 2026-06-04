@@ -3,11 +3,15 @@ package knowpost
 import "time"
 
 // ============================================================================
-// 响应 DTO
+// 响应 DTO（Data Transfer Object）
 // ============================================================================
 
 // KnowPostDetailResponse 是 `GET /knowposts/:id` 的响应结构。
-// Liked 与 Faved 属于用户态字段，只在读取时动态补齐，不会进入缓存。
+//
+// 字段说明：
+//   - ID、AuthorID：用字符串而非 uint64 表示，避免前端 JavaScript 精度丢失。
+//   - Liked、Faved：用户态字段，只在读取时根据当前用户动态补齐，不会进入缓存。
+//   - PublishTime：仅在 status 为 "published" 时有值。
 type KnowPostDetailResponse struct {
 	ID             string     `json:"id"`
 	Title          *string    `json:"title"`
@@ -21,8 +25,8 @@ type KnowPostDetailResponse struct {
 	AuthorTagJson  *string    `json:"author_tag_json"`
 	LikeCount      int64      `json:"like_count"`
 	FavoriteCount  int64      `json:"favorite_count"`
-	Liked          *bool      `json:"liked,omitempty"`
-	Faved          *bool      `json:"faved,omitempty"`
+	Liked          *bool      `json:"liked,omitempty"`    // 当前用户是否已点赞（动态补齐，不入缓存）
+	Faved          *bool      `json:"faved,omitempty"`    // 当前用户是否已收藏（动态补齐，不入缓存）
 	IsTop          bool       `json:"is_top"`
 	Visible        string     `json:"visible"`
 	Type           string     `json:"type"`
@@ -30,6 +34,7 @@ type KnowPostDetailResponse struct {
 }
 
 // FeedItemResponse 表示 feed 列表中的单个条目。
+// CoverImage 取 img_urls 的第一张图，由 feed_service 在 mapRowsToItems 中填充。
 type FeedItemResponse struct {
 	ID             string   `json:"id"`
 	Title          *string  `json:"title"`
@@ -41,12 +46,12 @@ type FeedItemResponse struct {
 	TagJson        *string  `json:"tag_json"`
 	LikeCount      int64    `json:"like_count"`
 	FavoriteCount  int64    `json:"favorite_count"`
-	Liked          *bool    `json:"liked,omitempty"`
-	Faved          *bool    `json:"faved,omitempty"`
-	IsTop          *bool    `json:"is_top,omitempty"`
+	Liked          *bool    `json:"liked,omitempty"`     // 当前用户是否点赞（动态补齐）
+	Faved          *bool    `json:"faved,omitempty"`     // 当前用户是否收藏（动态补齐）
+	IsTop          *bool    `json:"is_top,omitempty"`    // 仅"我的已发布"列表包含此字段
 }
 
-// FeedPageResponse 表示分页后的 feed 列表。
+// FeedPageResponse 表示带分页信息的 feed 列表。
 type FeedPageResponse struct {
 	Items   []FeedItemResponse `json:"items"`
 	Page    int                `json:"page"`

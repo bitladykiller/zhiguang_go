@@ -9,10 +9,13 @@ import (
 )
 
 // RefreshTokenStore 定义刷新令牌白名单管理接口。
-// 白名单模式可以支持：
-//   - 令牌轮换：新令牌签发后吊销旧令牌
-//   - 定向吊销：单个令牌失效
-//   - 批量吊销：某个用户的全部令牌失效（如重置密码）
+//
+// 白名单模式解决了 JWT 本身无法被吊销的问题：颁发时将 token ID 存入 Redis，
+// 吊销时从 Redis 删除。校验刷新令牌时检查其 token ID 是否仍存在于 Redis 中。
+// 这支持以下能力：
+//   - 令牌轮换（Token Rotation）：每次刷新时吊销旧令牌、颁发新令牌
+//   - 定向吊销：使某个特定的刷新令牌失效
+//   - 批量吊销：使用户的全部刷新令牌失效（例如重置密码后）
 type RefreshTokenStore interface {
 	StoreToken(userID uint64, tokenID string, ttl time.Duration) error
 	IsTokenValid(userID uint64, tokenID string) bool
@@ -21,7 +24,10 @@ type RefreshTokenStore interface {
 }
 
 // RedisRefreshTokenStore 使用 Redis 实现 RefreshTokenStore。
-// 键格式为：`rt:{userID}:{tokenID}` -> "1"
+// 键格式：`rt:{userID}:{tokenID}` -> "1"
+//
+// WHY：以 userID 作为 key 前缀可以使同一个用户的所有令牌 ID 聚集在一起，
+// RevokeAll 可以通过 SCAN rt:{userID}:* 模式高效遍历删除。
 type RedisRefreshTokenStore struct {
 	redis *redis.Client
 }
