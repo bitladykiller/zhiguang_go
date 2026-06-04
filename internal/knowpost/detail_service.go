@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/zhiguang/app/pkg/errcode"
@@ -16,26 +15,24 @@ import (
 
 // GetDetail 返回知文详情，并补充当前用户维度的点赞/收藏状态。
 //
-// 功能：通过三级缓存 + Singleflight 锁机制获取知文详情。
+// 功能：通过三级缓存 + Redis 分布式锁机制获取知文详情。
 // 先从 L1（freecache 进程内缓存）查找，未命中则查 L2（Redis 分布式缓存），
-// 再未命中则进入 Singleflight 互斥锁保护区域回源到 L3（MySQL）。
+// 再未命中则进入 Redis 分布式锁保护区域回源到 L3（MySQL）。
 //
 // 三级缓存路径详解：
 //  1. L1（freecache）：
 //     - 约 50ns 可返回，不经过网络，性能极高。
 //     - TTL 由上游写缓存时决定（通常是 60s + jitter）。
 //     - 如果 L1 命中，仍会调用 recordHotKeyAndExtendTTL 延长在 Redis 中该 key 的 TTL，
-//       即热数据会在 Layer 2 层级获得更长缓存时间。
+//     即热数据会在 Layer 2 层级获得更长缓存时间。
 //  2. L2（Redis）：
 //     - 约 1ms 响应，跨服务实例共享。
 //     - 如果缓存值为 "NULL" 特殊标记，说明该 ID 对应的资源不存在，
-//       直接返回 404 以避免缓存穿透（布隆过滤器的替代方案）。
+//     直接返回 404 以避免缓存穿透（布隆过滤器的替代方案）。
 //     - 如果缓存命中，还会将其写入 L1 以供后续进程内命中。
-//  3. L3（MySQL 回源 + Singleflight 锁）：
-//     - Singleflight 使用 sync.Map 为每个 pageKey 维护独立的 sync.Mutex，
-//       确保同一时刻同一篇知文的并发请求只有一个会回源 DB，其余等待并复用结果。
-//       这与标准的 singleflight.Group（如 golang.org/x/sync/singleflight）
-//       原理类似，但此处手动实现是为了避免额外依赖。
+//  3. L3（MySQL 回源 + Redis 分布式锁）：
+//     - 通过 Redis SET NX PX 加锁，确保多实例场景下同一时刻只有一个实例回源 DB，
+//     其余实例等待缓存被前一个实例回填后直接复用结果。
 //     - 详见 getDetailUnderLock 注释。
 //
 // 权限判定：
@@ -80,32 +77,25 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 	return s.getDetailUnderLock(ctx, id, pageKey, currentUserID)
 }
 
-// getDetailUnderLock 在 Singleflight 互斥锁保护下从 MySQL 回源查询详情。
+// getDetailUnderLock 在 Redis 分布式锁保护下从 MySQL 回源查询详情。
 //
 // 功能：这是防止缓存击穿的核心方法。
-// 当 L1、L2 同时未命中时，多个并发请求会竞争同一个 pageKey 对应的 sync.Mutex，
-// 只有拿到锁的请求才会真正查询 MySQL，其余请求在锁外等待并在锁释放后重检缓存。
+// 当 L1、L2 同时未命中时，多个并发请求会竞争同一个 pageKey 对应的 Redis 锁，
+// 只有拿到锁的请求才会真正查询 MySQL，其余请求循环等待并重检 Redis 缓存。
 //
 // 实现细节：
-//  1. sync.Map（singleFlight）为每个 pageKey 持有一个 *sync.Mutex。
-//     LoadOrStore 原子地在第一次访问时创建锁。
-//  2. 加锁后再次检查 Redis（double-check）：
+//  1. 通过 Redis SET NX PX 尝试抢占分布式锁，锁 key 为 `lock:{pageKey}`。
+//  2. 抢锁成功后再次检查 Redis（double-check）：
 //     如果上一个持有锁的请求已经回填了缓存，则直接返回缓存数据，无需再次查库。
 //  3. 查库使用 s.repo.FindDetailByID，该 SQL JOIN users 表拿到作者信息。
 //  4. 业务状态校验：
 //     - status == "deleted" → 返回 404，并在 Redis 中写入 "NULL" 标记
-//       以防止对已删除内容的重复查询（缓存穿透防护）。
+//     以防止对已删除内容的重复查询（缓存穿透防护）。
 //     - 非公开且非作者 → 返回 403 Forbidden。
 //  5. 查询 db 成功后，将结果序列化为 JSON 写入 L2（Redis）和 L1（freecache），
 //     TTL 由热点探测器优化：热门内容获得更长的 TTL。
 //  6. 特殊标记 "NULL" 的 TTL 为 30-60 秒随机值（jitter），
 //     避免所有不存在的 key 同时过期，造成周期性的缓存穿透。
-//
-// Singleflight 与标准库区别（sync.Map + sync.Mutex vs golang.org/x/sync/singleflight）：
-//   - 手动实现的方式在锁释放后删除 sync.Map 条目，这样下次请求可以创建新的锁实例，
-//     避免 sync.Map 中残留大量已过期锁导致的内存泄漏。
-//   - 标准 singleflight.Group 使用 WaitGroup 和 call 结构体实现，
-//     但此处是为了减少外部依赖而采用了手动实现。
 //
 // 参数：
 //   - ctx: context.Context。
@@ -117,71 +107,91 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 //   - *KnowPostDetailResponse: 详情响应（已追加计数）。
 //   - error: errcode.ErrNotFound（内容不存在或已删除）或 errcode.ErrForbidden（无权限）。
 func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pageKey string, currentUserID *uint64) (*KnowPostDetailResponse, error) {
-	lockIface, _ := s.singleFlight.LoadOrStore(pageKey, &sync.Mutex{})
-	mu := lockIface.(*sync.Mutex)
-	mu.Lock()
-	defer func() {
-		s.singleFlight.Delete(pageKey)
-		mu.Unlock()
-	}()
-
-	cached, _ := s.redis.Get(ctx, pageKey).Result()
-	if cached == "NULL" {
-		return nil, errcode.ErrNotFound.WithMsg("content not found")
-	}
-	if cached != "" {
-		resp, err := s.parseDetail([]byte(cached))
-		if err == nil {
-			return s.enrichDetail(ctx, resp, currentUserID, true), nil
+	lockKey := "lock:" + pageKey
+	for {
+		token, locked, err := acquireDistributedLock(ctx, s.redis, lockKey)
+		if err != nil {
+			return nil, err
 		}
-	}
 
-	row, err := s.repo.FindDetailByID(id)
-	if err != nil || row == nil || row.Status == "deleted" {
-		ttl := time.Duration(30+rand.Intn(31)) * time.Second
-		s.redis.Set(ctx, pageKey, "NULL", ttl)
-		return nil, errcode.ErrNotFound.WithMsg("content not found")
-	}
+		if !locked {
+			cached, _ := s.redis.Get(ctx, pageKey).Result()
+			if cached == "NULL" {
+				return nil, errcode.ErrNotFound.WithMsg("content not found")
+			}
+			if cached != "" {
+				resp, parseErr := s.parseDetail([]byte(cached))
+				if parseErr == nil {
+					s.l1Cache.Set([]byte(pageKey), []byte(cached), 60)
+					return s.enrichDetail(ctx, resp, currentUserID, true), nil
+				}
+			}
+			if !sleepDistributedLockRetry(ctx) {
+				return nil, ctx.Err()
+			}
+			continue
+		}
 
-	isPublic := row.Status == "published" && row.Visible == "public"
-	isOwner := currentUserID != nil && *currentUserID == row.CreatorID
-	if !isPublic && !isOwner {
-		return nil, errcode.ErrForbidden.WithMsg("no permission to view")
-	}
+		defer releaseDistributedLock(s.redis, lockKey, token)
 
-	resp := &KnowPostDetailResponse{
-		ID:             strconv.FormatUint(row.ID, 10),
-		Title:          row.Title,
-		Description:    row.Description,
-		ContentUrl:     row.ContentUrl,
-		Images:         parseStringArray(row.ImgUrls),
-		Tags:           parseStringArray(row.Tags),
-		AuthorID:       strconv.FormatUint(row.CreatorID, 10),
-		AuthorAvatar:   row.AuthorAvatar,
-		AuthorNickname: row.AuthorNickname,
-		AuthorTagJson:  row.AuthorTagJson,
-		IsTop:          row.IsTop,
-		Visible:        row.Visible,
-		Type:           row.Type,
-		PublishTime:    row.PublishTime,
-	}
+		cached, _ := s.redis.Get(ctx, pageKey).Result()
+		if cached == "NULL" {
+			return nil, errcode.ErrNotFound.WithMsg("content not found")
+		}
+		if cached != "" {
+			resp, err := s.parseDetail([]byte(cached))
+			if err == nil {
+				return s.enrichDetail(ctx, resp, currentUserID, true), nil
+			}
+		}
 
-	if s.counter != nil {
-		counts, _ := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
-		resp.LikeCount = int64(counts["like"])
-		resp.FavoriteCount = int64(counts["fav"])
-	}
+		row, err := s.repo.FindDetailByID(id)
+		if err != nil || row == nil || row.Status == "deleted" {
+			ttl := time.Duration(30+rand.Intn(31)) * time.Second
+			s.redis.Set(ctx, pageKey, "NULL", ttl)
+			return nil, errcode.ErrNotFound.WithMsg("content not found")
+		}
 
-	jsonBytes, _ := json.Marshal(resp)
-	baseTTL := 60 + rand.Intn(31)
-	targetTTL := s.hotKey.TtlForPublic(baseTTL, pageKey)
-	if targetTTL < baseTTL {
-		targetTTL = baseTTL
-	}
-	s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
-	s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
+		isPublic := row.Status == "published" && row.Visible == "public"
+		isOwner := currentUserID != nil && *currentUserID == row.CreatorID
+		if !isPublic && !isOwner {
+			return nil, errcode.ErrForbidden.WithMsg("no permission to view")
+		}
 
-	return s.enrichDetail(ctx, resp, currentUserID, false), nil
+		resp := &KnowPostDetailResponse{
+			ID:             strconv.FormatUint(row.ID, 10),
+			Title:          row.Title,
+			Description:    row.Description,
+			ContentUrl:     row.ContentUrl,
+			Images:         parseStringArray(row.ImgUrls),
+			Tags:           parseStringArray(row.Tags),
+			AuthorID:       strconv.FormatUint(row.CreatorID, 10),
+			AuthorAvatar:   row.AuthorAvatar,
+			AuthorNickname: row.AuthorNickname,
+			AuthorTagJson:  row.AuthorTagJson,
+			IsTop:          row.IsTop,
+			Visible:        row.Visible,
+			Type:           row.Type,
+			PublishTime:    row.PublishTime,
+		}
+
+		if s.counter != nil {
+			counts, _ := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
+			resp.LikeCount = int64(counts["like"])
+			resp.FavoriteCount = int64(counts["fav"])
+		}
+
+		jsonBytes, _ := json.Marshal(resp)
+		baseTTL := 60 + rand.Intn(31)
+		targetTTL := s.hotKey.TtlForPublic(baseTTL, pageKey)
+		if targetTTL < baseTTL {
+			targetTTL = baseTTL
+		}
+		s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
+		s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
+
+		return s.enrichDetail(ctx, resp, currentUserID, false), nil
+	}
 }
 
 // enrichDetail 在基础详情上叠加实时计数和当前用户的点赞/收藏状态。

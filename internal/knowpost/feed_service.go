@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/coocood/freecache"
@@ -44,13 +43,12 @@ const (
 // 可以控制热门时间窗口失效时的影响范围——只影响该小时的槽，
 // 其他小时的缓存不受影响。
 type KnowPostFeedService struct {
-	repo         *KnowPostRepository
-	redis        *redis.Client
-	l1Public     *freecache.Cache
-	l1Mine       *freecache.Cache
-	hotKey       *cache.HotKeyDetector
-	counter      CounterClient
-	singleFlight sync.Map // key → *sync.Mutex（防止缓存击穿的锁）
+	repo     *KnowPostRepository
+	redis    *redis.Client
+	l1Public *freecache.Cache
+	l1Mine   *freecache.Cache
+	hotKey   *cache.HotKeyDetector
+	counter  CounterClient
 }
 
 // FeedCacheInvalidator 暴露知文写操作所需的 feed 缓存失效能力。
@@ -93,7 +91,7 @@ func (s *KnowPostFeedService) SetCounterClient(c CounterClient) { s.counter = c 
 //  2. L2（Redis 碎片缓存）：先通过 assembleFromCache 尝试从碎片缓存组装整页数据。
 //     碎片缓存包括三部分：ID 列表（Redis List）、单个条目缓存（Redis String）、
 //     以及 hasMore 软缓存（Redis String）。
-//  3. Singleflight 锁 + L3（MySQL）：当碎片缓存也未命中时，
+//  3. Redis 分布式锁 + L3（MySQL）：当碎片缓存也未命中时，
 //     进入 getPublicFeedUnderLock 的锁区回源数据库。
 //
 // 参数：
@@ -140,18 +138,18 @@ func (s *KnowPostFeedService) GetPublicFeed(page, size int, currentUserID *uint6
 		return resp, nil
 	}
 
-	// --- Singleflight 锁 ---
+	// --- Redis 分布式锁 ---
 	return s.getPublicFeedUnderLock(ctx, idsKey, hasMoreKey, localPageKey, safePage, safeSize, currentUserID)
 }
 
-// getPublicFeedUnderLock 在 Singleflight 互斥锁保护下从 MySQL 查询公共 Feed。
+// getPublicFeedUnderLock 在 Redis 分布式锁保护下从 MySQL 查询公共 Feed。
 //
 // 功能：防止缓存击穿的线程安全回源方法。当 L1（freecache）和 L2（Redis 碎片缓存）
-// 同时未命中时，多个并发请求会竞争同一个 idsKey 对应的 sync.Mutex。
+// 同时未命中时，多个并发请求会竞争同一个 idsKey 对应的 Redis 分布式锁。
 //
 // 实现细节：
-//  1. 通过 sync.Map（s.singleFlight）为 idsKey 创建或获取互斥锁。
-//     拿到锁的请求执行回源查询，没拿到锁的等待并重检缓存。
+//  1. 通过 Redis SET NX PX 抢占 `lock:{idsKey}` 分布式锁。
+//     拿到锁的实例执行回源查询，没拿到锁的实例循环等待并重检缓存。
 //  2. 加锁后再次检查碎片缓存（double-check 模式），避免重复查库。
 //  3. 查询 MySQL：LIMIT size+1 来判断是否有下一页（HasMore）。
 //  4. 将查询结果映射为 FeedItemResponse 并写入碎片缓存和 L1 缓存。
@@ -174,53 +172,61 @@ func (s *KnowPostFeedService) GetPublicFeed(page, size int, currentUserID *uint6
 //   - *FeedPageResponse: 已叠加用户状态的分页结果。
 //   - error: 数据库等错误。
 func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey, hasMoreKey, localPageKey string, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
-	lockIface, _ := s.singleFlight.LoadOrStore(idsKey, &sync.Mutex{})
-	mu := lockIface.(*sync.Mutex)
-	mu.Lock()
-	defer func() {
-		s.singleFlight.Delete(idsKey)
-		mu.Unlock()
-	}()
+	lockKey := "lock:" + idsKey
+	for {
+		token, locked, err := acquireDistributedLock(ctx, s.redis, lockKey)
+		if err != nil {
+			return nil, err
+		}
 
-	// 在锁内再次检查 L2
-	if resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, page, size, currentUserID); resp != nil {
+		if !locked {
+			if resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, page, size, currentUserID); resp != nil {
+				s.cacheFeedPage(localPageKey, resp, s.l1Public)
+				return resp, nil
+			}
+			if !sleepDistributedLockRetry(ctx) {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+
+		defer releaseDistributedLock(s.redis, lockKey, token)
+
+		if resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, page, size, currentUserID); resp != nil {
+			s.cacheFeedPage(localPageKey, resp, s.l1Public)
+			return resp, nil
+		}
+
+		offset := (page - 1) * size
+		rows, err := s.repo.ListFeedPublic(size+1, offset)
+		if err != nil {
+			return nil, err
+		}
+
+		hasMore := len(rows) > size
+		if hasMore {
+			rows = rows[:size]
+		}
+
+		items := s.mapRowsToItems(ctx, rows, currentUserID, false)
+
+		resp := &FeedPageResponse{
+			Items:   items,
+			Page:    page,
+			Size:    size,
+			HasMore: hasMore,
+		}
+
+		s.writeFragmentCaches(ctx, idsKey, hasMoreKey, size, rows, items, hasMore)
 		s.cacheFeedPage(localPageKey, resp, s.l1Public)
-		return resp, nil
+
+		return &FeedPageResponse{
+			Items:   s.enrichItems(ctx, items, currentUserID),
+			Page:    page,
+			Size:    size,
+			HasMore: hasMore,
+		}, nil
 	}
-
-	// --- 查询数据库 ---
-	offset := (page - 1) * size
-	rows, err := s.repo.ListFeedPublic(size+1, offset)
-	if err != nil {
-		return nil, err
-	}
-
-	hasMore := len(rows) > size
-	if hasMore {
-		rows = rows[:size]
-	}
-
-	items := s.mapRowsToItems(ctx, rows, currentUserID, false)
-
-	resp := &FeedPageResponse{
-		Items:   items,
-		Page:    page,
-		Size:    size,
-		HasMore: hasMore,
-	}
-
-	// 写入碎片缓存
-	s.writeFragmentCaches(ctx, idsKey, hasMoreKey, size, rows, items, hasMore)
-
-	// 把整页结果写入 L1
-	s.cacheFeedPage(localPageKey, resp, s.l1Public)
-
-	return &FeedPageResponse{
-		Items:   s.enrichItems(ctx, items, currentUserID),
-		Page:    page,
-		Size:    size,
-		HasMore: hasMore,
-	}, nil
 }
 
 // ============================================================================
@@ -324,13 +330,15 @@ func (s *KnowPostFeedService) GetMyPublished(userID uint64, page, size int) (*Fe
 //     标记不存在时使用 fallback 逻辑：如果本页条数 == size 则假定有更多页。
 //
 // 为什么使用"碎片缓存"而非整页缓存？
-//   碎片缓存方案中，一篇知文更新只需要失效它的 Item 碎片（而不是包含它的所有页码），
-//   再递增 feed version 让旧版本整页缓存整体过期，失效范围远小于整页缓存。
+//
+//	碎片缓存方案中，一篇知文更新只需要失效它的 Item 碎片（而不是包含它的所有页码），
+//	再递增 feed version 让旧版本整页缓存整体过期，失效范围远小于整页缓存。
 //
 // 为什么使用"任意碎片缺失即视为未命中"的策略？
-//   如果一个页面的 ID 列表比实际条目多，但某一条目的缓存已过期，
-//   拼装出的列表会漏掉该条目。为了确保结果正确性，任一碎片缺失即回源数据库重建。
-//   此策略的代价是偶尔的缓存命中率波动，但保证了数据完整性。
+//
+//	如果一个页面的 ID 列表比实际条目多，但某一条目的缓存已过期，
+//	拼装出的列表会漏掉该条目。为了确保结果正确性，任一碎片缺失即回源数据库重建。
+//	此策略的代价是偶尔的缓存命中率波动，但保证了数据完整性。
 //
 // 参数：
 //   - ctx: context.Context。
@@ -579,9 +587,10 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 // 会"标记"该 key 为热点。后续通过 TtlForPublic 可以根据热度计算一个更长的 TTL。
 //
 // WHY 延长热点条目的 TTL：
-//   热点条目会被大量并发用户频繁访问。如果 TTL 较短，会导致这些条目频繁回源 DB，
-//   造成缓存穿透或缓存击穿。延长 TTL 可以让热点条目在缓存中驻留更长时间，
-//   有效降低数据库压力。
+//
+//	热点条目会被大量并发用户频繁访问。如果 TTL 较短，会导致这些条目频繁回源 DB，
+//	造成缓存穿透或缓存击穿。延长 TTL 可以让热点条目在缓存中驻留更长时间，
+//	有效降低数据库压力。
 //
 // 参数：
 //   - itemID: string，feed 条目的 ID 字符串（"knowpost:{id}"）。
