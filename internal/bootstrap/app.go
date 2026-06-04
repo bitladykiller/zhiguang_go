@@ -8,17 +8,18 @@ import (
 
 	"github.com/zhiguang/app/internal/auth"
 	"github.com/zhiguang/app/internal/cache"
+	"github.com/zhiguang/app/internal/canal"
 	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/internal/database"
 	"github.com/zhiguang/app/internal/knowpost"
 	"github.com/zhiguang/app/internal/llm"
 	"github.com/zhiguang/app/internal/messaging"
+	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/internal/profile"
 	"github.com/zhiguang/app/internal/relation"
 	"github.com/zhiguang/app/internal/search"
 	"github.com/zhiguang/app/internal/server"
 	"github.com/zhiguang/app/internal/storage"
-	"github.com/zhiguang/app/internal/user"
 	"github.com/zhiguang/app/pkg/config"
 )
 
@@ -42,6 +43,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 
 	redisClient := database.NewRedisClient(&cfg.Redis)
 	kafkaWriter := messaging.NewKafkaWriter(&cfg.Kafka)
+	canalOutboxWriter := messaging.NewTopicWriter(&cfg.Kafka, outbox.CanalOutboxTopic, false)
 
 	detailCache := freecache.NewCache(cfg.Cache.L2.PublicCfg.MaxSize * 1024 * 1024)
 	feedPublicCache := freecache.NewCache(cfg.Cache.L2.PublicCfg.MaxSize * 1024 * 1024)
@@ -92,7 +94,19 @@ func InitializeApp(configPath string) (*server.App, error) {
 		logger.Warn("Search service disabled: elasticsearch config is incomplete")
 	}
 	searchHandler := search.NewSearchHandler(searchSvc)
-	searchSyncWorker := search.NewOutboxSyncWorker(db, searchSvc, counterSvc, logger)
+	searchProjector := search.NewKnowPostProjector(db, searchSvc, counterSvc)
+	searchOutboxConsumer := search.NewOutboxConsumer(
+		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, outbox.CanalOutboxTopic, outbox.SearchOutboxConsumerGroup),
+		searchProjector,
+		logger,
+	)
+	relationEventProcessor := relation.NewEventProcessor(redisClient, counterSvc)
+	relationOutboxConsumer := relation.NewOutboxConsumer(
+		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, outbox.CanalOutboxTopic, outbox.RelationOutboxConsumerGroup),
+		relationEventProcessor,
+		logger,
+	)
+	canalBridge := canal.NewBridge(&cfg.Canal, canalOutboxWriter, logger)
 
 	descSvc := buildDescriptionService(cfg, logger)
 	ragQuerySvc := buildRagQueryService(cfg, logger)
@@ -116,11 +130,15 @@ func InitializeApp(configPath string) (*server.App, error) {
 		Profile:  profileHandler,
 	}
 
-	userRepo := user.NewUserRepository(db)
-	_ = userRepo
-
 	router := server.NewRouter(handlerSet, logger, jwtSvc)
-	app := server.NewApp(router, cfg, logger, searchSyncWorker)
+	backgroundRunners := make([]server.BackgroundRunner, 0, 3)
+	if cfg.Canal.Enabled {
+		backgroundRunners = append(backgroundRunners, canalBridge, relationOutboxConsumer, searchOutboxConsumer)
+	} else {
+		logger.Warn("canal is disabled: outbox async sync pipeline will not start")
+	}
+
+	app := server.NewApp(router, cfg, logger, backgroundRunners...)
 	return app, nil
 }
 

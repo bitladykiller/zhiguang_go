@@ -56,14 +56,6 @@ func (s *KnowPostService) ConfirmContent(creatorID, id uint64, objectKey, etag, 
 
 	s.invalidateCache(id)
 
-	if s.ragIndexer != nil {
-		go func() {
-			if err := s.ragIndexer.EnsureIndexed(id); err != nil {
-				// 这里故意采用尽力而为策略：内容写入成功不能依赖异步建索引是否成功。
-			}
-		}()
-	}
-
 	return nil
 }
 
@@ -126,10 +118,6 @@ func (s *KnowPostService) Publish(creatorID, id uint64) error {
 	}
 	s.invalidateCache(id)
 	s.invalidateFeedCaches(id, creatorID)
-
-	if s.ragIndexer != nil {
-		go func() { _ = s.ragIndexer.EnsureIndexed(id) }()
-	}
 
 	return nil
 }
@@ -227,6 +215,7 @@ func (s *KnowPostService) runKnowPostTx(id uint64, eventType string, mutate func
 	if err := s.writeOutboxEvent(txRepo, id, "knowpost", eventType, map[string]interface{}{
 		"entity": "knowpost",
 		"id":     id,
+		"op":     knowPostOutboxOp(eventType),
 		"type":   eventType,
 	}); err != nil {
 		_ = tx.Rollback()
@@ -234,4 +223,11 @@ func (s *KnowPostService) runKnowPostTx(id uint64, eventType string, mutate func
 	}
 
 	return tx.Commit()
+}
+
+func knowPostOutboxOp(eventType string) string {
+	if eventType == outboxTypeKnowPostDeleted {
+		return "delete"
+	}
+	return "upsert"
 }

@@ -1,6 +1,5 @@
 // llm 包提供一组 AI 能力服务：
 //   - KnowPostDescriptionService：通过 DeepSeek API 生成帖子摘要
-//   - RagIndexService：把帖子内容写入 ES 向量索引，供 RAG 使用
 //   - RagQueryService：执行向量检索并以流式方式生成问答结果
 package llm
 
@@ -13,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/zhiguang/app/pkg/config"
 )
 
@@ -98,35 +96,6 @@ func (s *KnowPostDescriptionService) SuggestDescription(title, content string) (
 	}
 
 	return strings.TrimSpace(result.Choices[0].Message.Content), nil
-}
-
-// ============================================================================
-// RagIndexService：为 RAG 检索建立内容索引
-// ============================================================================
-
-// RagIndexService 管理 RAG 使用的 ES 向量索引。
-type RagIndexService struct {
-	db     *sqlx.DB
-	llmCfg *config.LLMConfig
-	esURL  string
-}
-
-func NewRagIndexService(db *sqlx.DB, llmCfg *config.LLMConfig, esURL string) *RagIndexService {
-	return &RagIndexService{db: db, llmCfg: llmCfg, esURL: esURL}
-}
-
-// EnsureIndexed 检查帖子是否已入索引；如果没有则补建索引。
-func (s *RagIndexService) EnsureIndexed(postID uint64) error {
-	// 生产实现中这里应当：
-	// 先检查 ES 是否已有分片，再从 DB 读取内容，按段落切分，
-	// 调用 OpenAI 兼容接口生成 embedding，最后写入 ES。
-	// 当前仍是占位实现，后续可按需增量补齐。
-	return nil
-}
-
-// DeleteIndex 删除某篇帖子对应的全部 RAG 分片索引。
-func (s *RagIndexService) DeleteIndex(postID uint64) error {
-	return nil
 }
 
 // ============================================================================

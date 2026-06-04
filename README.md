@@ -10,7 +10,9 @@
   依赖服务走 Docker Compose
   Go 应用继续本机运行
 - 搜索能力支持全文检索和 completion suggester
-- `knowpost` 变更会通过事务内 outbox + 后台同步任务投递到 Elasticsearch
+- `knowpost` 变更会通过事务内 outbox + Canal/Kafka 消费链路投递到 Elasticsearch
+- `canal.enabled=true` 时，会切换为与 Java 版一致的 `Canal -> Kafka -> relation/search consumers` 链路
+- `canal.enabled=false` 时，不会启动异步 outbox 消费链路
 - LLM/RAG、OSS 存储在配置不完整时会自动降级为 `503`，不会阻塞服务启动
 
 ## 技术栈
@@ -60,7 +62,7 @@
 - `detail_service.go`
 - `feed_service.go`
 - `write_service.go`
-- `outbox_worker.go`
+- `outbox_consumer.go`
 - `cache.go`
 - `helper.go`
 - `id.go`
@@ -202,7 +204,7 @@ make dev-down
 - LLM/RAG 初始化不再依赖 `elasticsearch.uris[0]` 的裸下标访问
 - 搜索、LLM、OSS 在依赖缺失时改为显式 `503`
 - 搜索索引已补齐 `tag_id` mapping 兼容逻辑，旧索引无需手工删除也能支持标签过滤
-- `knowpost` 搜索同步改为事务内 outbox，并由内置后台 worker 自动消费写入 Elasticsearch
+- `knowpost` 搜索同步改为事务内 outbox，并由 Canal/Kafka 消费链路异步写入 Elasticsearch
 - 计数器写操作现在会主动失效 SDS，读取时可从位图重建，避免 Kafka 异步链路故障时长期返回错误计数
 - 扩展业务错误码现在会映射到正确的 HTTP 状态码
 - `db/schema.sql` 的 MySQL 拼写错误已修复，可正常初始化

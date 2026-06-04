@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -27,6 +28,35 @@ elseif op == 'remove' then
   return 1
 end
 return -1
+`
+
+// INCR_SDS_FIELD_LUA 原子递增指定 SDS 槽位。
+const INCR_SDS_FIELD_LUA = `
+local cntKey = KEYS[1]
+local schemaLen = tonumber(ARGV[1])
+local fieldSize = tonumber(ARGV[2])
+local idx = tonumber(ARGV[3])
+local delta = tonumber(ARGV[4])
+local function read32be(s, off)
+  local b = {string.byte(s, off+1, off+4)}
+  local n = 0
+  for i=1,4 do n = n * 256 + b[i] end
+  return n
+end
+local function write32be(n)
+  local t = {}
+  for i=4,1,-1 do t[i] = n % 256; n = math.floor(n/256) end
+  return string.char(unpack(t))
+end
+local cnt = redis.call('GET', cntKey)
+if not cnt then cnt = string.rep(string.char(0), schemaLen * fieldSize) end
+local off = (idx - 1) * fieldSize
+local v = read32be(cnt, off) + delta
+if v < 0 then v = 0 end
+local seg = write32be(v)
+cnt = string.sub(cnt, 1, off) .. seg .. string.sub(cnt, off+fieldSize+1)
+redis.call('SET', cntKey, cnt)
+return 1
 `
 
 // CounterService 提供原子化的计数开关操作。
@@ -68,6 +98,16 @@ func (s *CounterService) Unfav(ctx context.Context, userID uint64, entityType, e
 	return s.toggle(ctx, userID, entityType, entityID, "fav", "remove")
 }
 
+// IncrementFollowings 增量更新用户维度的关注数。
+func (s *CounterService) IncrementFollowings(ctx context.Context, userID uint64, delta int) error {
+	return s.incrementUserMetric(ctx, userID, "following", delta)
+}
+
+// IncrementFollowers 增量更新用户维度的粉丝数。
+func (s *CounterService) IncrementFollowers(ctx context.Context, userID uint64, delta int) error {
+	return s.incrementUserMetric(ctx, userID, "follower", delta)
+}
+
 // toggle 执行原子 Lua 脚本；如果状态发生变化，则向 Kafka 发布 CounterEvent。
 func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, entityID, metric, op string) (bool, error) {
 	chunk := ChunkOf(userID)
@@ -103,6 +143,15 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 		return true, nil
 	}
 	return false, nil
+}
+
+func (s *CounterService) incrementUserMetric(ctx context.Context, userID uint64, metric string, delta int) error {
+	idx, ok := NameToIdx[metric]
+	if !ok {
+		return fmt.Errorf("unknown metric: %s", metric)
+	}
+	key := SdsKey("user", strconv.FormatUint(userID, 10))
+	return s.redis.Eval(ctx, INCR_SDS_FIELD_LUA, []string{key}, SchemaLen, FieldSize, idx+1, delta).Err()
 }
 
 // ============================================================================
