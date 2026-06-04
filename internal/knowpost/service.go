@@ -2,7 +2,6 @@ package knowpost
 
 import (
 	"context"
-	"sync"
 
 	"github.com/coocood/freecache"
 	"github.com/jmoiron/sqlx"
@@ -32,16 +31,15 @@ type CounterClient interface {
 // 这种拆分方式既能保持依赖关系集中在一处（service.go 的构造函数），
 // 又能让每个文件内的函数职责更清晰，更容易定位和单独测试。
 type KnowPostService struct {
-	db           *sqlx.DB
-	repo         *KnowPostRepository
-	idGen        *SnowflakeIdGenerator
-	redis        *redis.Client
-	l1Cache      *freecache.Cache
-	hotKey       *cache.HotKeyDetector
-	ossCfg       *config.OssConfig
-	counter      CounterClient
-	feedCache    FeedCacheInvalidator
-	singleFlight sync.Map // key -> *sync.Mutex，用于防止缓存击穿时的惊群效应
+	db        *sqlx.DB
+	repo      *KnowPostRepository
+	idGen     *SnowflakeIdGenerator
+	redis     *redis.Client
+	l1Cache   *freecache.Cache
+	hotKey    *cache.HotKeyDetector
+	ossCfg    *config.OssConfig
+	counter   CounterClient
+	feedCache FeedCacheInvalidator
 }
 
 const (

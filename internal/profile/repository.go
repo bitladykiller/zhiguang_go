@@ -10,21 +10,16 @@ import (
 
 // Repository 封装资料领域的数据访问逻辑。
 type Repository struct {
-	db *sqlx.DB
+	db sqlx.ExtContext
 }
 
 // NewProfileRepository 创建资料数据访问仓库。
-//
-// 参数:
-//   - db: MySQL 数据库连接（sqlx 扩展），用于执行用户表的查询和更新
-//
-// 返回值:
-//   - *Repository: 数据访问仓库实例
-//
-// 说明:
-//   Repository 层只做基础的 CRUD 操作，不包含业务逻辑。
-//   查询结果直接映射到 auth.User 结构体，该结构体的字段与 users 表列一一对应。
-func NewProfileRepository(db *sqlx.DB) *Repository {
+func NewProfileRepository(db sqlx.ExtContext) *Repository {
+	return &Repository{db: db}
+}
+
+// WithDB 克隆绑定到指定 sqlx 句柄的新仓储实例，用于事务上下文。
+func (r *Repository) WithDB(db sqlx.ExtContext) *Repository {
 	return &Repository{db: db}
 }
 
@@ -42,7 +37,7 @@ func NewProfileRepository(db *sqlx.DB) *Repository {
 //   - error: 用户不存在时返回 sql.ErrNoRows。
 func (r *Repository) FindByID(ctx context.Context, id uint64) (*auth.User, error) {
 	var user auth.User
-	if err := r.db.GetContext(ctx, &user, `
+	if err := sqlx.GetContext(ctx, r.db, &user, `
 SELECT id, phone, email, password_hash, nickname, avatar, bio, zg_id, gender, birthday, school, tags_json, created_at, updated_at
 FROM users
 WHERE id = ?

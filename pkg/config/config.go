@@ -220,15 +220,37 @@ type CacheItemConfig struct {
 }
 
 // HotKeyConfig 控制热点键识别与 TTL 延长行为。
+//
+// 设计说明：
+// HotKeyDetector 使用本地 map + Redis Hash 实现滑动窗口热点检测。
+// 本地 map 在每次缓存访问时计数（无 Redis IO），
+// 每 BucketSizeSeconds 秒 flush 到 Redis Hash 完成跨实例聚合。
+// Redis Hash 的 field 是 6 秒窗口编号，value 是窗口内访问次数。
+// 判断 hotkey 时，HGETALL 该哈希并累加最近 BucketCount 个窗口的值。
+//
+// 建议配置（6s 窗口 × 10 = 60s 滑动窗口）：
+//   BucketSizeSeconds: 6         # 每个窗口大小
+//   BucketCount: 10               # 窗口数量（总窗口 = 6s × 10 = 60s）
+//   FlushIntervalSeconds: 6       # flush 间隔，与 BucketSizeSeconds 一致
+//   StatTTLSeconds: 120           # Redis Hash 的 TTL（略大于窗口总时长）
+//   HotMarkTTLSeconds: 60         # hotkey:active 标记的 TTL
+//
+// 阈值说明（基于 60s 窗口的全局总访问次数）：
+//   LevelLow(50):   0.83 QPS 以上 → TTL +20s
+//   LevelMedium(200):  3.3 QPS 以上 → TTL +60s
+//   LevelHigh(500):   8.3 QPS 以上 → TTL +120s
 type HotKeyConfig struct {
-	WindowSeconds       int `yaml:"window_seconds"`
-	SegmentSeconds      int `yaml:"segment_seconds"`
-	LevelLow            int `yaml:"level_low"`
-	LevelMedium         int `yaml:"level_medium"`
-	LevelHigh           int `yaml:"level_high"`
-	ExtendLowSeconds    int `yaml:"extend_low_seconds"`
-	ExtendMediumSeconds int `yaml:"extend_medium_seconds"`
-	ExtendHighSeconds   int `yaml:"extend_high_seconds"`
+	BucketSizeSeconds    int `yaml:"bucket_size_seconds"`    // 每个时间窗口的秒数（建议 6）
+	BucketCount          int `yaml:"bucket_count"`           // 窗口数量（建议 10，总窗口 = 6×10=60s）
+	FlushIntervalSeconds int `yaml:"flush_interval_seconds"` // flush 到 Redis 的间隔（建议 6）
+	StatTTLSeconds       int `yaml:"stat_ttl_seconds"`       // Redis Hash 的 TTL（建议 120）
+	LevelLow             int `yaml:"level_low"`              // LOW 热度阈值
+	LevelMedium          int `yaml:"level_medium"`           // MEDIUM 热度阈值
+	LevelHigh            int `yaml:"level_high"`             // HIGH 热度阈值
+	ExtendLowSeconds     int `yaml:"extend_low_seconds"`     // LOW 等级 TTL 延长量（秒）
+	ExtendMediumSeconds  int `yaml:"extend_medium_seconds"`  // MEDIUM 等级 TTL 延长量（秒）
+	ExtendHighSeconds    int `yaml:"extend_high_seconds"`    // HIGH 等级 TTL 延长量（秒）
+	HotMarkTTLSeconds    int `yaml:"hot_mark_ttl_seconds"`   // hotkey:active 标记的 TTL（建议 60）
 }
 
 // LLMConfig 配置 AI 模型连接信息。

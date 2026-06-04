@@ -87,16 +87,3 @@ type KnowPostVisibilityPatchRequest struct {
 type KnowPostTopPatchRequest struct {
 	IsTop bool `json:"is_top"`
 }
-
-type DescriptionSuggestRequest struct {
-	Title   string `json:"title" binding:"required"`
-	Content string `json:"content" binding:"required"`
-}
-
-type DescriptionSuggestResponse struct {
-	Description string `json:"description"`
-}
-
-type RagQueryRequest struct {
-	Question string `json:"question" binding:"required"`
-}

@@ -21,10 +21,15 @@ const authUserSelectColumns = `
 //   - 更新密码
 //   - 记录登录审计日志
 type AuthRepository struct {
-	db *sqlx.DB
+	db sqlx.ExtContext
 }
 
-func NewAuthRepository(db *sqlx.DB) *AuthRepository {
+func NewAuthRepository(db sqlx.ExtContext) *AuthRepository {
+	return &AuthRepository{db: db}
+}
+
+// WithDB 克隆绑定到指定 sqlx 句柄的新仓储实例，用于事务上下文。
+func (r *AuthRepository) WithDB(db sqlx.ExtContext) *AuthRepository {
 	return &AuthRepository{db: db}
 }
 
@@ -54,7 +59,7 @@ func NewAuthRepository(db *sqlx.DB) *AuthRepository {
 //   - 因唯一约束（如 phone/email 重复）导致的插入失败由数据库返回错误，透传给调用方处理
 //   - user 结构体中未赋值的字段会插入 NULL 或默认值（取决于表定义）
 func (r *AuthRepository) CreateUser(ctx context.Context, user *User) error {
-	result, err := r.db.NamedExecContext(ctx, `
+	result, err := sqlx.NamedExecContext(ctx, r.db, `
 INSERT INTO users (
     phone, email, password_hash, nickname, avatar, bio, zg_id, gender, birthday, school, tags_json
 ) VALUES (
@@ -96,7 +101,7 @@ INSERT INTO users (
 //   - 如果 SELECT 返回多行（逻辑上不应发生，因为 id 是主键），GetContext 只扫描第一行
 func (r *AuthRepository) FindUserByID(ctx context.Context, id uint64) (*User, error) {
 	var user User
-	if err := r.db.GetContext(ctx, &user, authUserSelectColumns+" WHERE id = ?", id); err != nil {
+	if err := sqlx.GetContext(ctx, r.db, &user, authUserSelectColumns+" WHERE id = ?", id); err != nil {
 		return nil, err
 	}
 	return &user, nil
@@ -125,9 +130,9 @@ func (r *AuthRepository) FindUserByIdentifier(ctx context.Context, idType Identi
 	var err error
 	switch idType {
 	case IdentifierPhone:
-		err = r.db.GetContext(ctx, &user, authUserSelectColumns+" WHERE phone = ? LIMIT 1", identifier)
+		err = sqlx.GetContext(ctx, r.db, &user, authUserSelectColumns+" WHERE phone = ? LIMIT 1", identifier)
 	case IdentifierEmail:
-		err = r.db.GetContext(ctx, &user, authUserSelectColumns+" WHERE email = ? LIMIT 1", identifier)
+		err = sqlx.GetContext(ctx, r.db, &user, authUserSelectColumns+" WHERE email = ? LIMIT 1", identifier)
 	default:
 		return nil, sql.ErrNoRows
 	}
@@ -158,9 +163,9 @@ func (r *AuthRepository) IdentifierExists(ctx context.Context, idType Identifier
 	var err error
 	switch idType {
 	case IdentifierPhone:
-		err = r.db.GetContext(ctx, &count, "SELECT COUNT(1) FROM users WHERE phone = ?", identifier)
+		err = sqlx.GetContext(ctx, r.db, &count, "SELECT COUNT(1) FROM users WHERE phone = ?", identifier)
 	case IdentifierEmail:
-		err = r.db.GetContext(ctx, &count, "SELECT COUNT(1) FROM users WHERE email = ?", identifier)
+		err = sqlx.GetContext(ctx, r.db, &count, "SELECT COUNT(1) FROM users WHERE email = ?", identifier)
 	default:
 		return false
 	}
@@ -213,7 +218,7 @@ func (r *AuthRepository) UpdatePassword(ctx context.Context, id uint64, password
 // 边界情况:
 //   - 数据库异常时静默忽略 error（_ 丢弃），不影响调用方的登录流程
 func (r *AuthRepository) RecordLoginLog(ctx context.Context, log *LoginLog) {
-	_, _ = r.db.NamedExecContext(ctx, `
+	_, _ = sqlx.NamedExecContext(ctx, r.db, `
 INSERT INTO login_logs (user_id, identifier, channel, ip, user_agent, status)
 VALUES (:user_id, :identifier, :channel, :ip, :user_agent, :status)
 `, log)

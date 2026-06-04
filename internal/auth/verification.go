@@ -24,6 +24,60 @@ const (
 	prefixDaily    = "vc:daily:"
 	prefixAttempts = "vc:attempts:"
 )
+// incrAndExpireScript 原子递增键值并在首次递增时设置过期时间。
+//
+// 解决 INCR + 条件 EXPIRE 的竞态条件：
+//   两个并发请求都 INCR 后看到 val > 1，都跳过 EXPIRE，导致键永不过期。
+//   Lua 脚本在 Redis 中原子执行，保证 INCR 和 EXPIRE 不可分割。
+//
+// KEYS[1]：目标键
+// ARGV[1]：过期时间（秒）
+//
+// 返回值：递增后的值
+var incrAndExpireScript = redis.NewScript(`
+local val = redis.call('INCR', KEYS[1])
+if val == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return val
+`)
+
+// verifyAndCountScript 原子检查尝试次数 + 递增 + 获取验证码。
+//
+// 解决 Verify 函数中的 TOCTOU 竞态条件：
+//   原实现先 GET 尝试次数再条件 INCR，两个并发请求可以同时通过上限检查。
+//   Lua 脚本将检查和递增合为原子操作，杜绝并发绕过。
+//
+// KEYS[1]：尝试次数键（vc:attempts:{scene}:{identifier}）
+// KEYS[2]：验证码键（vc:code:{scene}:{identifier}）
+// ARGV[1]：最大尝试次数
+// ARGV[2]：尝试次数键过期时间（秒）
+//
+// 返回值：
+//   [1] 尝试次数（递增后），-1 表示已超限
+//   [2] 验证码字符串，空字符串表示不存在
+var verifyAndCountScript = redis.NewScript(`
+local attemptKey = KEYS[1]
+local codeKey = KEYS[2]
+local maxAttempts = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+
+local attempts = tonumber(redis.call('GET', attemptKey) or '0')
+if attempts >= maxAttempts then
+    return {-1, ''}
+end
+
+local val = redis.call('INCR', attemptKey)
+if val == 1 then
+    redis.call('EXPIRE', attemptKey, ttl)
+end
+
+local code = redis.call('GET', codeKey)
+if code then
+    return {val, code}
+end
+return {val, ''}
+`)
 
 // VerificationService 负责管理验证码的完整生命周期。
 //
@@ -98,15 +152,18 @@ func (s *VerificationService) SendCode(scene VerificationScene, identifier strin
 	// 生成验证码
 	code := generateCode(s.config.CodeLength)
 
-	// 通过 pipeline 原子写入 Redis
+	// 通过 pipeline 批量写入 Redis（验证码 + 间隔锁 + 日计数原子递增）
 	codeKey := fmt.Sprintf("%s%s:%s", prefixCode, scene, identifier)
 	pipe := s.redis.Pipeline()
 	pipe.Set(ctx, codeKey, code, s.config.TTL)
 	pipe.Set(ctx, intervalKey, "1", s.config.SendInterval)
-	pipe.Incr(ctx, dailyKey)
-	pipe.Expire(ctx, dailyKey, 24*time.Hour)
 
 	if _, err = pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+
+	// 日计数使用 Lua 脚本原子递增 + 首次设置过期，避免 INCR + EXPIRE 竞态
+	if _, err = incrAndExpireScript.Run(ctx, s.redis, []string{dailyKey}, int(24*time.Hour/time.Second)).Result(); err != nil {
 		return nil, err
 	}
 
@@ -122,12 +179,15 @@ func (s *VerificationService) SendCode(scene VerificationScene, identifier strin
 
 // Verify 校验用户输入的验证码是否与 Redis 中保存的一致。
 //
-// 执行流程:
-//  1. 检查尝试次数是否已达上限（config.MaxAttempts），已超限则直接返回 StatusTooManyAttempts
-//  2. 增加尝试计数（fail-close 策略：即使后续校验失败也记录本次尝试，防止绕过计数）
-//  3. 从 Redis 读取已保存的正确验证码
-//  4. 比对用户输入与存储值
-//  5. 校验成功后删除验证码和尝试次数（一次性使用，用完即焚）
+// 执行流程（全部在 Lua 脚本中原子完成）:
+//  1. 原子检查尝试次数是否达上限 + 递增尝试次数 + 获取验证码
+//  2. 比对用户输入与存储值
+//  3. 校验成功后删除验证码和尝试次数（一次性使用，用完即焚）
+//
+// 原子化原因：
+//   原实现先 GET 尝试次数再条件 INCR，存在 TOCTOU 竞态条件——
+//   两个并发请求可同时通过上限检查，导致暴力枚举超过最大尝试次数。
+//   使用 Lua 脚本将检查、递增和 EXPIRE 合为原子操作，杜绝并发绕过。
 //
 // 参数:
 //   - scene: 验证码场景
@@ -150,30 +210,29 @@ func (s *VerificationService) Verify(scene VerificationScene, identifier, code s
 	attemptKey := fmt.Sprintf("%s%s:%s", prefixAttempts, scene, identifier)
 	codeKey := fmt.Sprintf("%s%s:%s", prefixCode, scene, identifier)
 
-	// 检查尝试次数限制
-	attempts, err := s.redis.Get(ctx, attemptKey).Int()
-	if err != nil && err != redis.Nil {
-		return fail(StatusNotFound)
-	}
-	if attempts >= s.config.MaxAttempts {
-		return fail(StatusTooManyAttempts)
-	}
+	// 原子操作：检查尝试次数 + 递增 + 获取验证码
+	result, err := verifyAndCountScript.Run(
+		ctx, s.redis,
+		[]string{attemptKey, codeKey},
+		s.config.MaxAttempts, int(s.config.TTL.Seconds()),
+	).StringSlice()
 
-	// 增加尝试次数。这里采用 fail-close 思路，即使后续校验失败也记录本次尝试。
-	s.redis.Incr(ctx, attemptKey)
-	s.redis.Expire(ctx, attemptKey, s.config.TTL)
-
-	// 读取已保存的验证码
-	storedCode, err := s.redis.Get(ctx, codeKey).Result()
-	if err == redis.Nil {
-		return fail(StatusNotFound)
-	}
 	if err != nil {
 		return fail(StatusNotFound)
 	}
 
+	// result[0] = 尝试次数（递增后），"-1" 表示已超限
+	if len(result) < 1 || result[0] == "-1" {
+		return fail(StatusTooManyAttempts)
+	}
+
+	// result[1] = 验证码，空字符串表示不存在或已过期
+	if len(result) < 2 || result[1] == "" {
+		return fail(StatusNotFound)
+	}
+
 	// 比较验证码
-	if storedCode != code {
+	if result[1] != code {
 		return fail(StatusMismatch)
 	}
 

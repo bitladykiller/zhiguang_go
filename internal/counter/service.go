@@ -89,6 +89,27 @@ redis.call('SET', cntKey, cnt)
 return 1
 `
 
+// RATE_LIMIT_LUA 原子递增限流计数器并设置过期时间。
+//
+// 解决 INCR + 条件 EXPIRE 的竞态条件：
+//   如果 INCR 和 EXPIRE 分开发送，两个并发请求都可能在 INCR 后看到 val > 1，
+//   从而都跳过 EXPIRE，导致限流键永不过期。
+//   Lua 脚本在 Redis 中原子执行，保证 INCR 和 EXPIRE 不可分割。
+//
+// KEYS[1]：限流键（rl:sds-rebuild:{entityType}:{entityID}）
+// ARGV[1]：过期时间（秒）
+//
+// 返回值：递增后的计数值
+const RATE_LIMIT_LUA = `
+local val = redis.call('INCR', KEYS[1])
+if val == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return val
+`
+
+var rateLimitScript = redis.NewScript(RATE_LIMIT_LUA)
+
 // CounterService 提供原子化的计数开关操作。
 //
 // 设计模式：
@@ -711,11 +732,12 @@ func (s *CounterService) resetBackoff(ctx context.Context, entityType, entityID 
 // allowedByRateLimiter 检查当前是否允许触发 SDS 重建（基于 Redis 的简单限流器）。
 //
 // 功能：
-//  1. 使用 Redis INCR 递增限流器计数。
-//  2. 如果这是该时间窗口内的第一次递增（val==1），设置 60 秒过期时间。
+//  1. 使用 Lua 脚本原子递增限流器计数。
+//  2. 如果这是该时间窗口内的第一次递增（val==1），原子设置 60 秒过期时间。
 //  3. 如果当前计数 <= 5（允许的每分钟最大重建次数），返回 true。
 //
 // 参数：
+//   - ctx:        context.Context
 //   - entityType: 实体类型
 //   - entityID:   实体 ID
 //
@@ -723,22 +745,18 @@ func (s *CounterService) resetBackoff(ctx context.Context, entityType, entityID 
 //   - bool: true=允许重建，false=已超过限流阈值
 //
 // 函数调用说明：
-//   - s.redis.Incr(ctx, key).Result():
-//     Redis INCR 命令将键的值原子递增 1，并返回递增后的值。
-//     如果键不存在，会自动创建并从 0 开始。
-//   - s.redis.Expire(ctx, key, duration):
-//     为键设置过期时间。结合 INCR 实现滑动窗口限流器：
-//     第一次 INCR 后设置过期，后续 INCR 会继续累加，
-//     过期后自动归零，从而实现"每分钟最多 N 次"的限流语义。
+//   - rateLimitScript.Run(ctx, redis, []string{key}, 60):
+//     执行 RATE_LIMIT_LUA 脚本，原子执行 INCR + 条件 EXPIRE。
+//     当 val == 1（第一次请求）时自动设置 60 秒过期时间。
+//     后续请求只递增计数，不再重复设置过期时间。
 //
 // 边界情况：
-//   - val == 1 时设置过期时间，后续请求不需要重复设置
-//   - INCR 或 Expire 失败时静默忽略错误（val 为 0，视为允许）
+//   - Lua 脚本执行失败时返回 0，视为允许（降级策略：宁可多重建也不拒绝）
 func (s *CounterService) allowedByRateLimiter(ctx context.Context, entityType, entityID string) bool {
 	key := s.rateLimiterKey(entityType, entityID)
-	val, _ := s.redis.Incr(ctx, key).Result()
-	if val == 1 {
-		s.redis.Expire(ctx, key, 60*time.Second)
+	val, err := rateLimitScript.Run(ctx, s.redis, []string{key}, 60).Int()
+	if err != nil {
+		return true
 	}
 	return val <= 5
 }
