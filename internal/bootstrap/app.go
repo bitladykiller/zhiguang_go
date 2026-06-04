@@ -58,6 +58,7 @@ import (
 //  7. 创建关系服务（关注/取关，事务内 outbox）
 //  8. 可选能力检查：ES 搜索、LLM DeepSeek、OSS 存储（配置不完善时自动降级）
 //  9. 创建资料服务（用户资料查询与编辑）
+//
 // 10. 组装 Gin 路由和后台消费者（Canal Bridge、Outbox Consumer）
 //
 // WHY 使用手动装配而非 DI 框架：
@@ -117,6 +118,11 @@ func InitializeApp(configPath string) (*server.App, error) {
 
 	counterProducer := counter.NewCounterEventProducer(kafkaWriter)
 	counterSvc := counter.NewCounterService(redisClient, counterProducer)
+	counterAggConsumer := counter.NewAggregationConsumer(
+		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, cfg.Kafka.Topics.CounterEvents, cfg.Kafka.ConsumerGroup),
+		redisClient,
+		logger,
+	)
 	counterHandler := counter.NewCounterHandler(counterSvc)
 	kpSvc.SetCounterClient(counterSvc)
 	feedSvc.SetCounterClient(counterSvc)
@@ -178,6 +184,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 
 	router := server.NewRouter(handlerSet, logger, jwtSvc)
 	backgroundRunners := make([]server.BackgroundRunner, 0, 3)
+	backgroundRunners = append(backgroundRunners, counterAggConsumer)
 	if cfg.Canal.Enabled {
 		backgroundRunners = append(backgroundRunners, canalBridge, relationOutboxConsumer, searchOutboxConsumer)
 	} else {
@@ -198,8 +205,9 @@ func InitializeApp(configPath string) (*server.App, error) {
 //   - bool: 配置完整返回 true，否则返回 false
 //
 // 说明:
-//   此函数用于在 InitializeApp 中判断是否应该初始化搜索服务（ES）和 RAG 问答服务。
-//   仅检查 URIs[0] 和 IndexName 两个关键字段，skip 了用户名/密码等高级配置。
+//
+//	此函数用于在 InitializeApp 中判断是否应该初始化搜索服务（ES）和 RAG 问答服务。
+//	仅检查 URIs[0] 和 IndexName 两个关键字段，skip 了用户名/密码等高级配置。
 func hasElasticsearchConfig(cfg *config.Config) bool {
 	return len(cfg.Elasticsearch.URIs) > 0 && strings.TrimSpace(cfg.Elasticsearch.URIs[0]) != "" &&
 		strings.TrimSpace(cfg.Elasticsearch.IndexName) != ""
@@ -221,7 +229,8 @@ func hasElasticsearchConfig(cfg *config.Config) bool {
 //   - cfg.LLM.DeepSeek.Model: 模型名称（必填）
 //
 // 降级策略:
-//   任一必填字段缺失 → 返回 nil → SuggestDescription 接口返回 503
+//
+//	任一必填字段缺失 → 返回 nil → SuggestDescription 接口返回 503
 func buildDescriptionService(cfg *config.Config, logger *zap.Logger) *llm.KnowPostDescriptionService {
 	if strings.TrimSpace(cfg.LLM.DeepSeek.APIKey) == "" ||
 		strings.TrimSpace(cfg.LLM.DeepSeek.BaseURL) == "" ||
@@ -243,12 +252,14 @@ func buildDescriptionService(cfg *config.Config, logger *zap.Logger) *llm.KnowPo
 //   - *llm.RagQueryService: 非 nil 表示配置完整可用
 //
 // 配置检查顺序:
-//   1. ES 配置（URIs 和 IndexName）
-//   2. OpenAI embedding 配置（APIKey 和 BaseURL）
-//   3. DeepSeek chat 配置（APIKey、BaseURL、Model）
+//  1. ES 配置（URIs 和 IndexName）
+//  2. OpenAI embedding 配置（APIKey 和 BaseURL）
+//  3. DeepSeek chat 配置（APIKey、BaseURL、Model）
 //
 // 降级策略:
-//   任意一类配置缺失将返回 nil，并打印具体缺失原因的警告日志。
+//
+//	任意一类配置缺失将返回 nil，并打印具体缺失原因的警告日志。
+//
 // 调用方（RagQuery handler）在 svc 为 nil 时返回 503。
 func buildRagQueryService(cfg *config.Config, logger *zap.Logger) *llm.RagQueryService {
 	if !hasElasticsearchConfig(cfg) {
@@ -278,12 +289,13 @@ func buildRagQueryService(cfg *config.Config, logger *zap.Logger) *llm.RagQueryS
 //   - *storage.OssStorageService: 非 nil 表示配置完整且客户端创建成功
 //
 // 配置检查顺序:
-//   1. 检查 cfg.OSS.Endpoint、AccessKeyID、AccessKeySecret、Bucket 是否非空
-//   2. 如果配置完整，调用 storage.NewOssStorageService 创建客户端
-//   3. 如果客户端创建失败（如网络不通），打印 warn 日志并返回 nil
+//  1. 检查 cfg.OSS.Endpoint、AccessKeyID、AccessKeySecret、Bucket 是否非空
+//  2. 如果配置完整，调用 storage.NewOssStorageService 创建客户端
+//  3. 如果客户端创建失败（如网络不通），打印 warn 日志并返回 nil
 //
 // 降级策略:
-//   配置不完整或客户端创建失败 → 返回 nil → Presign 接口返回 503
+//
+//	配置不完整或客户端创建失败 → 返回 nil → Presign 接口返回 503
 func buildOssService(cfg *config.Config, logger *zap.Logger) *storage.OssStorageService {
 	if strings.TrimSpace(cfg.OSS.Endpoint) == "" ||
 		strings.TrimSpace(cfg.OSS.AccessKeyID) == "" ||

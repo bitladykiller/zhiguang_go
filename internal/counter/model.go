@@ -29,7 +29,7 @@ type CounterEvent struct {
 	EntityType string `json:"entity_type"`
 	EntityID   string `json:"entity_id"`
 	Metric     string `json:"metric"`
-	Index      int    `json:"index"`
+	Index      int    `json:"index"` // SDS schema index（IdxLike / IdxFav ...）
 	UserID     uint64 `json:"user_id"`
 	Delta      int    `json:"delta"` // +1 表示增加，-1 表示减少
 }

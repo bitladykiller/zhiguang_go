@@ -43,25 +43,22 @@ func parseEntries(entries []pbe.Entry) ([][]byte, error) {
 			continue
 		}
 
-		envelope := outbox.CanalEnvelope{
-			Table: entry.GetHeader().GetTableName(),
-			Type:  eventTypeName(eventType),
-			Data:  make([]outbox.CanalRow, 0, len(rowChange.GetRowDatas())),
-		}
-
 		for _, rowData := range rowChange.GetRowDatas() {
 			row := outbox.CanalRow{}
 			for _, col := range rowData.GetAfterColumns() {
 				assignColumn(&row, col)
 			}
-			envelope.Data = append(envelope.Data, row)
+			envelope := outbox.CanalEnvelope{
+				Table: entry.GetHeader().GetTableName(),
+				Type:  eventTypeName(eventType),
+				Data:  []outbox.CanalRow{row},
+			}
+			body, err := json.Marshal(envelope)
+			if err != nil {
+				return nil, err
+			}
+			payloads = append(payloads, body)
 		}
-
-		body, err := json.Marshal(envelope)
-		if err != nil {
-			return nil, err
-		}
-		payloads = append(payloads, body)
 	}
 
 	return payloads, nil
@@ -70,9 +67,10 @@ func parseEntries(entries []pbe.Entry) ([][]byte, error) {
 // assignColumn 将 Canal 协议中的 Column 值映射到业务 CanalRow 的对应字段。
 //
 // 功能：
-//   根据列名（小写比较）将 protobuf Column 对象的 Value 赋值到 CanalRow 结构体。
-//   只关注 outbox 表的必要列：id、aggregate_type、aggregate_id、type、payload。
-//   其他列会被忽略（不处理）。
+//
+//	根据列名（小写比较）将 protobuf Column 对象的 Value 赋值到 CanalRow 结构体。
+//	只关注 outbox 表的必要列：id、aggregate_type、aggregate_id、type、payload。
+//	其他列会被忽略（不处理）。
 //
 // 参数：
 //   - row: 目标 CanalRow 结构体指针
@@ -106,8 +104,9 @@ func assignColumn(row *outbox.CanalRow, col *pbe.Column) {
 // eventTypeName 将 protobuf 中的事件类型枚举转为字符串表示。
 //
 // 功能：
-//   将 Canal 协议中的 EventType 枚举（INSERT/UPDATE/DELETE 等）
-//   映射为 Go 字符串，用于 JSON 序列化中的 "type" 字段。
+//
+//	将 Canal 协议中的 EventType 枚举（INSERT/UPDATE/DELETE 等）
+//	映射为 Go 字符串，用于 JSON 序列化中的 "type" 字段。
 //
 // 参数：
 //   - eventType: protobuf 枚举值（pbe.EventType）
@@ -116,9 +115,10 @@ func assignColumn(row *outbox.CanalRow, col *pbe.Column) {
 //   - string: "INSERT"、"UPDATE" 或空字符串（非 INSERT/UPDATE 类型）
 //
 // 设计决策：
-//   只处理 INSERT 和 UPDATE 而不处理 DELETE，是因为 parseEntries
-//   入口已过滤了 DELETE 事件，因此此处永远不需要返回 "DELETE"。
-//   但 default 分支返回空字符串以防万一下游调用扩展了 eventType 处理。
+//
+//	只处理 INSERT 和 UPDATE 而不处理 DELETE，是因为 parseEntries
+//	入口已过滤了 DELETE 事件，因此此处永远不需要返回 "DELETE"。
+//	但 default 分支返回空字符串以防万一下游调用扩展了 eventType 处理。
 func eventTypeName(eventType pbe.EventType) string {
 	switch eventType {
 	case pbe.EventType_INSERT:

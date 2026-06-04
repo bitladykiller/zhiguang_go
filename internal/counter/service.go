@@ -101,7 +101,8 @@ return 1
 //     同时对同一个 SDS 执行重建操作。
 //
 // 数据流：
-//   toggle (Lua) → 修改位图 → 失效 SDS（触发按需重建） → 发送 Kafka 事件（异步）
+//
+//	toggle (Lua) → 修改位图 → 失效 SDS（触发按需重建） → 发送 Kafka 事件（异步）
 type CounterService struct {
 	redis    *redis.Client
 	producer *CounterEventProducer
@@ -219,7 +220,7 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 			EntityType: entityType,
 			EntityID:   entityID,
 			Metric:     metric,
-			Index:      int(chunk),
+			Index:      NameToIdx[metric],
 			UserID:     userID,
 			Delta:      delta,
 		}
@@ -316,8 +317,9 @@ func (s *CounterService) GetCounts(ctx context.Context, entityType, entityID str
 // IsLiked 判断指定用户是否已给该实体点赞。
 //
 // 功能：
-//  通过 Redis GETBIT 命令检查点赞位图中用户 ID 对应位置是否为 1。
-//  位图键格式：bm:like:{entityType}:{entityID}:{chunk}
+//
+//	通过 Redis GETBIT 命令检查点赞位图中用户 ID 对应位置是否为 1。
+//	位图键格式：bm:like:{entityType}:{entityID}:{chunk}
 //
 // 参数：
 //   - userID:     要查询的用户 ID
@@ -334,8 +336,9 @@ func (s *CounterService) GetCounts(ctx context.Context, entityType, entityID str
 //     offset 使用 int64 类型。
 //
 // 设计决策：
-//   这里直接读取位图而非 SDS，因为 SDS 是延迟重建的（仅在读取计数时触发）。
-//   IsLiked 只关心当前用户的单一状态，直接读位图更快且保证实时性。
+//
+//	这里直接读取位图而非 SDS，因为 SDS 是延迟重建的（仅在读取计数时触发）。
+//	IsLiked 只关心当前用户的单一状态，直接读位图更快且保证实时性。
 func (s *CounterService) IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error) {
 	chunk := ChunkOf(userID)
 	offset := BitOf(userID)
@@ -350,8 +353,9 @@ func (s *CounterService) IsLiked(ctx context.Context, userID uint64, entityType,
 // IsFaved 判断指定用户是否已收藏该实体。
 //
 // 功能：
-//  通过 Redis GETBIT 命令检查收藏位图中用户 ID 对应位置是否为 1。
-//  位图键格式：bm:fav:{entityType}:{entityID}:{chunk}
+//
+//	通过 Redis GETBIT 命令检查收藏位图中用户 ID 对应位置是否为 1。
+//	位图键格式：bm:fav:{entityType}:{entityID}:{chunk}
 //
 // 参数：
 //   - userID:     要查询的用户 ID
@@ -455,18 +459,20 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 // rebuildSds 从位图重建 SDS（序列数据结构）计数。
 //
 // 功能：
-//   SDS（Serial Data Structure）是通过 BITCOUNT 聚合位图数据生成的缓存计数。
-//   当 SDS 缺失、损坏或过期时调用此函数重建。
+//
+//	SDS（Serial Data Structure）是通过 BITCOUNT 聚合位图数据生成的缓存计数。
+//	当 SDS 缺失、损坏或过期时调用此函数重建。
 //
 // 重建流程（带退避 + 限流 + 分布式锁保护）：
-//   Step 1: 检查是否处于退避期（inBackoff），如果是则拒绝重建。
-//   Step 2: 检查是否超过限流水位（allowedByRateLimiter），否则提升退避等级并拒绝。
-//   Step 3: 通过 SETNX 获取分布式锁（10s TTL），防止多实例同时重建同一 SDS。
-//   Step 4: 遍历所有指标（like/fav/follower/following/posts），
-//           对每个指标调用 bitCountShards 汇总所有位图片段的 BITCOUNT 值。
-//   Step 5: 将汇总结果以固定长度（4 字节/字段）写入 SDS 字节数组。
-//   Step 6: 将 SDS 写回 Redis（SET 命令，不过期）。
-//   Step 7: 清理聚合桶键（AggKey），释放锁并重置退避状态。
+//
+//	Step 1: 检查是否处于退避期（inBackoff），如果是则拒绝重建。
+//	Step 2: 检查是否超过限流水位（allowedByRateLimiter），否则提升退避等级并拒绝。
+//	Step 3: 通过 SETNX 获取分布式锁（10s TTL），防止多实例同时重建同一 SDS。
+//	Step 4: 遍历所有指标（like/fav/follower/following/posts），
+//	        对每个指标调用 bitCountShards 汇总所有位图片段的 BITCOUNT 值。
+//	Step 5: 将汇总结果以固定长度（4 字节/字段）写入 SDS 字节数组。
+//	Step 6: 将 SDS 写回 Redis（SET 命令，不过期）。
+//	Step 7: 清理聚合桶键（AggKey），释放锁并重置退避状态。
 //
 // 参数：
 //   - entityType: 实体类型
@@ -620,8 +626,9 @@ func (s *CounterService) rateLimiterKey(entityType, entityID string) string {
 // inBackoff 检查当前实体是否处于退避期。
 //
 // 功能：
-//   读取 Redis 中的退避截止时间戳（毫秒级 Unix 时间戳），
-//   如果当前时间小于截止时间，返回 true，表示应跳过重建。
+//
+//	读取 Redis 中的退避截止时间戳（毫秒级 Unix 时间戳），
+//	如果当前时间小于截止时间，返回 true，表示应跳过重建。
 //
 // 退避机制用于防止频繁失败的重建请求压垮 Redis。
 // 当重建因限流、锁抢占或其他错误失败时，会设置退避期。
@@ -634,8 +641,9 @@ func (s *CounterService) rateLimiterKey(entityType, entityID string) string {
 //   - bool: true=处于退避期，应跳过重建；false=不在退避期，可以重建
 //
 // 注意：
-//   如果 Redis 中不存在退避键（GET 返回 redis.Nil），
-//   .Int64() 会返回 0 和错误，此时视为不在退避期，返回 false。
+//
+//	如果 Redis 中不存在退避键（GET 返回 redis.Nil），
+//	.Int64() 会返回 0 和错误，此时视为不在退避期，返回 false。
 func (s *CounterService) inBackoff(ctx context.Context, entityType, entityID string) bool {
 	until, err := s.redis.Get(ctx, s.backoffKey(entityType, entityID)).Int64()
 	if err != nil {
@@ -683,11 +691,13 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 // resetBackoff 重置指定实体的退避状态。
 //
 // 功能：
-//   删除 Redis 中的退避截止键、退避指数键和限流器键，
-//   使该实体可以从零开始接受下一次重建。
+//
+//	删除 Redis 中的退避截止键、退避指数键和限流器键，
+//	使该实体可以从零开始接受下一次重建。
 //
 // 调用时机：
-//   当 SDS 成功重建后调用，清除之前的失败状态。
+//
+//	当 SDS 成功重建后调用，清除之前的失败状态。
 //
 // 参数：
 //   - entityType: 实体类型
@@ -736,7 +746,8 @@ func (s *CounterService) allowedByRateLimiter(ctx context.Context, entityType, e
 // emptyCounts 为请求的指标列表生成全零的计数值映射。
 //
 // 功能：
-//   创建一个 map，将每个指标名映射为 0。
+//
+//	创建一个 map，将每个指标名映射为 0。
 //
 // 参数：
 //   - metrics: 指标名称列表
@@ -745,7 +756,8 @@ func (s *CounterService) allowedByRateLimiter(ctx context.Context, entityType, e
 //   - map[string]int32: 各指标均为 0 的映射
 //
 // 使用场景：
-//   当 SDS 重建失败时，用全零结果替代，使调用方不至于崩溃。
+//
+//	当 SDS 重建失败时，用全零结果替代，使调用方不至于崩溃。
 func (s *CounterService) emptyCounts(metrics []string) map[string]int32 {
 	m := make(map[string]int32, len(metrics))
 	for _, k := range metrics {
@@ -761,8 +773,9 @@ func (s *CounterService) emptyCounts(metrics []string) map[string]int32 {
 // readInt32BE 从字节数组中按大端序读取 int32 值。
 //
 // 功能：
-//   从偏移量 offset 开始读取 4 字节，使用大端字节序解码为 int32。
-//   SDS 中每个计数值以 4 字节大端整数存储。
+//
+//	从偏移量 offset 开始读取 4 字节，使用大端字节序解码为 int32。
+//	SDS 中每个计数值以 4 字节大端整数存储。
 //
 // 参数：
 //   - b:      源字节数组
@@ -779,8 +792,9 @@ func (s *CounterService) emptyCounts(metrics []string) map[string]int32 {
 //     int32(...) 将无符号转为有符号（适用于计数场景）。
 //
 // 设计决策：
-//   使用大端序（网络字节序）是为了与 Java 实现保持兼容。
-//   Java 中的 DataOutputStream.writeInt() 默认使用大端序。
+//
+//	使用大端序（网络字节序）是为了与 Java 实现保持兼容。
+//	Java 中的 DataOutputStream.writeInt() 默认使用大端序。
 func readInt32BE(b []byte, offset int) int32 {
 	return int32(binary.BigEndian.Uint32(b[offset:]))
 }
@@ -788,8 +802,9 @@ func readInt32BE(b []byte, offset int) int32 {
 // writeInt32BE 将 int32 值按大端序写入字节数组的指定偏移位置。
 //
 // 功能：
-//   将 val 编码为 4 字节大端序，写入 b[offset:offset+4] 位置。
-//   用于在 SDS 字节数组中写入单个计数值。
+//
+//	将 val 编码为 4 字节大端序，写入 b[offset:offset+4] 位置。
+//	用于在 SDS 字节数组中写入单个计数值。
 //
 // 参数：
 //   - b:      目标字节数组
@@ -802,8 +817,9 @@ func readInt32BE(b []byte, offset int) int32 {
 //     需要将 int32 强转为 uint32。
 //
 // 注意：
-//   调用方需保证 b[offset:offset+4] 在数组范围内，否则 panic。
-//   writeInt32BE 始终写入刚好 4 字节。
+//
+//	调用方需保证 b[offset:offset+4] 在数组范围内，否则 panic。
+//	writeInt32BE 始终写入刚好 4 字节。
 func writeInt32BE(b []byte, offset int, val int32) {
 	binary.BigEndian.PutUint32(b[offset:], uint32(val))
 }
@@ -811,21 +827,24 @@ func writeInt32BE(b []byte, offset int, val int32) {
 // invalidateDerivedCounts 清除指定实体的衍生计数缓存，触发下次读取时重建。
 //
 // 功能：
-//   删除 SDS 缓存键和聚合桶键。
-//   这样下次读取 GetCounts 时会发现 SDS 缺失，进而触发 rebuildSds 重建。
+//
+//	删除 SDS 缓存键和聚合桶键。
+//	这样下次读取 GetCounts 时会发现 SDS 缺失，进而触发 rebuildSds 重建。
 //
 // 参数：
 //   - entityType: 实体类型
 //   - entityID:   实体 ID
 //
 // 调用时机：
-//   在 toggle 操作（Like/Unlike/Fav/Unfav）改变位图后立即调用。
-//   这样即使 Kafka 事件异步消费有延迟，后续读取计数时仍会从最新位图重建。
+//
+//	在 toggle 操作（Like/Unlike/Fav/Unfav）改变位图后立即调用。
+//	这样即使 Kafka 事件异步消费有延迟，后续读取计数时仍会从最新位图重建。
 //
 // 设计决策：
-//   位图（Bitmap）是权威数据源，SDS 和聚合桶都是可丢弃的衍生数据。
-//   当位图发生变化时，直接清除衍生数据，让下一次读取自然从位图重建，
-//   保证最终一致性。
+//
+//	位图（Bitmap）是权威数据源，SDS 和聚合桶都是可丢弃的衍生数据。
+//	当位图发生变化时，直接清除衍生数据，让下一次读取自然从位图重建，
+//	保证最终一致性。
 func (s *CounterService) invalidateDerivedCounts(ctx context.Context, entityType, entityID string) {
 	s.redis.Del(ctx, SdsKey(entityType, entityID))
 	s.redis.Del(ctx, AggKey(entityType, entityID))

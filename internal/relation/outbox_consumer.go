@@ -38,8 +38,9 @@ type OutboxConsumer struct {
 // 返回值：*OutboxConsumer，如果 reader 或 processor 为 nil 则返回 nil。
 //
 // 设计决策：
-//   当依赖缺失时返回 nil，由调用方（bootstrap）决定如何处理。
-//  consumer.Start() 在 nil receiver 时直接返回，不会 panic。
+//
+//	 当依赖缺失时返回 nil，由调用方（bootstrap）决定如何处理。
+//	consumer.Start() 在 nil receiver 时直接返回，不会 panic。
 func NewOutboxConsumer(reader *kafka.Reader, processor *EventProcessor, logger *zap.Logger) *OutboxConsumer {
 	if reader == nil || processor == nil {
 		return nil
@@ -130,6 +131,9 @@ func (c *OutboxConsumer) handleMessage(ctx context.Context, value []byte) error 
 
 	for _, row := range rows {
 		if row.Payload == "" {
+			continue
+		}
+		if row.AggregateType != "following" && row.Type != "FollowCreated" && row.Type != "FollowCanceled" {
 			continue
 		}
 

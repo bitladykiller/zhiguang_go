@@ -1,6 +1,10 @@
 package outbox
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 const (
 	outboxTableName = "outbox"
@@ -67,4 +71,47 @@ func ExtractRows(message []byte) ([]CanalRow, error) {
 		return []CanalRow{}, nil
 	}
 	return envelope.Data, nil
+}
+
+// MessageKey 为一条 outbox 行生成稳定的 Kafka 分区键。
+// WHY：同一聚合根的事件必须进入同一分区，才能在 consumer 侧保持处理顺序。
+func MessageKey(row CanalRow) string {
+	aggType := strings.TrimSpace(row.AggregateType)
+	aggID := strings.TrimSpace(row.AggregateID)
+
+	switch aggType {
+	case "knowpost":
+		if aggID != "" {
+			return "knowpost:" + aggID
+		}
+		var payload struct {
+			Entity string `json:"entity"`
+			ID     uint64 `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(row.Payload), &payload); err == nil && payload.Entity == "knowpost" && payload.ID != 0 {
+			return fmt.Sprintf("knowpost:%d", payload.ID)
+		}
+	case "following":
+		var evt struct {
+			FromUserID uint64 `json:"from_user_id"`
+			ToUserID   uint64 `json:"to_user_id"`
+		}
+		if err := json.Unmarshal([]byte(row.Payload), &evt); err == nil && evt.FromUserID != 0 && evt.ToUserID != 0 {
+			return fmt.Sprintf("following:%d:%d", evt.FromUserID, evt.ToUserID)
+		}
+		if aggID != "" {
+			return "following:" + aggID
+		}
+	}
+
+	if aggType != "" && aggID != "" {
+		return aggType + ":" + aggID
+	}
+	if aggType != "" && row.Type != "" {
+		return aggType + ":" + row.Type
+	}
+	if row.ID != "" {
+		return "outbox:" + row.ID
+	}
+	return row.Type
 }
