@@ -13,6 +13,7 @@
 - `knowpost` 变更会通过事务内 outbox + Canal/Kafka 消费链路投递到 Elasticsearch
 - `canal.enabled=true` 时，会切换为与 Java 版一致的 `Canal -> Kafka -> relation/search consumers` 链路
 - `canal.enabled=false` 时，不会启动异步 outbox 消费链路
+- Kafka 本地环境已调整为 3 broker；`counter-events` 与 `canal-outbox` 主题使用 3 副本并要求 `min.insync.replicas=2`
 - LLM/RAG、OSS 存储在配置不完整时会自动降级为 `503`，不会阻塞服务启动
 
 ## 技术栈
@@ -87,7 +88,7 @@ make dev-up
 
 - MySQL 8.0.30
 - Redis 7
-- Kafka + Zookeeper
+- Kafka(3 brokers) + Zookeeper
 - Elasticsearch 8.5.0
 
 ### 2. 初始化数据库
@@ -117,7 +118,7 @@ cp config/config-local.yaml.example config/config-local.yaml
 
 - MySQL: `localhost:3306`
 - Redis: `localhost:6379`
-- Kafka: `localhost:9092`
+- Kafka: `localhost:9092,9093,9094`
 - Elasticsearch: `localhost:9200`
 
 ### 5. 运行服务

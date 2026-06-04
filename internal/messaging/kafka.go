@@ -12,8 +12,20 @@
 package messaging
 
 import (
+	"time"
+
 	"github.com/segmentio/kafka-go"
+	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/pkg/config"
+)
+
+const (
+	counterWriterMaxAttempts = 3
+	counterBackoffMin        = 100 * time.Millisecond
+	counterBackoffMax        = 500 * time.Millisecond
+	outboxWriterMaxAttempts  = 10
+	outboxBackoffMin         = 200 * time.Millisecond
+	outboxBackoffMax         = 2 * time.Second
 )
 
 // NewKafkaWriter 创建一个 Kafka Writer，默认用于计数事件 topic。
@@ -24,12 +36,30 @@ func NewKafkaWriter(cfg *config.KafkaConfig) *kafka.Writer {
 
 // NewTopicWriter 为指定 topic 创建 Kafka Writer。
 func NewTopicWriter(cfg *config.KafkaConfig, topic string, async bool) *kafka.Writer {
-	return &kafka.Writer{
+	writer := &kafka.Writer{
 		Addr:     kafka.TCP(cfg.Brokers...),
 		Topic:    topic,
 		Balancer: &kafka.LeastBytes{},
 		Async:    async,
 	}
+
+	if topic == outbox.CanalOutboxTopic {
+		// outbox 事件是异步同步链路源头，显式要求 ISR 全确认并保留默认级别的重试能力。
+		writer.RequiredAcks = kafka.RequireAll
+		writer.MaxAttempts = outboxWriterMaxAttempts
+		writer.WriteBackoffMin = outboxBackoffMin
+		writer.WriteBackoffMax = outboxBackoffMax
+		writer.AllowAutoTopicCreation = false
+		return writer
+	}
+
+	// counter 事件允许低保证策略：异步发送、不等待副本确认、较小重试窗口。
+	writer.RequiredAcks = kafka.RequireNone
+	writer.MaxAttempts = counterWriterMaxAttempts
+	writer.WriteBackoffMin = counterBackoffMin
+	writer.WriteBackoffMax = counterBackoffMax
+	writer.AllowAutoTopicCreation = false
+	return writer
 }
 
 // NewKafkaReader 为给定 topic 创建 Kafka Reader。
