@@ -89,6 +89,8 @@ func InitializeApp(configPath string) (*server.App, error) {
 		if err != nil {
 			logger.Warn("Failed to initialize search service (ES may be unavailable)", zap.Error(err))
 			searchSvc = nil
+		} else {
+			searchSvc.SetCounterClient(counterSvc)
 		}
 	} else {
 		logger.Warn("Search service disabled: elasticsearch config is incomplete")

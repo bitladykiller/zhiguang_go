@@ -21,9 +21,12 @@ type searchIndexSourceRow struct {
 	TagID          *uint64    `db:"tag_id"`
 	Title          *string    `db:"title"`
 	Description    *string    `db:"description"`
+	ImgURLs        *string    `db:"img_urls"`
 	Tags           *string    `db:"tags"`
 	CreatorID      uint64     `db:"creator_id"`
+	AuthorAvatar   *string    `db:"author_avatar"`
 	AuthorNickname string     `db:"author_nickname"`
+	AuthorTagJSON  *string    `db:"author_tag_json"`
 	Status         string     `db:"status"`
 	Visible        string     `db:"visible"`
 	IsTop          bool       `db:"is_top"`
@@ -98,13 +101,16 @@ SELECT
     know_posts.tag_id,
     know_posts.title,
     know_posts.description,
+    know_posts.img_urls,
     know_posts.tags,
     know_posts.creator_id,
     know_posts.status,
     know_posts.visible,
     know_posts.is_top,
     know_posts.publish_time,
-    users.nickname AS author_nickname
+    users.avatar AS author_avatar,
+    users.nickname AS author_nickname,
+    users.tags_json AS author_tag_json
 FROM know_posts
 LEFT JOIN users ON know_posts.creator_id = users.id
 WHERE know_posts.id = ?
@@ -122,19 +128,25 @@ WHERE know_posts.id = ?
 	}
 
 	doc := &SearchIndexDoc{
-		ID:          strconv.FormatUint(row.ID, 10),
-		Title:       strings.TrimSpace(strValue(row.Title)),
-		Description: strings.TrimSpace(strValue(row.Description)),
-		TagID:       row.TagID,
-		Tags:        parseJSONTags(row.Tags),
-		AuthorID:    strconv.FormatUint(row.CreatorID, 10),
-		AuthorName:  row.AuthorNickname,
-		LikeCount:   int64(metrics["like"]),
-		FavCount:    int64(metrics["fav"]),
-		IsTop:       row.IsTop,
-		Status:      row.Status,
-		Visible:     row.Visible,
-		Suggest:     buildSuggestField(row.Title, row.Tags),
+		ID:            strconv.FormatUint(row.ID, 10),
+		Title:         strings.TrimSpace(strValue(row.Title)),
+		Description:   strings.TrimSpace(strValue(row.Description)),
+		Body:          strings.TrimSpace(strValue(row.Description)),
+		TagID:         row.TagID,
+		Tags:          parseJSONTags(row.Tags),
+		AuthorID:      strconv.FormatUint(row.CreatorID, 10),
+		AuthorAvatar:  row.AuthorAvatar,
+		AuthorName:    row.AuthorNickname,
+		AuthorTagJSON: row.AuthorTagJSON,
+		ImgURLs:       parseJSONTags(row.ImgURLs),
+		LikeCount:     int64(metrics["like"]),
+		FavCount:      int64(metrics["fav"]),
+		ViewCount:     0,
+		IsTop:         row.IsTop,
+		Status:        row.Status,
+		Visible:       row.Visible,
+		TitleSuggest:  strings.TrimSpace(strValue(row.Title)),
+		Suggest:       buildSuggestField(row.Title, row.Tags),
 	}
 	if row.PublishTime != nil {
 		value := row.PublishTime.UTC().Format(time.RFC3339)

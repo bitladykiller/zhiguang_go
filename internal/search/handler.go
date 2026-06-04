@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
 
@@ -24,7 +25,7 @@ func (h *SearchHandler) RegisterRoutes(r *gin.RouterGroup) {
 	}
 }
 
-// Search 处理 `GET /search?q=xxx&tag_id=1&page=1&size=20`。
+// Search 处理 `GET /search?q=xxx&size=20&tags=go,redis&after=xxx`。
 func (h *SearchHandler) Search(c *gin.Context) {
 	if h.svc == nil {
 		response.Fail(c, 503, "search service is unavailable")
@@ -37,17 +38,16 @@ func (h *SearchHandler) Search(c *gin.Context) {
 		return
 	}
 
-	var tagID *uint64
-	if tagStr := c.Query("tag_id"); tagStr != "" {
-		if v, err := strconv.ParseUint(tagStr, 10, 64); err == nil {
-			tagID = &v
-		}
+	var currentUserID *uint64
+	if userID, ok := middleware.GetUserID(c); ok {
+		currentUserID = &userID
 	}
 
-	page := queryInt(c, "page", 1)
+	tags := c.Query("tags")
+	after := c.Query("after")
 	size := queryInt(c, "size", 20)
 
-	result, err := h.svc.Search(c.Request.Context(), keyword, tagID, page, size)
+	result, err := h.svc.Search(c.Request.Context(), keyword, size, tags, after, currentUserID)
 	if err != nil {
 		response.Fail(c, 500, err.Error())
 		return
@@ -70,7 +70,7 @@ func (h *SearchHandler) Suggest(c *gin.Context) {
 		response.Fail(c, 500, err.Error())
 		return
 	}
-	response.Success(c, gin.H{"suggestions": suggestions})
+	response.Success(c, gin.H{"items": suggestions})
 }
 
 func queryInt(c *gin.Context, key string, def int) int {
