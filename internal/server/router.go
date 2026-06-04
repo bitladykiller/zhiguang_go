@@ -32,17 +32,45 @@ type RouteRegistrar interface {
 
 // NewRouter 创建带全局中间件和全部 API 路由的 Gin 引擎。
 //
+// 功能：
+//   创建 Gin 引擎实例，按顺序注册全局中间件，挂载健康检查端点，
+//   并遍历 HandlerSet 中的每个处理器，将非 nil 的处理器路由注册到 /api/v1 组下。
+//
+// 参数：
+//   - handlers: 汇总所有业务模块的 HTTP 处理器。每个处理器可能为 nil
+//     （由外部初始化时根据配置决定是否创建）。
+//   - logger:   zap 结构化日志器，用于 LoggerMiddleware
+//   - tokenValidator: JWT Token 校验器，用于 OptionalAuthMiddleware。可能为 nil。
+//
+// 返回值：
+//   - *gin.Engine: 配置完成的 Gin 引擎，可直接用于 Run()
+//
 // 全局中间件链（按执行顺序）：
-//  1. LoggerMiddleware：记录请求日志
-//  2. CorsMiddleware：处理跨域
-//  3. Recovery：捕获 panic 并返回 500
-//  4. OptionalAuthMiddleware：尝试解析 JWT，但不拒绝未登录的请求
+//  1. LoggerMiddleware：记录请求日志（zap 结构化）
+//  2. CorsMiddleware：处理跨域请求
+//  3. gin.Recovery：捕获 panic 并返回 500，防止服务崩溃
+//  4. OptionalAuthMiddleware：尝试解析 JWT Token，但不拒绝未登录的请求
 //
 // WHY 使用 OptionalAuthMiddleware 而非 AuthMiddleware：
-// 全局挂载可选鉴权中间件后，那些同时支持匿名访问和登录态增强的接口
-//（如公共 feed、知文详情、搜索）也能拿到当前用户的登录身份，
-// 可在响应中补充用户维度的状态（如是否已点赞）。
-// 而真正受保护的接口依然会在各自处理器内部显式做鉴权判断。
+//   全局挂载可选鉴权中间件后，那些同时支持匿名访问和登录态增强的接口
+//  （如公共 feed、知文详情、搜索）也能拿到当前用户的登录身份，
+//   可在响应中补充用户维度的状态（如是否已点赞）。
+//   而真正受保护的接口依然会在各自处理器内部显式做鉴权判断。
+//
+// 函数调用说明：
+//   - gin.New():
+//     创建纯 Gin 引擎（不含默认中间件 Logger 和 Recovery）。
+//     因为要用自定义的 LoggerMiddleware 和 CorsMiddleware。
+//   - r.Use(middleware):
+//     向 Gin 引擎注册全局中间件。中间件按注册顺序执行。
+//   - gin.Recovery():
+//     Gin 内置的 Recovery 中间件。从 panic 中恢复并返回 500 响应。
+//
+// 边界情况：
+//   - handlers 中的某个处理器为 nil → 跳过注册，该模块路由不可访问
+//     （不会 panic 或报错）
+//   - tokenValidator 为 nil → 不挂载 OptionalAuthMiddleware
+//     （所有接口均匿名访问）
 func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middleware.TokenValidator) *gin.Engine {
 	r := gin.New()
 

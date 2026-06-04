@@ -20,6 +20,28 @@ import (
 )
 
 // NewDB 根据传入的 DatabaseConfig 创建带连接池配置的 sqlx 数据库连接。
+//
+// 参数：
+//   - cfg: MySQL 连接配置（主机、端口、用户名、密码、库名、连接池大小等）
+//
+// 返回值：
+//   - *sqlx.DB: 数据库连接对象，包含已配置的连接池
+//   - error: 如果连接或 Ping 失败则返回错误
+//
+// 函数调用说明：
+//   - sqlx.Open("mysql", cfg.DSN()):
+//     sqlx 是 Go 的 SQL 扩展库。Open 不会立即建立连接，只创建一个连接池实例。
+//     第一个参数 "mysql" 是驱动名（需要 _ "github.com/go-sql-driver/mysql" 注册）。
+//     第二个参数是 DSN 数据源连接串，格式为 user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True
+//   - db.Ping():
+//     真正建立连接并验证数据库是否可达。如果连接失败，立刻关闭 db 句柄并返回错误。
+//   - db.SetMaxOpenConns() / SetMaxIdleConns():
+//     控制连接池大小。
+//     SetMaxOpenConns: 最大打开连接数（默认 0 表示不限制）
+//     SetMaxIdleConns: 最大空闲连接数（默认 2）
+//   - db.SetConnMaxLifetime():
+//     设置连接的最大存活时间。超过此时间后连接会被优雅关闭并替换为新连接。
+//     这是防止长时间运行的连接被 MySQL 服务端断开的重要措施。
 func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
 	db, err := sqlx.Open("mysql", cfg.DSN())
 	if err != nil {
@@ -38,6 +60,21 @@ func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
 }
 
 // NewRedisClient 根据给定 RedisConfig 创建 go-redis 客户端。
+//
+// 参数：
+//   - cfg: Redis 连接配置（主机、端口、密码、库编号、连接池大小）
+//
+// 返回值：
+//   - *redis.Client: 已配置的 Redis 客户端实例
+//
+// 函数调用说明：
+//   - redis.NewClient(&redis.Options{...}):
+//     go-redis 库的客户端构造函数。Options 中的主要字段：
+//     - Addr: Redis 地址（host:port 格式），由 cfg.Addr() 拼接
+//     - Password: 认证密码（无密码时为空字符串）
+//     - DB: 数据库编号（0-15），不同业务可以隔离到不同 db
+//     - PoolSize: 连接池大小，默认 10/CPU
+//     注意：NewClient 不会立即连接 Redis，而是在首次操作时懒加载建立连接。
 func NewRedisClient(cfg *config.RedisConfig) *redis.Client {
 	return redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr(),

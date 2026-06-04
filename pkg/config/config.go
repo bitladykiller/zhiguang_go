@@ -54,6 +54,20 @@ type DatabaseConfig struct {
 }
 
 // DSN 根据配置字段拼装 MySQL 的数据源连接串。
+//
+// 功能：
+//   将 DatabaseConfig 中的 Host、Port、User、Password、Name、Charset 等字段
+//   拼装为 MySQL DSN 格式的字符串。
+//
+// 返回值：
+//   - string: 格式为 "user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
+//
+// 注意：
+//   - 密码中包含特殊字符（如 @、: 等）可能造成连接串解析错误，
+//     但当前实现不做 URL 编码处理。
+//   - parseTime=True 告诉 MySQL 驱动程序将 DATE/DATETIME 类型自动解析为
+//     Go 的 time.Time 类型而非字符串。
+//   - loc=Local 使用本地时区解析时间。
 func (c *DatabaseConfig) DSN() string {
 	return c.User + ":" + c.Password + "@tcp(" + c.Host + ":" +
 		itoa(c.Port) + ")/" + c.Name + "?charset=" + c.Charset + "&parseTime=True&loc=Local"
@@ -68,7 +82,17 @@ type RedisConfig struct {
 	PoolSize int    `yaml:"pool_size"` // connection pool size
 }
 
-// Addr 返回 `host:port` 形式的 Redis 地址。
+// Addr 返回 host:port 形式的 Redis 地址。
+//
+// 功能：
+//   将 Host 和 Port 组合为标准 Redis 连接地址格式。
+//
+// 返回值：
+//   - string: 格式为 "host:port"
+//
+// 注意：
+//   如果 Host 是域名（如 "redis.example.com"），直接拼接；
+//   如果 Host 是空字符串，返回 ":port"（go-redis 会尝试连接本地）。
 func (c *RedisConfig) Addr() string {
 	return c.Host + ":" + itoa(c.Port)
 }
@@ -231,13 +255,30 @@ type OpenAIConfig struct {
 
 // LoadConfig 从指定路径读取 YAML 配置文件并解析为 Config 结构体。
 //
-// 调用流程：
-//  1. 使用 os.ReadFile 读取文件内容。
-//  2. 使用 yaml.Unmarshal 将 YAML 反序列化为 Config 结构体。
-//  3. 如果文件无法读取或 YAML 格式非法则返回错误。
+// 功能：
+//   Step 1: 使用 os.ReadFile 读取 YAML 文件的完整内容。
+//   Step 2: 使用 yaml.Unmarshal 将 YAML 字节数据反序列化为 Config 结构体。
+//   Step 3: 返回解析后的 Config 指针。
 //
-// 注意：此函数不会校验配置中的字段值是否合理（如端口是否在有效范围等），
-// 调用方应在构造连接时自行检查。
+// 参数：
+//   - path: YAML 配置文件的路径（如 "config/config-local.yaml"）
+//
+// 返回值：
+//   - *Config: 解析后的配置结构体
+//   - error: 文件读取失败或 YAML 格式非法时返回
+//
+// 函数调用说明：
+//   - os.ReadFile(path):
+//     Go 标准库函数，读取文件的完整内容为 []byte。
+//     在 Go 1.16 中引入，替代了旧的 ioutil.ReadFile。
+//   - yaml.Unmarshal(data, cfg):
+//     gopkg.in/yaml.v3 包的 YAML 反序列化函数。
+//     根据结构体上的 yaml tag 将 YAML 字段映射到结构体字段。
+//
+// 注意：
+//   此函数不会校验配置中的字段值是否合理（如端口是否在有效范围、超时值是否为正等），
+//   调用方应在构造连接时自行检查或使用默认值。
+//   也不会设置默认值（如 charset 默认 utf8mb4），需要调用方自行处理。
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -254,8 +295,30 @@ func LoadConfig(path string) (*Config, error) {
 
 // itoa 在不引入 strconv 的前提下把 int 转成字符串。
 //
-// WHY：在启动路径上减少一个标准库依赖能略微缩短编译时间。
-// 该函数仅在 DSN() 和 Addr() 中被调用，性能不敏感。
+// 功能：
+//   将整数 n 通过除 10 取余的方式逐位分解，然后拼接为字符串。
+//   支持负数和零。
+//
+// 参数：
+//   - n: 待转换的整数
+//
+// 返回值：
+//   - string: 整数的十进制字符串表示
+//
+// WHY 不使用 strconv.Itoa：
+//   官方说明是在启动路径上减少一个标准库依赖能略微缩短编译时间。
+//   该函数仅在 DSN() 和 Addr() 中被调用，性能不敏感，
+//   因此自实现的开销可以忽略。
+//
+// 边界情况：
+//   - n == 0 → 返回 "0"
+//   - n < 0 → 返回 "-" + 绝对值的字符串（如 -42 → "-42"）
+//   - n == math.MinInt → 取绝对值会溢出，但该函数仅在端口号上使用，
+//     端口号始终为正数，因此不会有负值极端情况。
+//
+// 实现说明：
+//   使用 [20]byte 固定长度数组作为缓冲区（最大 int64 十进制 19 位 + 负号），
+//   从尾部往前填充，最后切片转换为字符串。这比多次字符串拼接更高效。
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

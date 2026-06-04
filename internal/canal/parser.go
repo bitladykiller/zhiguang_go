@@ -67,6 +67,27 @@ func parseEntries(entries []pbe.Entry) ([][]byte, error) {
 	return payloads, nil
 }
 
+// assignColumn 将 Canal 协议中的 Column 值映射到业务 CanalRow 的对应字段。
+//
+// 功能：
+//   根据列名（小写比较）将 protobuf Column 对象的 Value 赋值到 CanalRow 结构体。
+//   只关注 outbox 表的必要列：id、aggregate_type、aggregate_id、type、payload。
+//   其他列会被忽略（不处理）。
+//
+// 参数：
+//   - row: 目标 CanalRow 结构体指针
+//   - col: Canal 协议中的 Column 对象，包含列名和值
+//
+// 函数调用说明：
+//   - col.GetName(): 获取 protobuf 中 Column 的 name 字段值（列名）
+//   - col.GetValue(): 获取 protobuf 中 Column 的 value 字段值（该行的列值）
+//   - strings.ToLower(name): 标准库字符串函数，将列名转为小写以不区分大小写比较
+//
+// 设计决策：
+//   - 只处理 AfterColumns（变更后的值），不处理 BeforeColumns。
+//   - 列名大小写不敏感，是因为 MySQL 的 lower_case_table_names 配置不同
+//     可能导致列名字段大小写不一致。
+//   - 未识别的列被静默忽略（不报错），因为 outbox 表可能新增非关键列。
 func assignColumn(row *outbox.CanalRow, col *pbe.Column) {
 	switch strings.ToLower(col.GetName()) {
 	case "id":
@@ -82,6 +103,22 @@ func assignColumn(row *outbox.CanalRow, col *pbe.Column) {
 	}
 }
 
+// eventTypeName 将 protobuf 中的事件类型枚举转为字符串表示。
+//
+// 功能：
+//   将 Canal 协议中的 EventType 枚举（INSERT/UPDATE/DELETE 等）
+//   映射为 Go 字符串，用于 JSON 序列化中的 "type" 字段。
+//
+// 参数：
+//   - eventType: protobuf 枚举值（pbe.EventType）
+//
+// 返回值：
+//   - string: "INSERT"、"UPDATE" 或空字符串（非 INSERT/UPDATE 类型）
+//
+// 设计决策：
+//   只处理 INSERT 和 UPDATE 而不处理 DELETE，是因为 parseEntries
+//   入口已过滤了 DELETE 事件，因此此处永远不需要返回 "DELETE"。
+//   但 default 分支返回空字符串以防万一下游调用扩展了 eventType 处理。
 func eventTypeName(eventType pbe.EventType) string {
 	switch eventType {
 	case pbe.EventType_INSERT:

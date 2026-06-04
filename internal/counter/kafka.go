@@ -21,10 +21,53 @@ type CounterEventProducer struct {
 	writer *kafka.Writer
 }
 
+// NewCounterEventProducer 创建计数事件 Kafka 生产者。
+//
+// 参数：
+//   - writer: *kafka.Writer 实例，由 messaging 包统一创建。
+//     通常是异步模式（Async=true）的 writer，以提升吞吐能力。
+//
+// 注意：
+//   如果传入 nil writer，Publish 方法会 panic，因此调用方应确保
+//   writer 在 CounterService 的整个生命周期内有效。
 func NewCounterEventProducer(writer *kafka.Writer) *CounterEventProducer {
 	return &CounterEventProducer{writer: writer}
 }
 
+// Publish 将计数变更事件序列化为 JSON 并写入 Kafka。
+//
+// 功能：
+//  1. 将 CounterEvent 结构体通过 json.Marshal 序列化为 JSON 字节。
+//  2. 使用 {entityType}:{entityID} 作为消息键（确保同实体的事件进入同一分区）。
+//  3. 通过 kafka-go Writer 的 WriteMessages 方法发送。
+//
+// 参数：
+//   - event: 包含实体类型、实体 ID、指标、用户 ID、增量的计数变更事件
+//
+// 返回值：
+//   - error: JSON 序列化失败或 Kafka 写入失败时返回
+//
+// 函数调用说明：
+//   - p.writer.WriteMessages(ctx, msgs...):
+//     kafka-go 库的 Writer.WriteMessages 方法将消息写入 Kafka 主题。
+//     可以一次传入多条消息做批量发送。
+//     在计数场景中，每条消息独立发送（fire-and-forget 模式）。
+//   - kafka.Message{Key, Value}:
+//     Key 用于分区路由：同一 Key 的消息进入同一分区，保证顺序消费。
+//     Value 是消息体，由业务消费端反序列化使用。
+//
+// 设计决策：
+//   - 使用 {entityType}:{entityID} 作为消息键：
+//     保证同一实体的所有计数变更消息按顺序进入同一分区，
+//     下游消费者可以按顺序处理 Like/Unlike 事件，避免乱序导致计数偏差。
+//   - 消息体使用 JSON 序列化：
+//     与 Java 版本的序列化格式保持一致，方便跨语言消费。
+//
+// 边界情况：
+//   - event 中的 EntityID 或 EntityType 为空时，消息仍然会发送
+//     （kafka-go 不会校验内容）
+//   - Kafka broker 不可用时，WriteMessages 会返回连接错误，
+//     但调用方（toggle 中的 goroutine）会静默忽略该错误（fire-and-forget）
 func (p *CounterEventProducer) Publish(event *CounterEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {

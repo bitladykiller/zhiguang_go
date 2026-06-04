@@ -29,11 +29,34 @@ type KnowPostDescriptionService struct {
 	cfg *config.LLMConfig
 }
 
+// NewKnowPostDescriptionService 创建 AI 摘要生成服务。
+//
+// 参数：
+//   - cfg: LLM 配置（包含 DeepSeek 的 APIKey、BaseURL、Model、Temperature）
 func NewKnowPostDescriptionService(cfg *config.LLMConfig) *KnowPostDescriptionService {
 	return &KnowPostDescriptionService{cfg: cfg}
 }
 
-// SuggestDescription 调用 DeepSeek API，并返回不超过 50 字的摘要描述。
+// SuggestDescription 调用 DeepSeek Chat API 为知文生成不超过 50 字的中文摘要。
+//
+// 参数：
+//   - title: 知文标题
+//   - content: 知文正文（超过 2000 字会被自动截断）
+//
+// 返回值：
+//   - string: AI 生成的摘要文本
+//   - error: 如果 DeepSeek API 调用失败、响应解析失败或返回空结果则返回错误
+//
+// 函数调用说明：
+//   - http.Post(url, contentType, body):
+//     Go 标准库的 HTTP POST 请求。需要设置 30 秒超时防止 API 阻塞。
+//   - json.Marshal(reqBody):
+//     构造请求体。messages 数组包含 system prompt 和 user prompt 两个消息。
+//   - io.ReadAll(resp.Body):
+//     读取完整的 API 响应体后解析。大响应场景下应使用流式解析。
+//   - json.Unmarshal(body, &result):
+//     解析 DeepSeek 兼容的 OpenAI 格式响应。
+//     标准格式：{"choices": [{"message": {"content": "..."}}]}
 func (s *KnowPostDescriptionService) SuggestDescription(title, content string) (string, error) {
 	// 截断正文，避免超过模型 token 限制
 	if len(content) > 2000 {
@@ -113,17 +136,32 @@ type RagQueryService struct {
 	esURL  string
 }
 
+// NewRagQueryService 创建 RAG 问答服务。
+//
+// 参数：
+//   - llmCfg: LLM 配置（含 DeepSeek chat 模型和 OpenAI embedding 模型）
+//   - esURL: Elasticsearch 集群地址
 func NewRagQueryService(llmCfg *config.LLMConfig, esURL string) *RagQueryService {
 	return &RagQueryService{llmCfg: llmCfg, esURL: esURL}
 }
 
 // Query 执行基于 RAG 的问答，并把输出 token 流式写入目标 channel。
-// 理论流程如下：
-//  1. 通过 OpenAI 兼容接口为问题生成 embedding
-//  2. 在 ES 中检索 top-K 相似文本片段（余弦相似度）
-//  3. 用检索到的上下文拼装提示词
-//  4. 调用 DeepSeek API，开启 stream=true
-//  5. 按 SSE 格式把 token 持续写入 streamChan
+//
+// 完整流程（当前为占位实现，待向量检索链路就绪后启用）：
+//  1. 使用 OpenAI 兼容接口为问题生成 embedding。
+//  2. 在 ES 中检索 top-K 相似文本片段（余弦相似度）。
+//  3. 用检索到的上下文拼装 prompt。
+//  4. 调用 DeepSeek API 开启 stream=true 做流式生成。
+//  5. 将 token 逐段按 SSE 格式写入 streamChan。
+//
+// 当前实现：
+//   返回一条占位消息，用于验证 SSE 链路是否正常。
+//   客户端可通过检查消息内容判断服务端是否真正就绪。
+//
+// 参数：
+//   - postID: 知文 ID（用于筛选检索范围）
+//   - question: 用户提出的问题
+//   - streamChan: 用于写入 SSE 格式 token 的 channel（函数会在完成后 close）
 func (s *RagQueryService) Query(postID uint64, question string, streamChan chan<- string) error {
 	defer close(streamChan)
 
