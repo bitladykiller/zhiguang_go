@@ -23,6 +23,8 @@ redis:
 kafka:
   brokers:
     - localhost:9092
+    - localhost:9093
+    - localhost:9094
   consumer_group: counter-agg
   topics:
     counter_events: counter-events
