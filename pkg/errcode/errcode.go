@@ -73,9 +73,6 @@ const (
 	// ErrCodeVerificationTooManyAttempts 表示验证码尝试次数超过最大限制。
 	// 映射到 HTTP 429（Too Many Requests）。
 	ErrCodeVerificationTooManyAttempts ErrorCode = 42901
-	// ErrCodePasswordPolicyViolation 表示密码不满足强度要求（长度、字符类型等）。
-	// 映射到 HTTP 400（Bad Request）。
-	ErrCodePasswordPolicyViolation ErrorCode = 40003
 
 	// --- 5xx 服务端错误 ---
 
@@ -129,24 +126,6 @@ func (e *AppError) WithMsg(msg string) *AppError {
 	return &AppError{Code: e.Code, Message: msg}
 }
 
-// NewAppError 根据给定错误码和错误信息创建新的 AppError 实例。
-//
-// 功能：直接构造一个 AppError，适合辅助函数中需要动态生成错误码的场景。
-//
-// 与 WithMsg 的区别：
-//   WithMsg 基于已有的预定义错误实例创建一个副本，错误码不变。
-//   NewAppError 需要显式指定错误码，适合完全自定义错误信息的场景。
-//
-// 参数：
-//   - code: ErrorCode，业务错误码（如 400、404、50001 等）。
-//   - msg: string，可读的错误描述信息。
-//
-// 返回值：
-//   - *AppError: 新创建的 AppError 实例。
-func NewAppError(code ErrorCode, msg string) *AppError {
-	return &AppError{Code: code, Message: msg}
-}
-
 // --- 预定义错误实例 ---
 // 这些是常见错误场景下可直接复用的单例。
 // 如需补充单次请求上下文，请使用 .WithMsg()，不要直接修改原对象。
@@ -157,7 +136,6 @@ var (
 	ErrForbidden       = &AppError{Code: CodeForbidden, Message: "forbidden"}
 	ErrNotFound        = &AppError{Code: CodeNotFound, Message: "not found"}
 	ErrInternal        = &AppError{Code: CodeInternalError, Message: "internal server error"}
-	ErrTooManyRequests = &AppError{Code: CodeTooManyRequests, Message: "too many requests"}
 
 	ErrIdentifierExists            = &AppError{Code: ErrCodeIdentifierExists, Message: "identifier already exists"}
 	ErrIdentifierNotFound          = &AppError{Code: ErrCodeIdentifierNotFound, Message: "identifier not found"}
@@ -167,5 +145,4 @@ var (
 	ErrVerificationNotFound        = &AppError{Code: ErrCodeVerificationNotFound, Message: "verification code not found"}
 	ErrVerificationMismatch        = &AppError{Code: ErrCodeVerificationMismatch, Message: "verification code mismatch"}
 	ErrVerificationTooManyAttempts = &AppError{Code: ErrCodeVerificationTooManyAttempts, Message: "too many verification attempts"}
-	ErrPasswordPolicyViolation     = &AppError{Code: ErrCodePasswordPolicyViolation, Message: "password policy violation"}
 )
