@@ -198,7 +198,7 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 		}
 
 		offset := (page - 1) * size
-		rows, err := s.repo.ListFeedPublic(size+1, offset)
+		rows, err := s.repo.ListFeedPublic(ctx, size+1, offset)
 		if err != nil {
 			return nil, err
 		}
@@ -284,7 +284,7 @@ func (s *KnowPostFeedService) GetMyPublished(userID uint64, page, size int) (*Fe
 
 	// 查询数据库
 	offset := (safePage - 1) * safeSize
-	rows, err := s.repo.ListMyPublished(userID, safeSize+1, offset)
+	rows, err := s.repo.ListMyPublished(ctx, userID, safeSize+1, offset)
 	if err != nil {
 		return nil, err
 	}

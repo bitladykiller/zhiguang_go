@@ -150,18 +150,18 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 		}
 	}()
 
-	if err := txRepo.UpsertFollowing(id, fromUserID, toUserID, 1); err != nil {
+	if err := txRepo.UpsertFollowing(ctx, id, fromUserID, toUserID, 1); err != nil {
 		_ = tx.Rollback()
 		return false, err
 	}
-	if err := txRepo.UpsertFollower(reverseID, toUserID, fromUserID, 1); err != nil {
+	if err := txRepo.UpsertFollower(ctx, reverseID, toUserID, fromUserID, 1); err != nil {
 		_ = tx.Rollback()
 		return false, err
 	}
 
 	event := RelationEvent{EventType: "FollowCreated", FromUserID: fromUserID, ToUserID: toUserID, RelationID: &id}
 	payload, _ := json.Marshal(event)
-	if err := txRepo.InsertOutbox(NextID(), "following", &id, "FollowCreated", string(payload)); err != nil {
+	if err := txRepo.InsertOutbox(ctx, NextID(), "following", &id, "FollowCreated", string(payload)); err != nil {
 		_ = tx.Rollback()
 		return false, err
 	}
@@ -180,8 +180,9 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 // 功能：将 following 表与 follower 表中的对应关系标记为取消（rel_status = 0）。
 //
 // 历史兼容处理：
-//   如果 follower 表中没有对应的反向记录（旧版本数据只写了 following 表），
-//   则忽略该错误，只以 following 表为准。这解决了早期版本写操作不完整的兼容问题。
+//
+//	如果 follower 表中没有对应的反向记录（旧版本数据只写了 following 表），
+//	则忽略该错误，只以 following 表为准。这解决了早期版本写操作不完整的兼容问题。
 //
 // 参数：
 //   - ctx: context.Context。
@@ -198,12 +199,12 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 	}
 	txRepo := s.repo.WithDB(tx)
 
-	affected, err := txRepo.CancelFollowing(fromUserID, toUserID)
+	affected, err := txRepo.CancelFollowing(ctx, fromUserID, toUserID)
 	if err != nil || affected == 0 {
 		_ = tx.Rollback()
 		return false, err
 	}
-	reverseAffected, err := txRepo.CancelFollower(toUserID, fromUserID)
+	reverseAffected, err := txRepo.CancelFollower(ctx, toUserID, fromUserID)
 	if err != nil {
 		_ = tx.Rollback()
 		return false, err
@@ -216,7 +217,7 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 
 	event := RelationEvent{EventType: "FollowCanceled", FromUserID: fromUserID, ToUserID: toUserID}
 	payload, _ := json.Marshal(event)
-	if err := txRepo.InsertOutbox(NextID(), "following", nil, "FollowCanceled", string(payload)); err != nil {
+	if err := txRepo.InsertOutbox(ctx, NextID(), "following", nil, "FollowCanceled", string(payload)); err != nil {
 		_ = tx.Rollback()
 		return false, err
 	}
@@ -243,7 +244,8 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 //   - bool: true 表示已关注，false 表示未关注。
 //   - error: 数据库查询错误。
 func (s *RelationService) IsFollowing(fromUserID, toUserID uint64) (bool, error) {
-	cnt, err := s.repo.ExistsFollowing(fromUserID, toUserID)
+	ctx := context.Background()
+	cnt, err := s.repo.ExistsFollowing(ctx, fromUserID, toUserID)
 	if err != nil {
 		return false, err
 	}
@@ -426,7 +428,7 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 	}
 
 	// L3：回源数据库
-	rows, err := s.readFromDB(listType, userID, limit+offset, 0)
+	rows, err := s.readFromDB(ctx, listType, userID, limit+offset, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -458,16 +460,18 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 // 功能：使用 Redis ZSet 的 ZRevRangeByScore 实现游标分页。
 //
 // ZRevRangeByScore 说明：
-//   按 score 从高到低遍历 ZSet 中指定范围内的元素。
-//   参数 ZRangeBy{Min: "-inf", Max: "(cursor", Offset: 0, Count: limit}：
-//   - Min = "-inf"：从最小 score 开始。
-//   - Max = "(cursor"：使用 "(" 表示独占边界，即 score < cursor 的元素。
-//     当 cursor > 0 时使用此值，否则使用 "+inf" 表示最新。
-//   - Count: limit：最多返回的元素数量。
+//
+//	按 score 从高到低遍历 ZSet 中指定范围内的元素。
+//	参数 ZRangeBy{Min: "-inf", Max: "(cursor", Offset: 0, Count: limit}：
+//	- Min = "-inf"：从最小 score 开始。
+//	- Max = "(cursor"：使用 "(" 表示独占边界，即 score < cursor 的元素。
+//	  当 cursor > 0 时使用此值，否则使用 "+inf" 表示最新。
+//	- Count: limit：最多返回的元素数量。
 //
 // 下一个游标的计算方法：
-//   取最后一位用户的 score（关注时间毫秒时间戳）作为下一个游标。
-//   客户端在下次请求时把这个值传入 cursor 参数即可。
+//
+//	取最后一位用户的 score（关注时间毫秒时间戳）作为下一个游标。
+//	客户端在下次请求时把这个值传入 cursor 参数即可。
 //
 // 参数：
 //   - ctx: context.Context。
@@ -541,7 +545,7 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 //   - 最多读取 2000 条（限制 DB 查询量，防止内存溢出）。
 func (s *RelationService) fillZSet(ctx context.Context, listType string, userID uint64) error {
 	zsetKey := s.zsetKey(listType, userID)
-	entries, err := s.readFromDB(listType, userID, 2000, 0)
+	entries, err := s.readFromDB(ctx, listType, userID, 2000, 0)
 	if err != nil || len(entries) == 0 {
 		return err
 	}
@@ -576,7 +580,7 @@ func (s *RelationService) fillZSet(ctx context.Context, listType string, userID 
 //   - userID: uint64，目标用户 ID。
 func (s *RelationService) fillL1(ctx context.Context, listType string, userID uint64) {
 	key := s.l1KeyStr(listType, userID)
-	entries, err := s.readFromDB(listType, userID, 500, 0)
+	entries, err := s.readFromDB(ctx, listType, userID, 500, 0)
 	if err != nil || len(entries) == 0 {
 		return
 	}
@@ -611,9 +615,9 @@ type listEntry struct {
 // 返回值：
 //   - []listEntry: 用户 ID 和关注时间的列表。
 //   - error: 数据库查询错误。
-func (s *RelationService) readFromDB(listType string, userID uint64, limit, offset int) ([]listEntry, error) {
+func (s *RelationService) readFromDB(ctx context.Context, listType string, userID uint64, limit, offset int) ([]listEntry, error) {
 	if listType == "following" {
-		rows, err := s.repo.ListFollowingRows(userID, limit, offset)
+		rows, err := s.repo.ListFollowingRows(ctx, userID, limit, offset)
 		if err != nil {
 			return nil, err
 		}
@@ -623,13 +627,13 @@ func (s *RelationService) readFromDB(listType string, userID uint64, limit, offs
 		}
 		return entries, nil
 	}
-	rows, err := s.repo.ListFollowerRows(userID, limit, offset)
+	rows, err := s.repo.ListFollowerRows(ctx, userID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
 		// 向后兼容：旧版本写入只填充了正向索引。
-		rows, err = s.repo.ListFollowerRowsFromFollowing(userID, limit, offset)
+		rows, err = s.repo.ListFollowerRowsFromFollowing(ctx, userID, limit, offset)
 		if err != nil {
 			return nil, err
 		}

@@ -145,7 +145,7 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			}
 		}
 
-		row, err := s.repo.FindDetailByID(id)
+		row, err := s.repo.FindDetailByID(ctx, id)
 		if err != nil || row == nil || row.Status == "deleted" {
 			ttl := time.Duration(30+rand.Intn(31)) * time.Second
 			s.redis.Set(ctx, pageKey, "NULL", ttl)

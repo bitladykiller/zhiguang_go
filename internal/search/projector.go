@@ -56,20 +56,13 @@ type payloadEnvelope struct {
 // 每次投影都会重新从 MySQL 查询完整的数据并补充实时计数，
 // 确保 ES 索引中的数据是最终一致的（eventual consistency）。
 type KnowPostProjector struct {
-	db        *sqlx.DB
+	db        sqlx.ExtContext
 	searchSvc *SearchService
 	counter   CounterReader
 }
 
 // NewKnowPostProjector 创建搜索索引投影器实例。
-//
-// 参数：
-//   - db: MySQL 数据库连接，用于查询知文详情的原始数据
-//   - searchSvc: Elasticsearch 搜索服务，用于索引文档
-//   - counter: 计数器读取接口，用于在索引时附带实时计数
-//
-// 如果 db 或 searchSvc 为 nil，则返回 nil（投影器不可用）。
-func NewKnowPostProjector(db *sqlx.DB, searchSvc *SearchService, counter CounterReader) *KnowPostProjector {
+func NewKnowPostProjector(db sqlx.ExtContext, searchSvc *SearchService, counter CounterReader) *KnowPostProjector {
 	if db == nil || searchSvc == nil {
 		return nil
 	}
@@ -146,14 +139,13 @@ func (p *KnowPostProjector) SoftDeleteKnowPost(ctx context.Context, postID uint6
 // 如果 p.counter 为 nil，计数部分将返回 0。
 //
 // 函数调用说明：
-//   - p.db.GetContext(ctx, &row, sql, args...):
-//     sqlx 的方法，查询单行并映射到结构体。
-//     Go 的标准 database/sql 的 QueryRow 的扩展版本。
+//   - sqlx.GetContext(ctx, p.db, &row, sql, args...):
+//     sqlx 包级函数，查询单行并映射到结构体。
 //   - time.RFC3339: 时间格式常量 "2006-01-02T15:04:05Z07:00"，
 //     用于格式化发布时间的 ISO 8601 字符串。
 func (p *KnowPostProjector) buildSearchDocument(ctx context.Context, postID uint64) (*SearchIndexDoc, error) {
 	var row searchIndexSourceRow
-	err := p.db.GetContext(ctx, &row, `
+	err := sqlx.GetContext(ctx, p.db, &row, `
 SELECT
     know_posts.id,
     know_posts.tag_id,
