@@ -587,14 +587,7 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 // 当频率超过阈值时，会"标记"该 key 为热点。后续通过 TtlForPublic 可以根据热度
 // 计算一个更长的 TTL。
 //
-// WHY 延长热点条目的 TTL：
-//
-//	热点条目会被大量并发用户频繁访问。如果 TTL 较短，会导致这些条目频繁回源 DB，
-//	造成缓存穿透或缓存击穿。延长 TTL 可以让热点条目在缓存中驻留更长时间，
-//	有效降低数据库压力。
-//
-// 参数：
-//   - itemID: string，feed 条目的 ID 字符串（"knowpost:{id}"）。
+// TTL 延长使用 Lua 脚本保证只增不减，多实例并发安全。
 func (s *KnowPostFeedService) recordItemHotKey(itemID string) {
 	hotKeyID := "knowpost:" + itemID
 	s.hotKey.Record(hotKeyID)
@@ -602,11 +595,9 @@ func (s *KnowPostFeedService) recordItemHotKey(itemID string) {
 	baseTTL := 60
 	target := s.hotKey.TtlForPublic(baseTTL, hotKeyID)
 
+	// Lua 脚本原子操作：只有当前 TTL < 目标 TTL 时才延长
 	itemKey := "feed:item:" + itemID
-	itemTTL := s.redis.TTL(context.Background(), itemKey).Val()
-	if itemTTL > 0 && int(itemTTL.Seconds()) < target {
-		s.redis.Expire(context.Background(), itemKey, time.Duration(target)*time.Second)
-	}
+	extendTTL(context.Background(), s.redis, itemKey, target)
 }
 
 // ============================================================================
