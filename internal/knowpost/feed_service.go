@@ -583,8 +583,9 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 // recordItemHotKey 记录某个 feed 条目为热点，并酌情延长其 Redis 碎片缓存的 TTL。
 //
 // 功能：当用户在查看公共 Feed 时，此方法会被调用以记录每个展示条目的访问行为。
-// HotKeyDetector 通过滑动窗口统计每个 key 的访问频率，当频率超过阈值时，
-// 会"标记"该 key 为热点。后续通过 TtlForPublic 可以根据热度计算一个更长的 TTL。
+// HotKeyDetector 通过本地映射 + Redis Hash 滑动窗口统计每个 key 的跨实例访问频率，
+// 当频率超过阈值时，会"标记"该 key 为热点。后续通过 TtlForPublic 可以根据热度
+// 计算一个更长的 TTL。
 //
 // WHY 延长热点条目的 TTL：
 //

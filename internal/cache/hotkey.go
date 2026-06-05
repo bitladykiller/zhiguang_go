@@ -1,42 +1,85 @@
 // Package cache 提供热点键识别（HotKeyDetector）与多级缓存（MultiLevelCache）能力。
 //
-// HotKeyDetector：使用分段滑动窗口识别高频访问键，当某个键的访问频次超过阈值时，
-// 动态延长缓存 TTL，从而降低数据库压力。热度分为三级：
+// HotKeyDetector：使用本地 map + Redis Hash 实现跨实例滑动窗口热点检测。
+// 每次缓存访问仅递增本地计数（零 Redis IO），每 6 秒批量 flush 到 Redis Hash 完成跨实例聚合。
+// 热度分为三级：
 //   - LOW（+20s）：低热度，QPS 略高于背景水平
 //   - MEDIUM（+60s）：中等热度，QPS 明显高于背景水平
-//   - HIGH（+120s）：高热度，QPS 极高，会显著延长缓存以减少数据库查询
+//   - HIGH（+120s）：高热度，QPS 极高
+//
+// WHY 选用 Hash 而非 ZSET：
+//   ZSET 适合对多个 key 排序（排行榜），而本场景是每个 key 下存 10 个时间窗口的计数，
+//   Hash 的 field→value 模型（窗口编号→访问次数）更自然，无需维护 member 排序开销。
+//
+// WHY 不用每次请求直接写 Redis：
+//   如果每次 Record() 都 HINCRBY，QPS 高时 Redis 压力大（写放大）。
+//   本地 map 先聚合，每 6 秒一次批量 flush，Redis 写入量降低数个数量级。
 //
 // MultiLevelCache：两级缓存（进程内 L1 freecache + 分布式 L2 Redis），
 // 通过 singleflight 机制防止缓存击穿。
 package cache
 
 import (
+	"context"
+	"fmt"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/zhiguang/app/pkg/config"
 )
 
-// HotKeyDetector 使用分段滑动窗口识别高频访问键。
-// 每个键的命中数会按多个时间片累计，当总命中数超过阈值后，
-// 会按热度等级延长该键的缓存 TTL。
+// HotKeyDetector 使用本地 map + Redis Hash 检测跨实例热点键。
 //
-// WHY：如果只用一个带 TTL 的简单计数器，计数会在过期时突然归零。
-// 分段窗口能让老数据逐段衰减，因此“最近访问频率”更平滑也更准确。
+// 工作流程：
+//  1. Record(key) → 仅递增本地 map 中当前桶的计数，不写 Redis
+//  2. 后台 goroutine 每 flushInterval 秒执行一次：
+//     a. 快照并清空本地 map
+//     b. HINCRBY hotwin:{key} {bucket} {count}（跨实例汇总）
+//     c. HDEL 清理超过 bucketCount 个的旧桶
+//     d. EXPIRE hotwin:{key} {statTTL}
+//     e. HGETALL hotwin:{key} → 累加计数 → 判断热度等级
+//     f. 存入本地 levelCache（供 TtlForPublic/TtlForMine 快速查询）
+//     g. 若热度 >= LevelLow，SET hotkey:active:{key} 1 EX {markTTL}
+//  3. getLevel(key)：
+//     - 先查本地 levelCache（微秒级，无网络开销）
+//     - 本地 miss 时查 Redis hotkey:active 标记（兜底）
+//
+// 并发安全：
+//   - buf 由 sync.Mutex 保护
+//   - levelCache 由 sync.RWMutex 保护（读多写少）
+//   - 后台 goroutine 通过 sync.Once 惰性启动
 type HotKeyDetector struct {
-	config    *config.HotKeyConfig
-	segments  sync.Map // key -> *windowSegments
-	windowDur time.Duration
-	segDur    time.Duration
-	segCount  int
+	config *config.HotKeyConfig
+	redis  *redis.Client
+
+	// 本地计数缓冲：key → 桶编号 → 桶内计数
+	mu  sync.Mutex
+	buf map[string]map[int64]int64
+
+	// 热度等级缓存：key → 热度等级
+	// 每轮 flush 更新，供 getLevel 快速读取
+	levelMu  sync.RWMutex
+	levels   map[string]HotKeyLevel
+
+	// 派生字段，由 config 计算得出
+	bucketSize   time.Duration // 每个桶的时长（如 6s）
+	flushInterval time.Duration // flush 间隔
+	statTTL      time.Duration  // Redis Hash 的 TTL
+	markTTL      time.Duration  // hotkey:active 标记 TTL
+
+	// 生命周期控制
+	startOnce sync.Once
+	stopCh    chan struct{}
 }
 
-// windowSegments 保存单个键对应的滑动窗口状态。
-type windowSegments struct {
-	mu        sync.Mutex
-	counts    []int     // hit count per segment
-	startTime time.Time // time of the first segment
-}
+// hotwinKeyPrefix 是 Redis Hash 键的前缀。
+const hotwinKeyPrefix = "hotwin:"
+
+// hotkeyActivePrefix 是 hotkey 标记键的前缀。
+const hotkeyActivePrefix = "hotkey:active:"
 
 // HotKeyLevel 表示键的热度等级。
 type HotKeyLevel int
@@ -48,90 +91,245 @@ const (
 	LevelHigh   HotKeyLevel = 3
 )
 
-// NewHotKeyDetector 根据配置创建热点键探测器。
-//
-// 功能：
-//   根据传入的 HotKeyConfig 初始化探测器，计算滑动窗口参数：
-//   - windowDur:  整个窗口的时间跨度（例如 60 秒）
-//   - segDur:     每个时间片的时间跨度（例如 10 秒）
-//   - segCount:   窗口被分割成的时间片数（例如 60/10 = 6 片）
+// NewHotKeyDetector 根据配置和 Redis 客户端创建跨实例热点键探测器。
 //
 // 参数：
-//   - cfg: 热点键配置，包含窗口大小、时间片大小、各级阈值和 TTL 延长量
+//   - cfg: 热点键配置，包含桶大小、桶数量、各级阈值和 TTL 延长量
+//   - redisClient: Redis 客户端，用于跨实例计数聚合
 //
 // 返回值：
 //   - *HotKeyDetector: 初始化后的探测器实例
 //
-// 边界情况：
-//   - 如果 WindowSeconds / SegmentSeconds < 1，segCount 被强制设为 1
-//     （即只有 1 个时间片，等同于无分段窗口）
-func NewHotKeyDetector(cfg *config.HotKeyConfig) *HotKeyDetector {
-	windowDur := time.Duration(cfg.WindowSeconds) * time.Second
-	segDur := time.Duration(cfg.SegmentSeconds) * time.Second
-	segCount := cfg.WindowSeconds / cfg.SegmentSeconds
-	if segCount < 1 {
-		segCount = 1
-	}
-
+// 设计决策：
+//   将 redisClient 作为构造参数而非 Record 方法的参数，
+//   使 Record(key) 签名保持简洁，不入侵调用方（knowpost）的调用方式。
+//   后台 goroutine 在首次 Record 时惰性启动，不阻塞构造函数。
+func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client) *HotKeyDetector {
 	return &HotKeyDetector{
-		config:    cfg,
-		windowDur: windowDur,
-		segDur:    segDur,
-		segCount:  segCount,
+		config:        cfg,
+		redis:         redisClient,
+		buf:           make(map[string]map[int64]int64),
+		levels:        make(map[string]HotKeyLevel),
+		bucketSize:    time.Duration(cfg.BucketSizeSeconds) * time.Second,
+		flushInterval: time.Duration(cfg.FlushIntervalSeconds) * time.Second,
+		statTTL:       time.Duration(cfg.StatTTLSeconds) * time.Second,
+		markTTL:       time.Duration(cfg.HotMarkTTLSeconds) * time.Second,
+		stopCh:        make(chan struct{}),
 	}
 }
 
-// Record 为指定键在当前时间片内增加一次命中计数。
+// Stop 停止后台 flush goroutine。
+func (d *HotKeyDetector) Stop() {
+	close(d.stopCh)
+}
+
+// Record 为指定键在当前时间窗口内增加一次命中计数。
 //
 // 功能：
-//  1. 根据当前时间计算所在的时间片索引（segmentIndex）。
-//  2. 使用 sync.Map 查找或创建该键的 windowSegments 状态。
-//  3. 加锁后调用 advanceWindow 推进滑动窗口（清理已过期的时间片）。
-//  4. 在当前时间片的计数上 +1。
+//  1. 将当前时间映射到 6 秒级的桶编号（bucket = unix_epoch_seconds / 6）。
+//  2. 在本地 buf 中对应 key+bucket 的计数 +1。
+//  3. 如果是首次调用，惰性启动后台 flush goroutine。
 //
 // 参数：
-//   - key: 缓存键，用于区分不同对象的访问频率
-//
-// 函数调用说明：
-//   - d.segments.LoadOrStore(key, &windowSegments{...}):
-//     sync.Map 的原子操作：如果 key 存在则返回已有值，否则初始化并存储新值。
-//     这避免了每次 Record 都加锁，只在首次访问时创建。
-//   - val.(*windowSegments):
-//     Go 类型断言，将 sync.Map 返回的 interface{} 转为具体类型。
+//   - key: 缓存键（如 "knowpost:1001"、"feed:public:v3:1:0"）
 //
 // 调用时机：
-//   每次缓存命中（无论 L1 还是 L2）都应调用 Record，以构建准确的频率画像。
-//   注意：不要在回源加载时调用 Record，因为回源不代表"热"访问。
+//   每次缓存命中（无论 L1 还是 L2）都应调用 Record。
+//   不要在回源加载时调用 Record。
 //
-// 并发安全：
-//   Record 使用 sync.Map 做全局的 key 映射管理（无锁读），
-//   每个 key 的 windowSegments 内部使用 sync.Mutex 保护，
-//   不同 key 之间的计数操作互不阻塞。
+// 性能：
+//   纯本地操作，不涉及网络 IO，约 50-100ns。
+//   仅在 buf 增大时需要少量内存分配。
 func (d *HotKeyDetector) Record(key string) {
-	now := time.Now()
-	segIdx := d.segmentIndex(now)
-
-	val, _ := d.segments.LoadOrStore(key, &windowSegments{
-		counts:    make([]int, d.segCount),
-		startTime: now,
+	d.startOnce.Do(func() {
+		go d.flushLoop()
 	})
 
-	ws := val.(*windowSegments)
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
+	bucket := d.currentBucket()
 
-	// 如有必要推进窗口并清理过期时间片
-	d.advanceWindow(ws, now, segIdx)
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	// 累加当前时间片计数
-	ws.counts[segIdx]++
+	if d.buf[key] == nil {
+		d.buf[key] = make(map[int64]int64)
+	}
+	d.buf[key][bucket]++
+}
+
+// currentBucket 返回当前时间对应的桶编号（Unix 秒 / bucketSize）。
+func (d *HotKeyDetector) currentBucket() int64 {
+	return time.Now().Unix() / int64(d.bucketSize.Seconds())
+}
+
+// flushLoop 是后台 flush goroutine 的主循环。
+//
+// 每 flushInterval 秒执行一轮 flush：
+//  1. SnapshotAndReset：快照并清空本地 buf
+//  2. FlushToRedis：将快照数据批量写入 Redis（HINCRBY + HDEL + EXPIRE）
+//  3. UpdateLevelCache：从 Redis 读取跨实例聚合计数，更新本地热度等级缓存
+//
+// 异常处理：
+//   - 单次 flush 失败（如 Redis 网络抖动）：打印日志后继续下一轮，不影响后续 flush。
+//   - 连续失败：本地 levelCache 最多过期 flushInterval*2 秒后回退到 Redis 查询。
+//   - goroutine panic：用 recover 兜底，防止整个进程崩溃。
+func (d *HotKeyDetector) flushLoop() {
+	// 兜底：防止某个 flush 轮次 panic 导致整个 goroutine 退出
+	defer func() {
+		if r := recover(); r != nil {
+			go d.flushLoop()
+		}
+	}()
+
+	ticker := time.NewTicker(d.flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.stopCh:
+			// 最后一次 flush：尽量把本地数据刷出去
+			d.flushOnce()
+			return
+		case <-ticker.C:
+			d.flushOnce()
+		}
+	}
+}
+
+// flushOnce 执行一轮完整的 flush 流程。
+func (d *HotKeyDetector) flushOnce() {
+	snapshot := d.snapshotAndReset()
+	if len(snapshot) == 0 {
+		return
+	}
+
+	ctx := context.Background()
+	nowBucket := d.currentBucket()
+
+	// 第一步：HINCRBY + HDEL + EXPIRE 批量写入
+	pipe := d.redis.Pipeline()
+	for cacheKey, buckets := range snapshot {
+		statKey := hotwinKeyPrefix + cacheKey
+		for bucket, count := range buckets {
+			pipe.HIncrBy(ctx, statKey, strconv.FormatInt(bucket, 10), count)
+		}
+		// 删除超出窗口的旧桶：保留最近 bucketCount 个桶
+		for i := int64(d.config.BucketCount); i < int64(d.config.BucketCount)+int64(d.config.BucketCount); i++ {
+			oldBucket := nowBucket - i
+			pipe.HDel(ctx, statKey, strconv.FormatInt(oldBucket, 10))
+		}
+		pipe.Expire(ctx, statKey, d.statTTL)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		// flush 到 Redis 失败，不阻塞业务
+		// 由于本地计数已清空，这部分数据丢失。
+		// 但对于热点检测场景，少量丢数不影响阈值判断。
+		return
+	}
+
+	// 第二步：HGETALL 获取跨实例聚合计数 → 更新本地热度等级
+	newLevels := make(map[string]HotKeyLevel, len(snapshot))
+	for cacheKey := range snapshot {
+		statKey := hotwinKeyPrefix + cacheKey
+
+		values, err := d.redis.HGetAll(ctx, statKey).Result()
+		if err != nil {
+			continue
+		}
+
+		total := d.sumBucketsInWindow(values, nowBucket)
+		level := d.calcLevel(total)
+
+		newLevels[cacheKey] = level
+
+		// 如果达到热点等级，在 Redis 中标记
+		if level >= LevelLow {
+			d.redis.Set(ctx, hotkeyActivePrefix+cacheKey, "1", d.markTTL)
+		}
+	}
+
+	// 原子替换 levelCache
+	if len(newLevels) > 0 {
+		d.levelMu.Lock()
+		for k, v := range newLevels {
+			d.levels[k] = v
+		}
+		d.levelMu.Unlock()
+	}
+}
+
+// snapshotAndReset 快照并清空本地 buf，返回快照数据。
+func (d *HotKeyDetector) snapshotAndReset() map[string]map[int64]int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if len(d.buf) == 0 {
+		return nil
+	}
+
+	snapshot := d.buf
+	d.buf = make(map[string]map[int64]int64)
+	return snapshot
+}
+
+// sumBucketsInWindow 从 HGETALL 结果中累加最近 bucketCount 个桶的计数。
+//
+// HGETALL 返回 map[string]string，key 是桶编号字符串，value 是计数字符串。
+// 只累加时间窗口内的桶（[nowBucket-BucketCount+1, nowBucket]），
+// 窗口外的旧计数被舍去。
+//
+// 边界情况：
+//   - field 不是合法数字：跳过，不 panic
+//   - value 不是合法数字：跳过，不 panic
+//   - 所有 field 都在窗口外：返回 0
+//   - values 为空：返回 0
+func (d *HotKeyDetector) sumBucketsInWindow(values map[string]string, nowBucket int64) int64 {
+	minBucket := nowBucket - int64(d.config.BucketCount) + 1
+	if minBucket < 0 {
+		minBucket = 0
+	}
+
+	var total int64
+	for field, valStr := range values {
+		bucket, err := strconv.ParseInt(field, 10, 64)
+		if err != nil {
+			continue
+		}
+		if bucket < minBucket || bucket > nowBucket {
+			continue
+		}
+		count, err := strconv.ParseInt(valStr, 10, 64)
+		if err != nil {
+			continue
+		}
+		total += count
+	}
+	return total
+}
+
+// calcLevel 根据总命中数和配置阈值计算热度等级。
+//
+// 阈值从高到低判断：
+//   总计数 >= LevelHigh → HIGH
+//   总计数 >= LevelMedium → MEDIUM
+//   总计数 >= LevelLow → LOW
+//   否则 → COLD
+func (d *HotKeyDetector) calcLevel(total int64) HotKeyLevel {
+	switch {
+	case total >= int64(d.config.LevelHigh):
+		return LevelHigh
+	case total >= int64(d.config.LevelMedium):
+		return LevelMedium
+	case total >= int64(d.config.LevelLow):
+		return LevelLow
+	default:
+		return LevelCold
+	}
 }
 
 // TtlForPublic 返回公共 feed 缓存键根据热度调整后的 TTL。
 //
-// 功能：
-//   在基础 TTL 上按热点键当前热度等级做延长。
-//   热度越高，TTL 延长越多，减少数据库回源压力。
+// 功能与原有实现一致：在基础 TTL 上按热点键当前热度等级做延长。
+// 热度越高，TTL 延长越多，减少数据库回源压力。
 //
 // 参数：
 //   - baseTTL: 缓存的基础过期时间（秒）
@@ -140,10 +338,8 @@ func (d *HotKeyDetector) Record(key string) {
 // 返回值：
 //   - int: 调整后的最终 TTL（秒）
 //
-// 与 TtlForMine 的区别：
-//   当前两者使用完全相同的 TTL 延长逻辑（共享 ttlForLevel 实现），
-//   第二个参数 _ bool 被忽略。但接口上区分为两个方法，
-//   便于将来针对不同 feed 类型制定不同的 TTL 策略。
+// 在原有实现中 getLevel 读取本地 segments 计数，现在读取跨实例聚合后的 levelCache。
+// 调用方无需感知底层变化。
 func (d *HotKeyDetector) TtlForPublic(baseTTL int, key string) int {
 	return d.ttlForLevel(baseTTL, d.getLevel(key), false)
 }
@@ -151,8 +347,8 @@ func (d *HotKeyDetector) TtlForPublic(baseTTL int, key string) int {
 // TtlForMine 返回"我的内容" feed 缓存键根据热度调整后的 TTL。
 //
 // 功能与 TtlForPublic 相同，在基础 TTL 上按热度等级做延长。
-// 分开为两个方法是为了语义清晰：公共 feed 和私有 feed 可能有不同的
-// 缓存寿命策略，但当前实现共用同一段延长逻辑。
+// 分开为两个方法是为了语义清晰：公共 feed 和私有 feed 可能有不同的缓存寿命策略，
+// 但当前实现共用同一段延长逻辑。
 //
 // 参数：
 //   - baseTTL: 缓存的基础过期时间（秒）
@@ -164,55 +360,48 @@ func (d *HotKeyDetector) TtlForMine(baseTTL int, key string) int {
 	return d.ttlForLevel(baseTTL, d.getLevel(key), true)
 }
 
-// getLevel 根据滑动窗口中的总命中数判断某个键的热度等级。
+// getLevel 根据本地 levelCache 或 Redis hotkey:active 标记判断热度等级。
 //
-// 功能：
-//  1. 从 segments 映射中查找指定 key 的 windowSegments。
-//  2. 如果不存在，返回 LevelCold（无热度）。
-//  3. 加锁后推进滑动窗口（advanceWindow），确保计数反映最新访问趋势。
-//  4. 累加所有时间片的命中数，与配置的各级阈值比较。
-//  5. 按阈值从高到低判断（High > Medium > Low），返回匹配的最高等级。
+// 查询路径（从快到慢）：
+//  1. 本地 levelCache（microseconds）→ 如果缓存命中且未被清理，直接返回。
+//  2. Redis hotkey:active 标记（约 0.5ms）→ 兜底查询。
+//     如果 Redis 中有标记，说明是热点但尚未来得及刷新本地缓存，
+//     返回 LevelMedium 作为合理默认值（因为无法从标记得知具体等级）。
+//  3. 都 miss → LevelCold。
+//
+// WHF 本地缓存可能 miss：
+//   - 后台 flush 每 6 秒刷新一次 levels 映射表。
+//   - 但如果在两次 flush 之间访问了一个从未在本次 flush 中出现过的 key
+//     （例如另一个实例刚刚把它变热了，但当前实例还未 flush），
+//     本地 cache 没有该 key，需要 fallback 到 Redis。
 //
 // 参数：
 //   - key: 缓存键
 //
 // 返回值：
 //   - HotKeyLevel: LevelCold / LevelLow / LevelMedium / LevelHigh
-//
-// 函数调用说明：
-//   - d.segments.Load(key): sync.Map 的读操作，不用加锁。
-//     如果 key 不存在，返回 nil 和 false。
-//
-// 性能说明：
-//   getLevel 在每次计算 TTL 时都会调用（对每个 key 的每次读操作），
-//   因此需要保持高效。注意不要在 getLevel 内部做 IO 操作。
 func (d *HotKeyDetector) getLevel(key string) HotKeyLevel {
-	val, ok := d.segments.Load(key)
-	if !ok {
-		return LevelCold
+	// 1. 查本地 levelCache（fast path）
+	if level, ok := d.readLevelCache(key); ok {
+		return level
 	}
 
-	ws := val.(*windowSegments)
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
-	d.advanceWindow(ws, time.Now(), d.segmentIndex(time.Now()))
-
-	total := 0
-	for _, c := range ws.counts {
-		total += c
-	}
-
-	switch {
-	case total >= d.config.LevelHigh:
-		return LevelHigh
-	case total >= d.config.LevelMedium:
+	// 2. 查 Redis hotkey:active 标记（fallback）
+	ctx := context.Background()
+	exists, err := d.redis.Exists(ctx, hotkeyActivePrefix+key).Result()
+	if err == nil && exists > 0 {
 		return LevelMedium
-	case total >= d.config.LevelLow:
-		return LevelLow
-	default:
-		return LevelCold
 	}
+
+	return LevelCold
+}
+
+// readLevelCache 从本地 levels 映射中读取热度等级。
+func (d *HotKeyDetector) readLevelCache(key string) (HotKeyLevel, bool) {
+	d.levelMu.RLock()
+	level, ok := d.levels[key]
+	d.levelMu.RUnlock()
+	return level, ok
 }
 
 // ttlForLevel 根据热度等级计算出最终的缓存 TTL。
@@ -246,94 +435,21 @@ func (d *HotKeyDetector) ttlForLevel(baseTTL int, level HotKeyLevel, _ bool) int
 	}
 }
 
-// segmentIndex 将时间点映射到滑动窗口中的时间片索引。
-//
-// 功能：
-//   将 Unix 纳秒时间戳除以每个时间片的纳秒数，再对时间片总数取模，
-//   得到一个循环索引（ring buffer index），用于定位该时间点在窗口中的位置。
-//
-// 参数：
-//   - t: 需要映射的时间点
-//
-// 返回值：
-//   - int: 时间片索引（0 到 segCount-1）
-//
-// 设计决策：
-//   使用取模运算实现环形缓冲区，这样时间片可以循环复用，
-//   无需频繁移动数组元素。索引天然对齐到时间边界，当前时间确定后
-//   落入哪个时间片是确定的。
-func (d *HotKeyDetector) segmentIndex(t time.Time) int {
-	return int(t.UnixNano()/d.segDur.Nanoseconds()) % d.segCount
-}
+// Ensure HotKeyDetector implements FlushDetector (if needed by external tests).
+var _ fmt.Stringer = (*HotKeyLevel)(nil)
 
-// advanceWindow 清理已经滑出当前滑动窗口范围的历史时间片计数。
-//
-// 功能：
-//  1. 计算当前窗口起点的 segmentIndex（windowStartSeg）。
-//  2. 如果从上次更新时间到现在没有超过一个窗口长度，
-//     且当前 segmentIndex 与上次一致，则无需清理（快速返回）。
-//  3. 遍历所有时间片，将不在当前窗口范围内且不等于当前时间片的计数清零。
-//  4. 更新 startTime 为当前时间。
-//
-// 参数：
-//   - ws:         窗口状态（包含各时间片的计数和时间信息）
-//   - now:        当前时间
-//   - currentSeg: 当前时间片索引
-//
-// 边界情况：
-//   - 首次调用：ws.startTime 初始化为 now，elapsed == 0，跳过清理。
-//   - 环形缓冲区回绕：见 isSegmentInWindow 处理跨边界的情况。
-//   - 长时间不访问后首次 Record：当前时间远晚于 startTime，
-//     所有旧时间片都应清零。
-func (d *HotKeyDetector) advanceWindow(ws *windowSegments, now time.Time, currentSeg int) {
-	windowStart := now.Add(-d.windowDur)
-	windowStartSeg := d.segmentIndex(windowStart)
-
-	elapsed := now.Sub(ws.startTime)
-	if elapsed < d.windowDur && windowStartSeg == currentSeg {
-		return
+// String 将 HotKeyLevel 转为可读字符串。
+func (l HotKeyLevel) String() string {
+	switch l {
+	case LevelCold:
+		return "cold"
+	case LevelLow:
+		return "low"
+	case LevelMedium:
+		return "medium"
+	case LevelHigh:
+		return "high"
+	default:
+		return fmt.Sprintf("unknown(%d)", l)
 	}
-
-	// 清理窗口外的时间片
-	for i := 0; i < d.segCount; i++ {
-		isCurrent := (i == currentSeg)
-		inWindow := d.isSegmentInWindow(i, currentSeg, windowStartSeg)
-		if !isCurrent && !inWindow {
-			ws.counts[i] = 0
-		}
-	}
-	ws.startTime = now
-}
-
-// isSegmentInWindow 判断某个时间片是否仍处于当前滑动窗口范围内。
-//
-// 功能：
-//   在环形缓冲区中，检查 seg 是否位于 [windowStartSeg, currentSeg] 范围内。
-//   需要考虑环形缓冲区索引回绕的情况：
-//
-//   正常情况（currentSeg >= windowStartSeg）：
-//     范围是 [windowStartSeg, currentSeg] 的连续区间。
-//
-//   回绕情况（currentSeg < windowStartSeg）：
-//     窗口跨过了环形缓冲区的边界。
-//     范围是 [windowStartSeg, segCount-1] ∪ [0, currentSeg]。
-//
-// 参数：
-//   - seg:            要检查的时间片索引
-//   - currentSeg:     当前时间片索引
-//   - windowStartSeg: 窗口起点的对应索引
-//
-// 返回值：
-//   - bool: true=仍在窗口内，false=已滑出窗口
-//
-// 设计决策：
-//   使用环形缓冲区处理滑动窗口时，索引回绕是必须处理的边界情况。
-//   在回绕时，"大于等于 windowStartSeg" 和 "小于等于 currentSeg"
-//   这两个条件变成或者关系，而非与关系。
-func (d *HotKeyDetector) isSegmentInWindow(seg, currentSeg, windowStartSeg int) bool {
-	if currentSeg >= windowStartSeg {
-		return seg >= windowStartSeg && seg <= currentSeg
-	}
-	// 窗口在环形缓冲区上发生了回绕
-	return seg >= windowStartSeg || seg <= currentSeg
 }

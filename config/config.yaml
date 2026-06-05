@@ -93,14 +93,17 @@ cache:
       ttl_seconds: 10
       max_size: 1000
   hotkey:
-    window_seconds: 60
-    segment_seconds: 10
+    bucket_size_seconds: 6
+    bucket_count: 10
+    flush_interval_seconds: 6
+    stat_ttl_seconds: 120
     level_low: 50
     level_medium: 200
     level_high: 500
     extend_low_seconds: 20
     extend_medium_seconds: 60
     extend_high_seconds: 120
+    hot_mark_ttl_seconds: 60
 
 llm:
   deepseek:

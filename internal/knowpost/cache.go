@@ -58,8 +58,8 @@ func (s *KnowPostService) invalidateFeedCaches(id, creatorID uint64) {
 
 // recordHotKeyAndExtendTTL 记录某篇知文的热点访问，并酌情延长缓存 TTL。
 //
-// 功能：在详情页或 Feed 被访问时调用。HotKeyDetector 使用滑动窗口算法
-// 统计每个 key 的访问频率。当频率超过阈值时，通过 TtlForPublic 返回一个
+// 功能：在详情页或 Feed 被访问时调用。HotKeyDetector 使用本地 map + Redis Hash
+// 滑动窗口统计每个 key 的访问频率。当频率超过阈值时，通过 TtlForPublic 返回一个
 // 更长的 TTL（比如从 60s 延长到 300s），并通过 EXPIPE 命令更新 Redis 中的 TTL。
 //
 // 会延长 TTL 的缓存包括：
@@ -81,8 +81,9 @@ func (s *KnowPostService) invalidateFeedCaches(id, creatorID uint64) {
 //   - pageKey: string，详情页的缓存键名。
 //
 // HotKeyDetector 的工作原理：
-//   cache.HotKeyDetector 维护一个环形缓冲区（ring buffer）来记录每个 key 的
-//   访问计数。当某个 key 的计数在时间窗口内超过设定阈值时，被认为是一个"热点 key"。
+//   cache.HotKeyDetector 使用本地 map 记录每个 key 在 6 秒窗口内的访问计数，
+//   每 6 秒批量 flush 到 Redis Hash 进行跨实例聚合。当某个 key 在 60 秒窗口内的
+//   全局访问计数超过配置阈值时，被认为是一个"热点 key"。
 //   TtlForPublic 方法根据热度和基础 TTL 计算出一个延长的 TTL 值。
 func (s *KnowPostService) recordHotKeyAndExtendTTL(id uint64, pageKey string) {
 	hotKeyID := fmt.Sprintf("knowpost:%d", id)

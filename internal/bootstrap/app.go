@@ -93,7 +93,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 	detailCache := freecache.NewCache(cfg.Cache.L2.PublicCfg.MaxSize * 1024 * 1024)
 	feedPublicCache := freecache.NewCache(cfg.Cache.L2.PublicCfg.MaxSize * 1024 * 1024)
 	feedMineCache := freecache.NewCache(cfg.Cache.L2.MineCfg.MaxSize * 1024 * 1024)
-	hotKeyDetector := cache.NewHotKeyDetector(&cfg.Cache.HotKey)
+	hotKeyDetector := cache.NewHotKeyDetector(&cfg.Cache.HotKey, redisClient)
 
 	jwtSvc, err := auth.NewJwtService(&cfg.Auth.Jwt)
 	if err != nil {
