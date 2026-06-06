@@ -1,4 +1,66 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
+  frontend:
+    build:
+      context: ./frontend
+    container_name: zhiguang-frontend
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - edge
+      - backend
+    logging: *default-logging
+
+  app:
+    build: .
+    container_name: zhiguang-server
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    command: ["-config", "config/config-docker.yaml"]
+    expose:
+      - "8080"
+    secrets:
+      - jwt_private_key
+      - jwt_public_key
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      elasticsearch:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    networks:
+      - backend
+    logging: *default-logging
+
   mysql:
     image: mysql:8.0.30
     container_name: zhiguang-mysql
@@ -8,8 +70,6 @@ services:
       MYSQL_DATABASE: zhiguang
       MYSQL_USER: zhiguang
       MYSQL_PASSWORD: zhiguang123
-    ports:
-      - "3306:3306"
     command:
       - --default-authentication-plugin=mysql_native_password
       - --character-set-server=utf8mb4
@@ -21,13 +81,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - backend
+    logging: *default-logging
 
   redis:
     image: redis:7-alpine
     container_name: zhiguang-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis_data:/data
@@ -36,6 +97,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - backend
+    logging: *default-logging
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.3
@@ -44,11 +108,12 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
       - zookeeper_log:/var/lib/zookeeper/log
+    networks:
+      - backend
+    logging: *default-logging
 
   kafka:
     image: confluentinc/cp-kafka:7.5.3
@@ -59,20 +124,21 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: INTERNAL://0.0.0.0:19092,EXTERNAL://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_DEFAULT_REPLICATION_FACTOR: 3
       KAFKA_MIN_INSYNC_REPLICAS: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-    ports:
-      - "9092:9092"
     volumes:
       - kafka1_data:/var/lib/kafka/data
+    networks:
+      - backend
+    logging: *default-logging
 
   kafka2:
     image: confluentinc/cp-kafka:7.5.3
@@ -83,20 +149,21 @@ services:
     environment:
       KAFKA_BROKER_ID: 2
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: INTERNAL://0.0.0.0:19093,EXTERNAL://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka2:19093,EXTERNAL://localhost:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_DEFAULT_REPLICATION_FACTOR: 3
       KAFKA_MIN_INSYNC_REPLICAS: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-    ports:
-      - "9093:9093"
     volumes:
       - kafka2_data:/var/lib/kafka/data
+    networks:
+      - backend
+    logging: *default-logging
 
   kafka3:
     image: confluentinc/cp-kafka:7.5.3
@@ -107,20 +174,21 @@ services:
     environment:
       KAFKA_BROKER_ID: 3
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: INTERNAL://0.0.0.0:19094,EXTERNAL://0.0.0.0:9094
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka3:19094,EXTERNAL://localhost:9094
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka3:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_DEFAULT_REPLICATION_FACTOR: 3
       KAFKA_MIN_INSYNC_REPLICAS: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-    ports:
-      - "9094:9094"
     volumes:
       - kafka3_data:/var/lib/kafka/data
+    networks:
+      - backend
+    logging: *default-logging
 
   kafka-init:
     image: confluentinc/cp-kafka:7.5.3
@@ -134,11 +202,14 @@ services:
       - /bin/bash
       - -lc
       - |
-        cub kafka-ready -b kafka:19092 1 60
-        cub kafka-ready -b kafka2:19093 1 60
-        cub kafka-ready -b kafka3:19094 1 60
-        kafka-topics --bootstrap-server kafka:19092,kafka2:19093,kafka3:19094 --create --if-not-exists --topic counter-events --replication-factor 3 --partitions 3 --config min.insync.replicas=2
-        kafka-topics --bootstrap-server kafka:19092,kafka2:19093,kafka3:19094 --create --if-not-exists --topic canal-outbox --replication-factor 3 --partitions 3 --config min.insync.replicas=2
+        cub kafka-ready -b kafka:9092 1 60
+        cub kafka-ready -b kafka2:9092 1 60
+        cub kafka-ready -b kafka3:9092 1 60
+        kafka-topics --bootstrap-server kafka:9092,kafka2:9092,kafka3:9092 --create --if-not-exists --topic counter-events --replication-factor 3 --partitions 3 --config min.insync.replicas=2
+        kafka-topics --bootstrap-server kafka:9092,kafka2:9092,kafka3:9092 --create --if-not-exists --topic canal-outbox --replication-factor 3 --partitions 3 --config min.insync.replicas=2
+    networks:
+      - backend
+    logging: *default-logging
 
   elasticsearch:
     image: elasticsearch:8.5.0
@@ -148,11 +219,11 @@ services:
       discovery.type: single-node
       xpack.security.enabled: "false"
       ES_JAVA_OPTS: -Xms512m -Xmx512m
-    ports:
-      - "9200:9200"
-      - "9300:9300"
     volumes:
       - es_data:/usr/share/elasticsearch/data
+    networks:
+      - backend
+    logging: *default-logging
 
 volumes:
   mysql_data:
@@ -163,3 +234,15 @@ volumes:
   kafka2_data:
   kafka3_data:
   es_data:
+
+secrets:
+  jwt_private_key:
+    file: ./config/keys/private.pem
+  jwt_public_key:
+    file: ./config/keys/public.pem
+
+networks:
+  edge:
+    driver: bridge
+  backend:
+    driver: bridge

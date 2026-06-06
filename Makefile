@@ -37,15 +37,15 @@ mod:
 deps:
 	$(GO) mod download
 
-# Start local dependency containers
+# Start the full local stack
 dev-up:
 	docker compose up -d
 
-# Stop local dependency containers
+# Stop the full local stack
 dev-down:
 	docker compose down
 
-# Tail local dependency container logs
+# Tail local stack logs
 dev-logs:
 	docker compose logs -f
 
@@ -69,8 +69,8 @@ help:
 	@echo "  lint    - Run go vet"
 	@echo "  mod     - Tidy Go modules"
 	@echo "  deps    - Download dependencies"
-	@echo "  dev-up  - Start MySQL/Redis/Kafka/Elasticsearch via Docker Compose"
-	@echo "  dev-down - Stop local dependency containers"
-	@echo "  dev-logs - Tail Docker Compose logs"
+	@echo "  dev-up  - Start the full Docker Compose stack"
+	@echo "  dev-down - Stop the full Docker Compose stack"
+	@echo "  dev-logs - Tail full Docker Compose logs"
 	@echo "  db-init - Initialize the MySQL schema inside Docker"
 	@echo "  gen-jwt-keys - Generate local RSA keys for JWT signing"

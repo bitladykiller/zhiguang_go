@@ -76,15 +76,23 @@
 - Docker Desktop 或可用的 Docker daemon
 - `openssl`
 
-### 1. 启动依赖服务
+### 1. 启动 Docker 服务
 
-仓库自带 `docker-compose.yml`，所有持久化都使用 Docker 命名卷，不使用宿主机 bind mount。
+仓库自带 `docker-compose.yml`，当前已经更偏向单机生产部署：
+
+- 对外只暴露前端 `80` 端口
+- MySQL / Redis / Kafka / Zookeeper / Elasticsearch 都只走容器内网
+- JWT 密钥通过 Docker `secrets` 注入
+- 持久化数据全部使用 Docker 命名卷
 
 ```bash
 make dev-up
 ```
 
-会启动这些依赖：
+会启动这些服务：
+
+- Frontend(Nginx, `http://localhost`)
+- Go API Server(`http://localhost:8080`)
 
 - MySQL 8.0.30
 - Redis 7
@@ -114,7 +122,7 @@ make gen-jwt-keys
 cp config/config-local.yaml.example config/config-local.yaml
 ```
 
-默认本地配置已经指向 Docker Compose 暴露的端口：
+默认本地配置已经指向本机开发环境暴露的端口：
 
 - MySQL: `localhost:3306`
 - Redis: `localhost:6379`
@@ -122,6 +130,14 @@ cp config/config-local.yaml.example config/config-local.yaml
 - Elasticsearch: `localhost:9200`
 
 ### 5. 运行服务
+
+如果你只使用 Docker Compose，那么 `make dev-up` 后即可直接访问：
+
+- 前端页面：`http://localhost`
+- 前端健康检查：`http://localhost/health`
+- 前端代理 API：`http://localhost/api/v1/...`
+
+如果你希望后端继续在本机运行而不是容器里运行，也可以单独执行：
 
 ```bash
 make run
@@ -141,6 +157,39 @@ make lint
 make dev-logs
 make dev-down
 ```
+
+### 7. Docker 构建说明
+
+如果你使用：
+
+```bash
+docker compose build
+```
+
+当前仓库的 `Dockerfile` 已做这些优化：
+
+- Alpine `apk` 默认走国内镜像源
+- Go modules 默认走 `goproxy.cn`
+- 移除了无效的 `gcc/musl-dev` 安装步骤，因为服务使用 `CGO_ENABLED=0`
+
+前端 `frontend/Dockerfile` 也已做容器化处理：
+
+- 构建阶段使用 `node:20-alpine`
+- 运行阶段使用 `nginx:alpine`
+- Nginx 会把 `/api` 代理到 Docker Compose 内部的 `app:8080`
+- 浏览器访问 `http://localhost` 即可打开前端页面
+
+当前 `docker-compose.yml` 的生产化约束：
+
+- 后端 `app` 不再直接暴露宿主机 `8080`
+- 中间件端口默认不再暴露到宿主机
+- 如果需要从宿主机直接调试 MySQL/Redis/ES，需要临时加端口映射或使用 `docker compose exec`
+
+因此：
+
+- 第一次构建仍然会下载基础镜像和 Go 依赖，时间取决于本机网络
+- 第二次及之后的构建会明显更快
+- 如果再次出现长时间卡在 `apk add`，通常是 Docker Desktop 网络或镜像源连通性问题，不是 Go 编译本身的问题
 
 ## 可选能力说明
 
