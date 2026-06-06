@@ -61,6 +61,12 @@ type RelationService struct {
 	redis *redis.Client
 	repo  *RelationRepository
 	l1    *freecache.Cache
+	idGen IDGenerator
+}
+
+// IDGenerator 定义关系域依赖的分布式唯一 ID 生成接口。
+type IDGenerator interface {
+	NextID() uint64
 }
 
 // NewRelationService 创建一个带多级缓存的关系服务实例。
@@ -71,14 +77,16 @@ type RelationService struct {
 //   - db: *sqlx.DB，数据库连接。
 //   - rdb: *redis.Client，Redis 客户端，用于 L2 缓存和限流。
 //   - cacheSize: int，freecache（L1）的内存分配大小（字节）。例如 10*1024*1024 = 10MB。
+//   - idGen: 分布式唯一 ID 生成器；relation 表主键和 outbox 主键都依赖它。
 //
 // 返回值：*RelationService，创建好的服务实例。
-func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int) *RelationService {
+func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDGenerator) *RelationService {
 	return &RelationService{
 		db:    db,
 		redis: rdb,
 		repo:  NewRelationRepository(db),
 		l1:    freecache.NewCache(cacheSize),
+		idGen: idGen,
 	}
 }
 
@@ -134,8 +142,8 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 		return false, nil
 	}
 
-	id := NextID()
-	reverseID := NextID()
+	id := s.idGen.NextID()
+	reverseID := s.idGen.NextID()
 
 	// 事务内同时写正向表、反向表和 outbox。
 	// WHY：粉丝列表和关系状态查询依赖反向索引表，不能只写单边。
@@ -161,7 +169,8 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 
 	event := RelationEvent{EventType: "FollowCreated", FromUserID: fromUserID, ToUserID: toUserID, RelationID: &id}
 	payload, _ := json.Marshal(event)
-	if err := txRepo.InsertOutbox(ctx, NextID(), "following", &id, "FollowCreated", string(payload)); err != nil {
+	outboxID := s.idGen.NextID()
+	if err := txRepo.InsertOutbox(ctx, outboxID, "following", &id, "FollowCreated", string(payload)); err != nil {
 		_ = tx.Rollback()
 		return false, err
 	}
@@ -171,7 +180,7 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 	}
 
 	// 失效相关缓存
-	s.invalidateCaches(ctx, fromUserID, toUserID)
+	s.invalidateCaches(fromUserID, toUserID)
 	return true, nil
 }
 
@@ -217,7 +226,8 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 
 	event := RelationEvent{EventType: "FollowCanceled", FromUserID: fromUserID, ToUserID: toUserID}
 	payload, _ := json.Marshal(event)
-	if err := txRepo.InsertOutbox(ctx, NextID(), "following", nil, "FollowCanceled", string(payload)); err != nil {
+	outboxID := s.idGen.NextID()
+	if err := txRepo.InsertOutbox(ctx, outboxID, "following", nil, "FollowCanceled", string(payload)); err != nil {
 		_ = tx.Rollback()
 		return false, err
 	}
@@ -226,7 +236,7 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 		return false, err
 	}
 
-	s.invalidateCaches(ctx, fromUserID, toUserID)
+	s.invalidateCaches(fromUserID, toUserID)
 	return true, nil
 }
 
@@ -417,17 +427,31 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 		}
 	}
 
-	// L2：Redis ZSet
+	// L2：Redis ZSet。若未命中则在分布式锁保护下尝试回填。
 	zsetKey := s.zsetKey(listType, userID)
 	exists, _ := s.redis.Exists(ctx, zsetKey).Result()
-	if exists > 0 {
-		members, err := s.redis.ZRevRange(ctx, zsetKey, int64(offset), int64(offset+limit-1)).Result()
-		if err == nil {
-			return s.toIDList(members), nil
+	if exists == 0 {
+		warmed, err := s.ensureListCacheWarm(ctx, listType, userID)
+		if err != nil {
+			return nil, err
+		}
+		if !warmed {
+			return []uint64{}, nil
+		}
+		if s.isBigV(ctx, userID) {
+			s.fillL1(ctx, listType, userID)
 		}
 	}
 
-	// L3：回源数据库
+	members, err := s.redis.ZRevRange(ctx, zsetKey, int64(offset), int64(offset+limit-1)).Result()
+	if err == nil && len(members) > 0 {
+		return s.toIDList(members), nil
+	}
+	if s.cacheEndReached(ctx, zsetKey, offset) {
+		return []uint64{}, nil
+	}
+
+	// 回退到 L3：处理超出缓存预热上限的深页请求。
 	rows, err := s.readFromDB(ctx, listType, userID, limit+offset, 0)
 	if err != nil {
 		return nil, err
@@ -436,15 +460,6 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 	for _, entry := range rows {
 		ids = append(ids, entry.UserID)
 	}
-
-	// 回填 ZSet
-	s.fillZSet(ctx, listType, userID)
-
-	// 如果是 BigV，则回填 L1
-	if s.isBigV(ctx, userID) {
-		s.fillL1(ctx, listType, userID)
-	}
-
 	if offset >= len(ids) {
 		return []uint64{}, nil
 	}
@@ -488,8 +503,12 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 	zsetKey := s.zsetKey(listType, userID)
 	exists, _ := s.redis.Exists(ctx, zsetKey).Result()
 	if exists == 0 {
-		if err := s.fillZSet(ctx, listType, userID); err != nil {
+		warmed, err := s.ensureListCacheWarm(ctx, listType, userID)
+		if err != nil {
 			return nil, 0, err
+		}
+		if !warmed {
+			return []uint64{}, 0, nil
 		}
 	}
 
@@ -538,16 +557,20 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 //   - userID: uint64，目标用户 ID。
 //
 // 返回值：
+//   - bool: true 表示成功写入了可读 ZSet；false 表示数据库确认该列表为空。
 //   - error: 数据库或 Redis 错误。
 //
 // 边界情况：
 //   - 数据库查询结果为空：不写入 ZSet，返回 nil。
 //   - 最多读取 2000 条（限制 DB 查询量，防止内存溢出）。
-func (s *RelationService) fillZSet(ctx context.Context, listType string, userID uint64) error {
+func (s *RelationService) fillZSet(ctx context.Context, listType string, userID uint64) (bool, error) {
 	zsetKey := s.zsetKey(listType, userID)
-	entries, err := s.readFromDB(ctx, listType, userID, 2000, 0)
-	if err != nil || len(entries) == 0 {
-		return err
+	entries, err := s.readFromDB(ctx, listType, userID, relationListCacheWarmLimit, 0)
+	if err != nil {
+		return false, err
+	}
+	if len(entries) == 0 {
+		return false, nil
 	}
 
 	members := make([]redis.Z, len(entries))
@@ -559,10 +582,10 @@ func (s *RelationService) fillZSet(ctx context.Context, listType string, userID 
 	}
 
 	if err := s.redis.ZAdd(ctx, zsetKey, members...).Err(); err != nil {
-		return err
+		return false, err
 	}
-	s.redis.Expire(ctx, zsetKey, 2*time.Hour)
-	return nil
+	s.redis.Expire(ctx, zsetKey, relationListCacheTTL)
+	return true, nil
 }
 
 // fillL1 将 BigV 用户的前 500 个关注/粉丝 ID 写入 freecache（L1）。
@@ -747,14 +770,71 @@ func (s *RelationService) toIDList(members []string) []uint64 {
 //   - toUserID 的关注列表不受影响（toUserID 的关注人没变化）。
 //
 // 参数：
-//   - ctx: context.Context。
 //   - fromUserID: uint64，关注/取关的发起人。
 //   - toUserID: uint64，关注/取关的目标。
-func (s *RelationService) invalidateCaches(ctx context.Context, fromUserID, toUserID uint64) {
+func (s *RelationService) invalidateCaches(fromUserID, toUserID uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), relationInvalidateLockWaitLimit)
+	defer cancel()
+
+	targets := []relationListCacheTarget{
+		{listType: "following", userID: fromUserID},
+		{listType: "followers", userID: toUserID},
+	}
+	locks, err := s.acquireListCacheLocks(ctx, targets)
+	if err == nil {
+		defer func() {
+			for i := len(locks) - 1; i >= 0; i-- {
+				locks[i].Release()
+			}
+		}()
+	}
+
 	// 失效 fromUserID 的关注列表缓存
 	s.redis.Del(ctx, s.zsetKey("following", fromUserID))
 	s.l1.Del([]byte(s.l1KeyStr("following", fromUserID)))
 	// 失效 toUserID 的粉丝列表缓存
 	s.redis.Del(ctx, s.zsetKey("followers", toUserID))
 	s.l1.Del([]byte(s.l1KeyStr("followers", toUserID)))
+}
+
+// ensureListCacheWarm 在分布式锁保护下回填某个用户的关注/粉丝 ZSet。
+//
+// 返回值：
+//   - true: 表示缓存中已有可读 ZSet（可能是当前实例刚回填，也可能是其他实例已回填）
+//   - false: 数据库确认该列表为空，无需继续查缓存
+func (s *RelationService) ensureListCacheWarm(ctx context.Context, listType string, userID uint64) (bool, error) {
+	zsetKey := s.zsetKey(listType, userID)
+	exists, err := s.redis.Exists(ctx, zsetKey).Result()
+	if err == nil && exists > 0 {
+		return true, nil
+	}
+
+	lock, err := s.acquireListCacheLock(ctx, listType, userID)
+	if err != nil {
+		return false, err
+	}
+	defer lock.Release()
+
+	exists, err = s.redis.Exists(ctx, zsetKey).Result()
+	if err == nil && exists > 0 {
+		return true, nil
+	}
+	return s.fillZSet(ctx, listType, userID)
+}
+
+// cacheEndReached 判断当前 offset 是否已经超过预热缓存的可覆盖范围。
+//
+// WHY 这里要做额外判断：
+//   - 预热缓存最多只写前 relationListCacheWarmLimit 条。
+//   - 当 ZRevRange 返回空列表时，可能是真没数据，也可能是请求翻到了缓存覆盖范围之外。
+//   - 只有缓存总量小于预热上限时，空结果才可以安全地直接返回。
+func (s *RelationService) cacheEndReached(ctx context.Context, zsetKey string, offset int) bool {
+	size, err := s.redis.ZCard(ctx, zsetKey).Result()
+	if err != nil {
+		return false
+	}
+	if size < relationListCacheWarmLimit {
+		return int64(offset) >= size
+	}
+	return false
 }

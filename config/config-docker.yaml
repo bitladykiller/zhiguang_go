@@ -1,9 +1,9 @@
 server:
   port: 8080
-  mode: debug
+  mode: release
 
 database:
-  host: localhost
+  host: mysql
   port: 3306
   user: root
   password: "root123"
@@ -14,7 +14,7 @@ database:
   conn_max_lifetime: 3600
 
 redis:
-  host: localhost
+  host: redis
   port: 6379
   password: ""
   db: 0
@@ -26,24 +26,24 @@ id_generator:
 
 kafka:
   brokers:
-    - localhost:9092
-    - localhost:9093
-    - localhost:9094
+    - kafka:9092
+    - kafka2:9092
+    - kafka3:9092
   consumer_group: counter-agg
   topics:
     counter_events: counter-events
 
 elasticsearch:
   uris:
-    - http://localhost:9200
+    - http://elasticsearch:9200
   index_name: zhiguang-ai-index
 
 auth:
   jwt:
     issuer: zhiguang
     key_id: zhiguang-local
-    private_key_path: config/keys/private.pem
-    public_key_path: config/keys/public.pem
+    private_key_path: /run/secrets/jwt_private_key
+    public_key_path: /run/secrets/jwt_public_key
     access_token_ttl: 15m
     refresh_token_ttl: 168h
   verification:
@@ -74,11 +74,11 @@ oss:
   folder: avatars
 
 canal:
-  enabled: false
-  host: localhost
+  enabled: true
+  host: canal
   port: 11111
   destination: example
-  username: canal
+  username: ""
   password: ""
   filter: zhiguang\\.outbox
   batch_size: 1000
@@ -106,14 +106,17 @@ cache:
       ttl_seconds: 10
       max_size: 1000
   hotkey:
-    window_seconds: 60
-    segment_seconds: 10
+    bucket_size_seconds: 6
+    bucket_count: 10
+    flush_interval_seconds: 6
+    stat_ttl_seconds: 120
     level_low: 50
     level_medium: 200
     level_high: 500
     extend_low_seconds: 20
     extend_medium_seconds: 60
     extend_high_seconds: 120
+    hot_mark_ttl_seconds: 60
 
 llm:
   deepseek:

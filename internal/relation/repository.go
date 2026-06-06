@@ -2,8 +2,6 @@ package relation
 
 import (
 	"context"
-	"math"
-	"math/rand"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -126,9 +124,4 @@ func (r *RelationRepository) InsertOutbox(ctx context.Context, id uint64, aggTyp
 		id, aggType, aggID, eventType, payload,
 	)
 	return err
-}
-
-// NextID 使用随机数生成伪唯一 ID。
-func NextID() uint64 {
-	return uint64(rand.Int63n(math.MaxInt64))
 }

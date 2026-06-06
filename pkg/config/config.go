@@ -9,7 +9,8 @@
 //   - itoa 不使用 strconv.Itoa 是为了最小化启动依赖链。
 //
 // 使用方式：
-//   cfg, err := config.LoadConfig("config/config-local.yaml")
+//
+//	cfg, err := config.LoadConfig("config/config-local.yaml")
 package config
 
 import (
@@ -24,6 +25,7 @@ type Config struct {
 	Server        ServerConfig        `yaml:"server"`
 	Database      DatabaseConfig      `yaml:"database"`
 	Redis         RedisConfig         `yaml:"redis"`
+	IDGenerator   IDGeneratorConfig   `yaml:"id_generator"`
 	Kafka         KafkaConfig         `yaml:"kafka"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
 	Auth          AuthConfig          `yaml:"auth"`
@@ -56,8 +58,9 @@ type DatabaseConfig struct {
 // DSN 根据配置字段拼装 MySQL 的数据源连接串。
 //
 // 功能：
-//   将 DatabaseConfig 中的 Host、Port、User、Password、Name、Charset 等字段
-//   拼装为 MySQL DSN 格式的字符串。
+//
+//	将 DatabaseConfig 中的 Host、Port、User、Password、Name、Charset 等字段
+//	拼装为 MySQL DSN 格式的字符串。
 //
 // 返回值：
 //   - string: 格式为 "user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
@@ -82,17 +85,31 @@ type RedisConfig struct {
 	PoolSize int    `yaml:"pool_size"` // connection pool size
 }
 
+// IDGeneratorConfig 配置本地雪花 ID 生成器。
+//
+// 当前约定把 snowflake 的 10 位 node id 拆成：
+//   - 5 位 machine_id
+//   - 5 位 worker_id
+//
+// 多实例部署时，必须保证不同实例的 machine_id + worker_id 组合唯一。
+type IDGeneratorConfig struct {
+	MachineID int `yaml:"machine_id"`
+	WorkerID  int `yaml:"worker_id"`
+}
+
 // Addr 返回 host:port 形式的 Redis 地址。
 //
 // 功能：
-//   将 Host 和 Port 组合为标准 Redis 连接地址格式。
+//
+//	将 Host 和 Port 组合为标准 Redis 连接地址格式。
 //
 // 返回值：
 //   - string: 格式为 "host:port"
 //
 // 注意：
-//   如果 Host 是域名（如 "redis.example.com"），直接拼接；
-//   如果 Host 是空字符串，返回 ":port"（go-redis 会尝试连接本地）。
+//
+//	如果 Host 是域名（如 "redis.example.com"），直接拼接；
+//	如果 Host 是空字符串，返回 ":port"（go-redis 会尝试连接本地）。
 func (c *RedisConfig) Addr() string {
 	return c.Host + ":" + itoa(c.Port)
 }
@@ -119,6 +136,7 @@ type ElasticsearchConfig struct {
 type AuthConfig struct {
 	Jwt          JwtConfig          `yaml:"jwt"`
 	Verification VerificationConfig `yaml:"verification"`
+	Refresh      RefreshConfig      `yaml:"refresh"`
 	Password     PasswordConfig     `yaml:"password"`
 }
 
@@ -134,17 +152,30 @@ type JwtConfig struct {
 
 // VerificationConfig 控制验证码相关行为。
 type VerificationConfig struct {
-	CodeLength   int           `yaml:"code_length"`
-	TTL          time.Duration `yaml:"ttl"`
-	MaxAttempts  int           `yaml:"max_attempts"`
-	SendInterval time.Duration `yaml:"send_interval"`
-	DailyLimit   int           `yaml:"daily_limit"`
+	CodeLength   int            `yaml:"code_length"`
+	TTL          time.Duration  `yaml:"ttl"`
+	MaxAttempts  int            `yaml:"max_attempts"`
+	SendInterval time.Duration  `yaml:"send_interval"`
+	DailyLimit   int            `yaml:"daily_limit"`
+	Lock         AuthLockConfig `yaml:"lock"`
 }
 
 // PasswordConfig 约束密码强度策略。
 type PasswordConfig struct {
 	BcryptCost int `yaml:"bcrypt_cost"`
 	MinLength  int `yaml:"min_length"`
+}
+
+// RefreshConfig 配置 refresh token 轮换相关行为。
+type RefreshConfig struct {
+	Lock AuthLockConfig `yaml:"lock"`
+}
+
+// AuthLockConfig 统一描述鉴权域分布式锁参数。
+type AuthLockConfig struct {
+	TTLMs           int `yaml:"ttl_ms"`
+	WatchdogMs      int `yaml:"watchdog_ms"`
+	RetryIntervalMs int `yaml:"retry_interval_ms"`
 }
 
 // OssConfig 配置阿里云 OSS 对象存储。
@@ -229,16 +260,18 @@ type CacheItemConfig struct {
 // 判断 hotkey 时，HGETALL 该哈希并累加最近 BucketCount 个窗口的值。
 //
 // 建议配置（6s 窗口 × 10 = 60s 滑动窗口）：
-//   BucketSizeSeconds: 6         # 每个窗口大小
-//   BucketCount: 10               # 窗口数量（总窗口 = 6s × 10 = 60s）
-//   FlushIntervalSeconds: 6       # flush 间隔，与 BucketSizeSeconds 一致
-//   StatTTLSeconds: 120           # Redis Hash 的 TTL（略大于窗口总时长）
-//   HotMarkTTLSeconds: 60         # hotkey:active 标记的 TTL
+//
+//	BucketSizeSeconds: 6         # 每个窗口大小
+//	BucketCount: 10               # 窗口数量（总窗口 = 6s × 10 = 60s）
+//	FlushIntervalSeconds: 6       # flush 间隔，与 BucketSizeSeconds 一致
+//	StatTTLSeconds: 120           # Redis Hash 的 TTL（略大于窗口总时长）
+//	HotMarkTTLSeconds: 60         # hotkey:active 标记的 TTL
 //
 // 阈值说明（基于 60s 窗口的全局总访问次数）：
-//   LevelLow(50):   0.83 QPS 以上 → TTL +20s
-//   LevelMedium(200):  3.3 QPS 以上 → TTL +60s
-//   LevelHigh(500):   8.3 QPS 以上 → TTL +120s
+//
+//	LevelLow(50):   0.83 QPS 以上 → TTL +20s
+//	LevelMedium(200):  3.3 QPS 以上 → TTL +60s
+//	LevelHigh(500):   8.3 QPS 以上 → TTL +120s
 type HotKeyConfig struct {
 	BucketSizeSeconds    int `yaml:"bucket_size_seconds"`    // 每个时间窗口的秒数（建议 6）
 	BucketCount          int `yaml:"bucket_count"`           // 窗口数量（建议 10，总窗口 = 6×10=60s）
@@ -278,9 +311,10 @@ type OpenAIConfig struct {
 // LoadConfig 从指定路径读取 YAML 配置文件并解析为 Config 结构体。
 //
 // 功能：
-//   Step 1: 使用 os.ReadFile 读取 YAML 文件的完整内容。
-//   Step 2: 使用 yaml.Unmarshal 将 YAML 字节数据反序列化为 Config 结构体。
-//   Step 3: 返回解析后的 Config 指针。
+//
+//	Step 1: 使用 os.ReadFile 读取 YAML 文件的完整内容。
+//	Step 2: 使用 yaml.Unmarshal 将 YAML 字节数据反序列化为 Config 结构体。
+//	Step 3: 返回解析后的 Config 指针。
 //
 // 参数：
 //   - path: YAML 配置文件的路径（如 "config/config-local.yaml"）
@@ -298,9 +332,10 @@ type OpenAIConfig struct {
 //     根据结构体上的 yaml tag 将 YAML 字段映射到结构体字段。
 //
 // 注意：
-//   此函数不会校验配置中的字段值是否合理（如端口是否在有效范围、超时值是否为正等），
-//   调用方应在构造连接时自行检查或使用默认值。
-//   也不会设置默认值（如 charset 默认 utf8mb4），需要调用方自行处理。
+//
+//	此函数不会校验配置中的字段值是否合理（如端口是否在有效范围、超时值是否为正等），
+//	调用方应在构造连接时自行检查或使用默认值。
+//	也不会设置默认值（如 charset 默认 utf8mb4），需要调用方自行处理。
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -318,8 +353,9 @@ func LoadConfig(path string) (*Config, error) {
 // itoa 在不引入 strconv 的前提下把 int 转成字符串。
 //
 // 功能：
-//   将整数 n 通过除 10 取余的方式逐位分解，然后拼接为字符串。
-//   支持负数和零。
+//
+//	将整数 n 通过除 10 取余的方式逐位分解，然后拼接为字符串。
+//	支持负数和零。
 //
 // 参数：
 //   - n: 待转换的整数
@@ -328,9 +364,10 @@ func LoadConfig(path string) (*Config, error) {
 //   - string: 整数的十进制字符串表示
 //
 // WHY 不使用 strconv.Itoa：
-//   官方说明是在启动路径上减少一个标准库依赖能略微缩短编译时间。
-//   该函数仅在 DSN() 和 Addr() 中被调用，性能不敏感，
-//   因此自实现的开销可以忽略。
+//
+//	官方说明是在启动路径上减少一个标准库依赖能略微缩短编译时间。
+//	该函数仅在 DSN() 和 Addr() 中被调用，性能不敏感，
+//	因此自实现的开销可以忽略。
 //
 // 边界情况：
 //   - n == 0 → 返回 "0"
@@ -339,8 +376,9 @@ func LoadConfig(path string) (*Config, error) {
 //     端口号始终为正数，因此不会有负值极端情况。
 //
 // 实现说明：
-//   使用 [20]byte 固定长度数组作为缓冲区（最大 int64 十进制 19 位 + 负号），
-//   从尾部往前填充，最后切片转换为字符串。这比多次字符串拼接更高效。
+//
+//	使用 [20]byte 固定长度数组作为缓冲区（最大 int64 十进制 19 位 + 负号），
+//	从尾部往前填充，最后切片转换为字符串。这比多次字符串拼接更高效。
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

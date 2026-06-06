@@ -1,7 +1,7 @@
 // Package knowpost 实现知文领域模型与相关能力：
 //   - 渐进式发布流程下的 CRUD：草稿 → 内容上传 → 元数据编辑 → 发布
 //   - 基于三级缓存的 Feed 流（L1 freecache / L2 Redis 碎片缓存 / L3 DB）
-//   - 使用 singleflight 机制防止缓存击穿
+//   - 使用 Redis 看门狗分布式锁防止缓存击穿
 //   - 基于热点键探测的 TTL 动态延长
 //   - 通过事务内 outbox 事件驱动搜索索引异步同步
 //

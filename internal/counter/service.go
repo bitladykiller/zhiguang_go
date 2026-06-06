@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/redislock"
 )
 
 // TOGGLE_LUA 以原子方式切换位图中的单个位，并返回状态是否发生变化。
@@ -92,9 +94,10 @@ return 1
 // RATE_LIMIT_LUA 原子递增限流计数器并设置过期时间。
 //
 // 解决 INCR + 条件 EXPIRE 的竞态条件：
-//   如果 INCR 和 EXPIRE 分开发送，两个并发请求都可能在 INCR 后看到 val > 1，
-//   从而都跳过 EXPIRE，导致限流键永不过期。
-//   Lua 脚本在 Redis 中原子执行，保证 INCR 和 EXPIRE 不可分割。
+//
+//	如果 INCR 和 EXPIRE 分开发送，两个并发请求都可能在 INCR 后看到 val > 1，
+//	从而都跳过 EXPIRE，导致限流键永不过期。
+//	Lua 脚本在 Redis 中原子执行，保证 INCR 和 EXPIRE 不可分割。
 //
 // KEYS[1]：限流键（rl:sds-rebuild:{entityType}:{entityID}）
 // ARGV[1]：过期时间（秒）
@@ -125,8 +128,9 @@ var rateLimitScript = redis.NewScript(RATE_LIMIT_LUA)
 //
 //	toggle (Lua) → 修改位图 → 失效 SDS（触发按需重建） → 发送 Kafka 事件（异步）
 type CounterService struct {
-	redis    *redis.Client
-	producer *CounterEventProducer
+	redis              *redis.Client
+	producer           *CounterEventProducer
+	rebuildLockOptions redislock.Options
 }
 
 // NewCounterService 创建计数器服务实例。
@@ -134,8 +138,12 @@ type CounterService struct {
 // 参数：
 //   - rdb: Redis 客户端，用于执行 Lua 脚本和 SDS/Bitmap 操作
 //   - producer: Kafka 事件生产者，用于异步发布计数变更事件
-func NewCounterService(rdb *redis.Client, producer *CounterEventProducer) *CounterService {
-	return &CounterService{redis: rdb, producer: producer}
+func NewCounterService(rdb *redis.Client, producer *CounterEventProducer, cfg *config.CounterConfig) *CounterService {
+	return &CounterService{
+		redis:              rdb,
+		producer:           producer,
+		rebuildLockOptions: rebuildLockOptions(cfg),
+	}
 }
 
 // ============================================================================
@@ -488,7 +496,8 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 //
 //	Step 1: 检查是否处于退避期（inBackoff），如果是则拒绝重建。
 //	Step 2: 检查是否超过限流水位（allowedByRateLimiter），否则提升退避等级并拒绝。
-//	Step 3: 通过 SETNX 获取分布式锁（10s TTL），防止多实例同时重建同一 SDS。
+//	Step 3: 通过 Redis 看门狗分布式锁获取重建权限，防止多实例同时重建同一 SDS。
+//	        抢到锁后会再次 double-check SDS，避免前一个实例刚刚重建成功时重复查位图。
 //	Step 4: 遍历所有指标（like/fav/follower/following/posts），
 //	        对每个指标调用 bitCountShards 汇总所有位图片段的 BITCOUNT 值。
 //	Step 5: 将汇总结果以固定长度（4 字节/字段）写入 SDS 字节数组。
@@ -501,22 +510,14 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 //
 // 返回值：
 //   - []byte: 重建后的 SDS 二进制数据（SchemaLen * FieldSize 字节）
-//   - error: 退避中、被限流、被锁定或 Redis 操作失败时返回错误
-//
-// 函数调用说明：
-//   - s.redis.SetNX(ctx, key, value, expiration).Result():
-//     SETNX = "SET if Not eXists"，原子操作。
-//     如果 key 不存在则设置并返回 true，已存在则返回 false。
-//     作为分布式锁的基础：持有锁的实例设置它，其他实例看到已存在就不会重复执行。
-//   - s.redis.Del(ctx, key):
-//     释放分布式锁或删除缓存键。
+//   - error: 退避中、被限流或 Redis 操作失败时返回错误
 //
 // 设计决策：
 //   - 位图是权威数据源，SDS 是通过聚合位图得到的缓存数据。
 //     这样设计的优势是 toggle 操作只需修改位图（O(1)），
 //     而 SDS 在需要时才重建（lazy rebuild），避免每次 toggle 都执行 BITCOUNT。
 //   - 退避策略防止频繁失败的重建请求过度消耗 Redis 资源。
-//   - SETNX 分布式锁防止多实例并发重建同一个 SDS，造成"惊群效应"。
+//   - 看门狗分布式锁防止多实例并发重建同一个 SDS，造成"惊群效应"。
 //   - 聚合桶清理：AGG 键是存储增量事件的桶，重建后桶数据已经过期，故清理。
 //   - 重建成功后 SDS 不过期（TTL=0），由外部失效机制控制其生命周期。
 func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID string) ([]byte, error) {
@@ -535,18 +536,23 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 
 	// 分布式锁
 	lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
-	locked, err := s.redis.SetNX(ctx, lockKey, "1", 10*time.Second).Result()
-	if err != nil || !locked {
-		if err == nil {
-			s.escalateBackoff(ctx, entityType, entityID)
-		}
-		return nil, fmt.Errorf("locked by another rebuild")
+	lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval)
+	if err != nil {
+		s.escalateBackoff(ctx, entityType, entityID)
+		return nil, fmt.Errorf("acquire rebuild lock: %w", err)
 	}
-	defer s.redis.Del(ctx, lockKey)
+	defer lock.Release()
+
+	// double-check：可能在当前请求等待锁期间，前一个实例已经完成了重建。
+	raw, err := s.redis.Get(ctx, sdsKey).Bytes()
+	if err == nil && len(raw) == SchemaLen*FieldSize {
+		s.resetBackoff(ctx, entityType, entityID)
+		return raw, nil
+	}
 
 	// 统计所有位图片段
 	metrics := []string{"like", "fav", "follower", "following", "posts"}
-	raw := make([]byte, SchemaLen*FieldSize)
+	raw = make([]byte, SchemaLen*FieldSize)
 	for i, metric := range metrics {
 		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
 		if err != nil {

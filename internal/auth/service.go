@@ -7,10 +7,13 @@ import (
 	"math/big"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/redislock"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -21,11 +24,14 @@ import (
 //   - Facade：对 JwtService、VerificationService、仓储等依赖提供统一业务入口
 //   - Strategy：同一个登录接口同时支持密码登录和验证码登录两种策略
 type AuthService struct {
-	repo       *AuthRepository
-	verifSvc   *VerificationService
-	jwtSvc     *JwtService
-	tokenStore RefreshTokenStore
-	cfg        *config.AuthConfig
+	repo                 *AuthRepository
+	verifSvc             *VerificationService
+	jwtSvc               *JwtService
+	tokenStore           RefreshTokenStore
+	redis                *redis.Client
+	cfg                  *config.AuthConfig
+	refreshLockOptions   redislock.Options
+	refreshLockRetryWait time.Duration
 }
 
 // NewAuthService 使用完整依赖创建 AuthService。
@@ -35,22 +41,28 @@ type AuthService struct {
 //   - verifSvc: 验证码服务，负责验证码的生成与校验
 //   - jwtSvc: JWT 服务，负责令牌签发与校验
 //   - tokenStore: 刷新令牌白名单存储（Redis）
+//   - redisClient: Redis 客户端，用于 auth 域内的分布式锁协调
 //   - cfg: 鉴权配置（jwt TTL、密码策略等）
 func NewAuthService(
 	repo *AuthRepository,
 	verifSvc *VerificationService,
 	jwtSvc *JwtService,
 	tokenStore RefreshTokenStore,
+	redisClient *redis.Client,
 	cfg *config.AuthConfig,
 ) *AuthService {
 	return &AuthService{
-		repo:       repo,
-		verifSvc:   verifSvc,
-		jwtSvc:     jwtSvc,
-		tokenStore: tokenStore,
-		cfg:        cfg,
+		repo:                 repo,
+		verifSvc:             verifSvc,
+		jwtSvc:               jwtSvc,
+		tokenStore:           tokenStore,
+		redis:                redisClient,
+		cfg:                  cfg,
+		refreshLockOptions:   refreshSessionLockOptions(cfg),
+		refreshLockRetryWait: refreshSessionRetryInterval(cfg),
 	}
 }
+
 // SendCode 发送验证码。
 //
 // 业务流程：
@@ -89,7 +101,7 @@ func (s *AuthService) SendCode(ctx context.Context, req *SendCodeRequest) (SendC
 		}
 	}
 
-	result, err := s.verifSvc.SendCode(req.Scene, normalized)
+	result, err := s.verifSvc.SendCode(ctx, req.Scene, normalized)
 	if err != nil {
 		return SendCodeResponse{}, errcode.ErrInternal.WithMsg(err.Error())
 	}
@@ -140,7 +152,7 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 		return AuthResponse{}, errcode.ErrIdentifierExists
 	}
 
-	checkResult := s.verifSvc.Verify(SceneRegister, normalized, req.Code)
+	checkResult := s.verifSvc.Verify(ctx, SceneRegister, normalized, req.Code)
 	if err := ensureVerificationSuccess(checkResult); err != nil {
 		return AuthResponse{}, err
 	}
@@ -178,7 +190,9 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
 	}
 
-	s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL)
+	if err := s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
+	}
 	s.recordLoginLog(ctx, user.ID, normalized, "REGISTER", LoginStatusSuccess, clientInfo)
 
 	return AuthResponse{
@@ -231,7 +245,7 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 	channel := ChannelPassword
 	if req.Code != "" {
 		channel = ChannelCode
-		checkResult := s.verifSvc.Verify(SceneLogin, normalized, req.Code)
+		checkResult := s.verifSvc.Verify(ctx, SceneLogin, normalized, req.Code)
 		if err := ensureVerificationSuccess(checkResult); err != nil {
 			s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusFailed, clientInfo)
 			return AuthResponse{}, err
@@ -252,7 +266,9 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
 	}
 
-	s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL)
+	if err := s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
+	}
 	s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusSuccess, clientInfo)
 
 	return AuthResponse{
@@ -266,11 +282,12 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 // 令牌轮换机制：
 //  1. 验证 refresh token 的 JWT 签名（JwtService.ValidateToken）。
 //  2. 检查 token type 是否为 "refresh"。
-//  3. 查询 Redis 白名单确认该令牌 ID 仍有效（未被吊销）。
-//  4. 吊销旧刷新令牌（从 Redis 白名单删除）。
-//  5. 根据旧令牌中的用户 ID 重新查询用户信息。
-//  6. 签发新的令牌对。
-//  7. 将新刷新令牌 ID 存入 Redis 白名单。
+//  3. 获取 user 级别分布式锁，串行化 refresh 与 RevokeAll。
+//  4. 查询 Redis 白名单确认该令牌 ID 仍有效（未被吊销）。
+//  5. 吊销旧刷新令牌（从 Redis 白名单删除）。
+//  6. 根据旧令牌中的用户 ID 重新查询用户信息。
+//  7. 签发新的令牌对。
+//  8. 将新刷新令牌 ID 存入 Redis 白名单。
 //
 // 参数：
 //   - req: 包含旧 refresh token 的请求
@@ -280,9 +297,10 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 //   - *errcode.AppError: 刷新失败时返回
 //
 // 安全说明：
-//   使用令牌轮换（Token Rotation），每次刷新都吊销旧令牌。
-//   如果攻击者窃取了 refresh token，在它被轮换后，合法用户再次刷新时会失败，
-//   此时可以推断出令牌可能被窃取并采取相应措施。
+//
+//	使用令牌轮换（Token Rotation），每次刷新都吊销旧令牌。
+//	如果攻击者窃取了 refresh token，在它被轮换后，合法用户再次刷新时会失败，
+//	此时可以推断出令牌可能被窃取并采取相应措施。
 func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, *errcode.AppError) {
 	claims, err := s.jwtSvc.ValidateToken(req.RefreshToken)
 	if err != nil {
@@ -293,11 +311,18 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 	if !ok || jwtClaims.TokenKind != "refresh" {
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
 	}
+	lock, appErr := s.acquireRefreshSessionLock(ctx, jwtClaims.UID)
+	if appErr != nil {
+		return AuthResponse{}, appErr
+	}
+	defer lock.Release()
 	if !s.tokenStore.IsTokenValid(jwtClaims.UID, jwtClaims.ID) {
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
 	}
 
-	s.tokenStore.RevokeToken(jwtClaims.UID, jwtClaims.ID)
+	if err := s.tokenStore.RevokeToken(jwtClaims.UID, jwtClaims.ID); err != nil {
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to revoke refresh token")
+	}
 
 	user, err := s.repo.FindUserByID(ctx, claims.UserID())
 	if err != nil {
@@ -308,7 +333,9 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 	if err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
 	}
-	s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL)
+	if err := s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
+	}
 
 	return AuthResponse{
 		User:  mapUserToResponse(user),
@@ -341,8 +368,9 @@ func (s *AuthService) Logout(_ context.Context, req *TokenRefreshRequest) {
 //  3. 校验验证码（VerificationService.Verify）。
 //  4. 验证新密码满足强度策略（长度、字母、数字）。
 //  5. 使用 bcrypt 对新密码进行哈希。
-//  6. 更新数据库中的密码哈希。
-//  7. 吊销该用户的所有 refresh token（强制所有设备重新登录）。
+//  6. 获取 user 级别分布式锁，阻止并发 Refresh 在修改密码期间绕过全量吊销。
+//  7. 更新数据库中的密码哈希。
+//  8. 吊销该用户的所有 refresh token（强制所有设备重新登录）。
 //
 // 参数：
 //   - req: 密码重置请求（标识符、验证码、新密码）
@@ -360,7 +388,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 		return errcode.ErrIdentifierNotFound
 	}
 
-	checkResult := s.verifSvc.Verify(SceneResetPassword, normalized, req.Code)
+	checkResult := s.verifSvc.Verify(ctx, SceneResetPassword, normalized, req.Code)
 	if err := ensureVerificationSuccess(checkResult); err != nil {
 		return err
 	}
@@ -373,12 +401,46 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 	if err != nil {
 		return errcode.ErrInternal.WithMsg("failed to hash password")
 	}
+
+	lock, appErr := s.acquireRefreshSessionLock(ctx, user.ID)
+	if appErr != nil {
+		return appErr
+	}
+	defer lock.Release()
+
 	if err := s.repo.UpdatePassword(ctx, user.ID, string(hash)); err != nil {
 		return errcode.ErrInternal.WithMsg("failed to update password")
 	}
-
-	s.tokenStore.RevokeAll(user.ID)
+	if err := s.tokenStore.RevokeAll(user.ID); err != nil {
+		return errcode.ErrInternal.WithMsg("failed to revoke refresh tokens")
+	}
 	return nil
+}
+
+// acquireRefreshSessionLock 获取用户 refresh token 会话锁。
+//
+// WHY 抽成单独辅助函数：
+//   - Refresh 与 ResetPassword 需要共享同一把 user 级别锁，避免策略漂移。
+//   - 错误统一映射为内部错误，业务流程只关注“是否拿到锁”。
+func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint64) (*redislock.Lock, *errcode.AppError) {
+	if s.redis == nil {
+		return nil, errcode.ErrInternal.WithMsg("redis client is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	lock, err := redislock.AcquireWithRetry(
+		ctx,
+		s.redis,
+		refreshSessionLockKey(userID),
+		s.refreshLockOptions,
+		s.refreshLockRetryWait,
+	)
+	if err != nil {
+		return nil, errcode.ErrInternal.WithMsg("failed to acquire refresh session lock")
+	}
+	return lock, nil
 }
 
 // CurrentUser 返回当前登录用户的资料。

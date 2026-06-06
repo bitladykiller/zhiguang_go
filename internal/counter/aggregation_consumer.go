@@ -11,6 +11,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/redislock"
 )
 
 const decrAggFieldLua = `
@@ -23,6 +25,8 @@ if v == 0 then
 end
 return v
 `
+
+const aggregationFlushLeaderLockKey = "lock:counter:aggregation:flush"
 
 // AggregationConsumer 消费 counter-events，并周期性折叠到 SDS。
 type AggregationConsumer struct {
@@ -102,11 +106,28 @@ func (c *AggregationConsumer) flushLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := c.flush(ctx); err != nil && c.logger != nil {
+			if err := c.flushAsLeader(ctx); err != nil && c.logger != nil {
 				c.logger.Warn("flush counter aggregation failed", zap.Error(err))
 			}
 		}
 	}
+}
+
+// flushAsLeader 使用全局 leader 锁保证同一时刻只有一个实例执行 agg:* 扫描与折叠。
+//
+// WHY 这里使用“全局 flush 锁”而不是“每个 aggKey 单独加锁”：
+//   - 多实例下最明显的问题是每个实例都会独立 SCAN agg:*，Redis 扫描开销会被线性放大。
+//   - 让每一轮 flush 只有一个 leader 执行，既保证正确性，也减少 Redis 背景扫描压力。
+func (c *AggregationConsumer) flushAsLeader(ctx context.Context) error {
+	lock, locked, err := redislock.TryAcquire(ctx, c.redis, aggregationFlushLeaderLockKey, aggregationFlushLockOptions())
+	if err != nil {
+		return err
+	}
+	if !locked {
+		return nil
+	}
+	defer lock.Release()
+	return c.flush(ctx)
 }
 
 func (c *AggregationConsumer) flush(ctx context.Context) error {
