@@ -12,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/zhiguang/app/internal/cache"
+	"github.com/zhiguang/app/pkg/redislock"
 )
 
 const feedLayoutVer = 1
@@ -30,7 +31,7 @@ const (
 //	  - IDs 列表（按小时分槽）：保存某一页的有序帖子 ID 列表。
 //	  - Item 缓存（按帖子维度）：保存单篇帖子的元信息（标题、描述、封面等）。
 //	  - hasMore 软缓存：标记是否还有下一页数据。
-//	L3（MySQL）：权威数据源，只会在 singleflight 锁内回源。
+//	L3（MySQL）：权威数据源，只会在 Redis 看门狗分布式锁内回源。
 //
 // WHY 使用碎片缓存而非整页缓存：
 //   - 整页缓存方案中，单篇帖子更新会致使所有包含该帖子的分页结果失效，
@@ -91,7 +92,7 @@ func (s *KnowPostFeedService) SetCounterClient(c CounterClient) { s.counter = c 
 //  2. L2（Redis 碎片缓存）：先通过 assembleFromCache 尝试从碎片缓存组装整页数据。
 //     碎片缓存包括三部分：ID 列表（Redis List）、单个条目缓存（Redis String）、
 //     以及 hasMore 软缓存（Redis String）。
-//  3. Redis 分布式锁 + L3（MySQL）：当碎片缓存也未命中时，
+//  3. Redis 看门狗分布式锁 + L3（MySQL）：当碎片缓存也未命中时，
 //     进入 getPublicFeedUnderLock 的锁区回源数据库。
 //
 // 参数：
@@ -142,13 +143,14 @@ func (s *KnowPostFeedService) GetPublicFeed(page, size int, currentUserID *uint6
 	return s.getPublicFeedUnderLock(ctx, idsKey, hasMoreKey, localPageKey, safePage, safeSize, currentUserID)
 }
 
-// getPublicFeedUnderLock 在 Redis 分布式锁保护下从 MySQL 查询公共 Feed。
+// getPublicFeedUnderLock 在 Redis 看门狗分布式锁保护下从 MySQL 查询公共 Feed。
 //
 // 功能：防止缓存击穿的线程安全回源方法。当 L1（freecache）和 L2（Redis 碎片缓存）
 // 同时未命中时，多个并发请求会竞争同一个 idsKey 对应的 Redis 分布式锁。
 //
 // 实现细节：
 //  1. 通过 Redis SET NX PX 抢占 `lock:{idsKey}` 分布式锁。
+//     持锁成功后立即启动本地看门狗协程，周期性续租，避免长尾回源时锁提前过期。
 //     拿到锁的实例执行回源查询，没拿到锁的实例循环等待并重检缓存。
 //  2. 加锁后再次检查碎片缓存（double-check 模式），避免重复查库。
 //  3. 查询 MySQL：LIMIT size+1 来判断是否有下一页（HasMore）。
@@ -174,7 +176,7 @@ func (s *KnowPostFeedService) GetPublicFeed(page, size int, currentUserID *uint6
 func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey, hasMoreKey, localPageKey string, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
 	lockKey := "lock:" + idsKey
 	for {
-		token, locked, err := acquireDistributedLock(ctx, s.redis, lockKey)
+		lock, locked, err := redislock.Acquire(ctx, s.redis, lockKey, knowPostLockOptions())
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +192,7 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 			continue
 		}
 
-		defer releaseDistributedLock(s.redis, lockKey, token)
+		defer lock.Release()
 
 		if resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, page, size, currentUserID); resp != nil {
 			s.cacheFeedPage(localPageKey, resp, s.l1Public)

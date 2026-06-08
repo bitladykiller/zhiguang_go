@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/redislock"
 )
 
 // --- [详情读取链路] --- //
 
 // GetDetail 返回知文详情，并补充当前用户维度的点赞/收藏状态。
 //
-// 功能：通过三级缓存 + Redis 分布式锁机制获取知文详情。
+// 功能：通过三级缓存 + Redis 看门狗分布式锁机制获取知文详情。
 // 先从 L1（freecache 进程内缓存）查找，未命中则查 L2（Redis 分布式缓存），
 // 再未命中则进入 Redis 分布式锁保护区域回源到 L3（MySQL）。
 //
@@ -30,9 +31,10 @@ import (
 //     - 如果缓存值为 "NULL" 特殊标记，说明该 ID 对应的资源不存在，
 //     直接返回 404 以避免缓存穿透（布隆过滤器的替代方案）。
 //     - 如果缓存命中，还会将其写入 L1 以供后续进程内命中。
-//  3. L3（MySQL 回源 + Redis 分布式锁）：
-//     - 通过 Redis SET NX PX 加锁，确保多实例场景下同一时刻只有一个实例回源 DB，
-//     其余实例等待缓存被前一个实例回填后直接复用结果。
+//  3. L3（MySQL 回源 + Redis 看门狗分布式锁）：
+//     - 通过 Redis SET NX PX 抢锁，并在持锁期间启动本地看门狗续约，
+//     确保多实例场景下同一时刻只有一个实例回源 DB。
+//     - 其余实例等待缓存被前一个实例回填后直接复用结果。
 //     - 详见 getDetailUnderLock 注释。
 //
 // 权限判定：
@@ -77,7 +79,7 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 	return s.getDetailUnderLock(ctx, id, pageKey, currentUserID)
 }
 
-// getDetailUnderLock 在 Redis 分布式锁保护下从 MySQL 回源查询详情。
+// getDetailUnderLock 在 Redis 看门狗分布式锁保护下从 MySQL 回源查询详情。
 //
 // 功能：这是防止缓存击穿的核心方法。
 // 当 L1、L2 同时未命中时，多个并发请求会竞争同一个 pageKey 对应的 Redis 锁，
@@ -85,6 +87,7 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 //
 // 实现细节：
 //  1. 通过 Redis SET NX PX 尝试抢占分布式锁，锁 key 为 `lock:{pageKey}`。
+//     抢锁成功后会启动本地看门狗协程，周期性续租，避免固定 5 秒租期过短。
 //  2. 抢锁成功后再次检查 Redis（double-check）：
 //     如果上一个持有锁的请求已经回填了缓存，则直接返回缓存数据，无需再次查库。
 //  3. 查库使用 s.repo.FindDetailByID，该 SQL JOIN users 表拿到作者信息。
@@ -109,7 +112,7 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pageKey string, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	lockKey := "lock:" + pageKey
 	for {
-		token, locked, err := acquireDistributedLock(ctx, s.redis, lockKey)
+		lock, locked, err := redislock.Acquire(ctx, s.redis, lockKey, knowPostLockOptions())
 		if err != nil {
 			return nil, err
 		}
@@ -132,7 +135,7 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			continue
 		}
 
-		defer releaseDistributedLock(s.redis, lockKey, token)
+		defer lock.Release()
 
 		cached, _ := s.redis.Get(ctx, pageKey).Result()
 		if cached == "NULL" {

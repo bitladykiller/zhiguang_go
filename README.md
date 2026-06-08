@@ -11,6 +11,7 @@
   Go 应用继续本机运行
 - 搜索能力支持全文检索和 completion suggester
 - `knowpost` 变更会通过事务内 outbox + Canal/Kafka 消费链路投递到 Elasticsearch
+- `knowpost` 的缓存回源使用 Redis 分布式锁 + 手写看门狗续约，避免长尾回源时锁提前过期
 - `canal.enabled=true` 时，会切换为与 Java 版一致的 `Canal -> Kafka -> relation/search consumers` 链路
 - `canal.enabled=false` 时，不会启动异步 outbox 消费链路
 - Kafka 本地环境已调整为 3 broker；`counter-events` 与 `canal-outbox` 主题使用 3 副本并要求 `min.insync.replicas=2`
