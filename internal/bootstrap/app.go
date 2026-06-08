@@ -117,7 +117,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 	kpSvc.SetFeedCacheInvalidator(feedSvc)
 
 	counterProducer := counter.NewCounterEventProducer(kafkaWriter)
-	counterSvc := counter.NewCounterService(redisClient, counterProducer)
+	counterSvc := counter.NewCounterService(redisClient, counterProducer, &cfg.Counter)
 	counterAggConsumer := counter.NewAggregationConsumer(
 		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, cfg.Kafka.Topics.CounterEvents, cfg.Kafka.ConsumerGroup),
 		redisClient,
@@ -158,7 +158,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 		relationEventProcessor,
 		logger,
 	)
-	canalBridge := canal.NewBridge(&cfg.Canal, canalOutboxWriter, logger)
+	canalBridge := canal.NewBridge(&cfg.Canal, redisClient, canalOutboxWriter, logger)
 
 	descSvc := buildDescriptionService(cfg, logger)
 	ragQuerySvc := buildRagQueryService(cfg, logger)

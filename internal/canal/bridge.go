@@ -14,12 +14,14 @@ import (
 	"errors"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 	"github.com/withlin/canal-go/client"
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/redislock"
 )
 
 const (
@@ -39,6 +41,7 @@ const (
 // 中断重连策略：当连接意外断开时，会以 IntervalMs 间隔无限重试，直到 ctx 被取消。
 type Bridge struct {
 	cfg    *config.CanalConfig
+	redis  *redis.Client
 	writer *kafka.Writer
 	logger *zap.Logger
 }
@@ -64,11 +67,11 @@ type Bridge struct {
 //	配置未启用时，调用方只需跳过启动即可，不需要处理错误。
 //	这样 App.Run() 中可以直接对 bridge 做 nil 检查：
 //	  if b != nil { go b.Start(ctx) }
-func NewBridge(cfg *config.CanalConfig, writer *kafka.Writer, logger *zap.Logger) *Bridge {
-	if cfg == nil || !cfg.Enabled || writer == nil {
+func NewBridge(cfg *config.CanalConfig, redisClient *redis.Client, writer *kafka.Writer, logger *zap.Logger) *Bridge {
+	if cfg == nil || !cfg.Enabled || redisClient == nil || writer == nil {
 		return nil
 	}
-	return &Bridge{cfg: cfg, writer: writer, logger: logger}
+	return &Bridge{cfg: cfg, redis: redisClient, writer: writer, logger: logger}
 }
 
 // Start 持续连接 Canal 并将 outbox 表变更写入 Kafka。
@@ -77,9 +80,10 @@ func NewBridge(cfg *config.CanalConfig, writer *kafka.Writer, logger *zap.Logger
 //
 //	阻塞式运行，在无限循环中：
 //	Step 1: 调用 runOnce 建立 Canal 连接并轮询 binlog 变更。
-//	Step 2: 如果 runOnce 返回错误（网络断开、认证失败等），
+//	Step 2: 在多实例下先争抢 leader 分布式锁；只有 leader 实例才会真正连接 Canal。
+//	Step 3: 如果 runOnce 返回错误（网络断开、认证失败等），
 //	        等待 IntervalMs 毫秒后重试（以 Bridge 级别的重试间隔）。
-//	Step 3: 如果 ctx 被取消，立即退出循环。
+//	Step 4: 如果 ctx 被取消，立即退出循环。
 //
 // 参数：
 //   - ctx: 上下文。当 ctx 被取消时（服务关闭），方法会退出并关闭 Kafka Writer。
@@ -107,7 +111,22 @@ func (b *Bridge) Start(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := b.runOnce(ctx); err != nil && !errors.Is(err, context.Canceled) && b.logger != nil {
+		lock, err := redislock.AcquireWithRetry(ctx, b.redis, b.leaderLockKey(), canalLeaderLockOptions(), retryDelay)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if b.logger != nil {
+				b.logger.Warn("acquire canal bridge leader lock failed", zap.Error(err))
+			}
+			if !sleepContext(ctx, retryDelay) {
+				return
+			}
+			continue
+		}
+		err = b.runOnce(ctx)
+		lock.Release()
+		if err != nil && !errors.Is(err, context.Canceled) && b.logger != nil {
 			b.logger.Warn("canal bridge stopped unexpectedly, will retry", zap.Error(err))
 		}
 		if !sleepContext(ctx, retryDelay) {
