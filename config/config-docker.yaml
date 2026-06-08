@@ -20,6 +20,10 @@ redis:
   db: 0
   pool_size: 20
 
+id_generator:
+  machine_id: 0
+  worker_id: 1
+
 kafka:
   brokers:
     - kafka:9092
@@ -48,6 +52,15 @@ auth:
     max_attempts: 5
     send_interval: 60s
     daily_limit: 10
+    lock:
+      ttl_ms: 5000
+      watchdog_ms: 15000
+      retry_interval_ms: 100
+  refresh:
+    lock:
+      ttl_ms: 5000
+      watchdog_ms: 15000
+      retry_interval_ms: 100
   password:
     bcrypt_cost: 12
     min_length: 8

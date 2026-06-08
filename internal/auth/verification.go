@@ -9,6 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/redislock"
 )
 
 // 验证码相关 Redis 键前缀。
@@ -24,11 +25,13 @@ const (
 	prefixDaily    = "vc:daily:"
 	prefixAttempts = "vc:attempts:"
 )
+
 // incrAndExpireScript 原子递增键值并在首次递增时设置过期时间。
 //
 // 解决 INCR + 条件 EXPIRE 的竞态条件：
-//   两个并发请求都 INCR 后看到 val > 1，都跳过 EXPIRE，导致键永不过期。
-//   Lua 脚本在 Redis 中原子执行，保证 INCR 和 EXPIRE 不可分割。
+//
+//	两个并发请求都 INCR 后看到 val > 1，都跳过 EXPIRE，导致键永不过期。
+//	Lua 脚本在 Redis 中原子执行，保证 INCR 和 EXPIRE 不可分割。
 //
 // KEYS[1]：目标键
 // ARGV[1]：过期时间（秒）
@@ -45,8 +48,9 @@ return val
 // verifyAndCountScript 原子检查尝试次数 + 递增 + 获取验证码。
 //
 // 解决 Verify 函数中的 TOCTOU 竞态条件：
-//   原实现先 GET 尝试次数再条件 INCR，两个并发请求可以同时通过上限检查。
-//   Lua 脚本将检查和递增合为原子操作，杜绝并发绕过。
+//
+//	原实现先 GET 尝试次数再条件 INCR，两个并发请求可以同时通过上限检查。
+//	Lua 脚本将检查和递增合为原子操作，杜绝并发绕过。
 //
 // KEYS[1]：尝试次数键（vc:attempts:{scene}:{identifier}）
 // KEYS[2]：验证码键（vc:code:{scene}:{identifier}）
@@ -54,8 +58,9 @@ return val
 // ARGV[2]：尝试次数键过期时间（秒）
 //
 // 返回值：
-//   [1] 尝试次数（递增后），-1 表示已超限
-//   [2] 验证码字符串，空字符串表示不存在
+//
+//	[1] 尝试次数（递增后），-1 表示已超限
+//	[2] 验证码字符串，空字符串表示不存在
 var verifyAndCountScript = redis.NewScript(`
 local attemptKey = KEYS[1]
 local codeKey = KEYS[2]
@@ -88,8 +93,10 @@ return {val, ''}
 //   - 每日发送上限：防止单个标识被大量发送验证码
 //   - 验证尝试次数限制：防暴力枚举
 type VerificationService struct {
-	redis  *redis.Client
-	config *config.VerificationConfig
+	redis             *redis.Client
+	config            *config.VerificationConfig
+	sendLockOptions   redislock.Options
+	sendLockRetryWait time.Duration
 }
 
 // NewVerificationService 创建验证码服务实例。
@@ -101,20 +108,33 @@ type VerificationService struct {
 // 返回值:
 //   - *VerificationService: 验证码服务实例
 func NewVerificationService(redisClient *redis.Client, cfg *config.VerificationConfig) *VerificationService {
-	return &VerificationService{redis: redisClient, config: cfg}
+	return &VerificationService{
+		redis:             redisClient,
+		config:            cfg,
+		sendLockOptions:   verificationSendLockOptions(cfg),
+		sendLockRetryWait: verificationSendRetryInterval(cfg),
+	}
 }
 
 // SendCode 生成密码学安全的随机数字验证码，写入 Redis，并返回基础元信息。
 //
 // 执行流程:
-//  1. 发送间隔检查：检查上次发送与当前是否已间隔 config.SendInterval，防止短信轰炸
-//  2. 每日上限检查：检查当天已发送次数是否达到 config.DailyLimit，防止单个标识被大量发送
-//  3. 生成验证码：通过 crypto/rand 生成安全随机数字串
-//  4. Redis Pipeline 原子写入：验证码、间隔锁、日计数+设置过期
-//  5. 重置尝试计数器：新验证码意味着新的尝试配额（防暴力枚举）
-//  6. 打印验证码至标准输出（开发调试用；生产环境应替换为短信/邮件渠道下发）
+//  1. 先获取 scene + identifier 维度的分布式锁，串行化跨实例发送流程
+//  2. 发送间隔检查：检查上次发送与当前是否已间隔 config.SendInterval，防止短信轰炸
+//  3. 每日上限检查：检查当天已发送次数是否达到 config.DailyLimit，防止单个标识被大量发送
+//  4. 生成验证码：通过 crypto/rand 生成安全随机数字串
+//  5. Redis Pipeline 批量写入：验证码、间隔锁
+//  6. 日计数通过 Lua 原子递增并设置过期
+//  7. 重置尝试计数器：新验证码意味着新的尝试配额（防暴力枚举）
+//  8. 打印验证码至标准输出（开发调试用；生产环境应替换为短信/邮件渠道下发）
+//
+// 为什么要先加分布式锁：
+//   - 原实现先 EXISTS intervalKey 再 GET dailyKey，再写 codeKey/intervalKey。
+//   - 多实例下两个请求可能同时通过检查并各自发送验证码，最终只剩最后一次写入的 codeKey 生效。
+//   - 加锁后同一手机号/邮箱在同一场景下的发送链路被串行化，第二个请求会在锁内看到最新 intervalKey。
 //
 // 参数:
+//   - ctx: 请求上下文，用于控制锁等待时长与 Redis 请求生命周期
 //   - scene: 验证码场景（Registration/Login/PasswordReset 等）
 //   - identifier: 用户标识（手机号或邮箱）
 //
@@ -125,8 +145,22 @@ func NewVerificationService(redisClient *redis.Client, cfg *config.VerificationC
 // 边界情况:
 //   - 在发送间隔内调用时不会生成新验证码，但返回与成功相同的结果（避免暴露限流细节给调用方）
 //   - 每日上限计数键（prefixDaily）按日期后缀组织，每天凌晨自动重置
-func (s *VerificationService) SendCode(scene VerificationScene, identifier string) (*SendCodeResult, error) {
-	ctx := context.Background()
+func (s *VerificationService) SendCode(ctx context.Context, scene VerificationScene, identifier string) (*SendCodeResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	lock, err := redislock.AcquireWithRetry(
+		ctx,
+		s.redis,
+		verificationFlowLockKey(scene, identifier),
+		s.sendLockOptions,
+		s.sendLockRetryWait,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
 
 	// 检查发送间隔，防止短信轰炸
 	intervalKey := fmt.Sprintf("%s%s:%s", prefixInterval, scene, identifier)
@@ -179,34 +213,56 @@ func (s *VerificationService) SendCode(scene VerificationScene, identifier strin
 
 // Verify 校验用户输入的验证码是否与 Redis 中保存的一致。
 //
-// 执行流程（全部在 Lua 脚本中原子完成）:
-//  1. 原子检查尝试次数是否达上限 + 递增尝试次数 + 获取验证码
-//  2. 比对用户输入与存储值
-//  3. 校验成功后删除验证码和尝试次数（一次性使用，用完即焚）
+// 执行流程:
+//  1. 先获取 scene + identifier 维度的分布式锁，串行化跨实例校验流程
+//  2. 在 Lua 脚本中原子检查尝试次数是否达上限 + 递增尝试次数 + 获取验证码
+//  3. 比对用户输入与存储值
+//  4. 校验成功后删除验证码和尝试次数（一次性使用，用完即焚）
 //
 // 原子化原因：
-//   原实现先 GET 尝试次数再条件 INCR，存在 TOCTOU 竞态条件——
-//   两个并发请求可同时通过上限检查，导致暴力枚举超过最大尝试次数。
-//   使用 Lua 脚本将检查、递增和 EXPIRE 合为原子操作，杜绝并发绕过。
+//
+//	原实现先 GET 尝试次数再条件 INCR，存在 TOCTOU 竞态条件——
+//	两个并发请求可同时通过上限检查，导致暴力枚举超过最大尝试次数。
+//	使用 Lua 脚本将检查、递增和 EXPIRE 合为原子操作，杜绝并发绕过。
+//
+// 为什么这里还要再加分布式锁：
+//   - codeKey 的删除动作发生在 Lua 脚本之外，原实现会出现“两个实例几乎同时读到同一个正确验证码”的并发复用。
+//   - 串行化后，同一验证码在跨实例环境下只能被一个请求成功消费。
 //
 // 参数:
+//   - ctx: 请求上下文，用于控制锁等待时长与 Redis 请求生命周期
 //   - scene: 验证码场景
 //   - identifier: 用户标识（手机号或邮箱）
 //   - code: 用户输入的验证码
 //
 // 返回值:
 //   - *VerificationCheckResult: 包含成功标志和状态码
-//     - Success=true, Status=StatusSuccess: 验证通过
-//     - Success=false, Status=StatusNotFound: 验证码不存在或已过期
-//     - Success=false, Status=StatusTooManyAttempts: 尝试次数超限
-//     - Success=false, Status=StatusMismatch: 验证码不匹配
+//   - Success=true, Status=StatusSuccess: 验证通过
+//   - Success=false, Status=StatusNotFound: 验证码不存在或已过期
+//   - Success=false, Status=StatusTooManyAttempts: 尝试次数超限
+//   - Success=false, Status=StatusMismatch: 验证码不匹配
 //
 // 边界情况:
 //   - 验证码过期后（Redis TTL 到期自动删除）自动返回 StatusNotFound
 //   - 达到最大尝试次数后即使输入正确验证码也拒绝校验（防暴力破解）
 //   - 每次校验无论结果都递增尝试计数，但成功后会立刻删除计数键
-func (s *VerificationService) Verify(scene VerificationScene, identifier, code string) *VerificationCheckResult {
-	ctx := context.Background()
+func (s *VerificationService) Verify(ctx context.Context, scene VerificationScene, identifier, code string) *VerificationCheckResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	lock, err := redislock.AcquireWithRetry(
+		ctx,
+		s.redis,
+		verificationFlowLockKey(scene, identifier),
+		s.sendLockOptions,
+		s.sendLockRetryWait,
+	)
+	if err != nil {
+		return fail(StatusNotFound)
+	}
+	defer lock.Release()
+
 	attemptKey := fmt.Sprintf("%s%s:%s", prefixAttempts, scene, identifier)
 	codeKey := fmt.Sprintf("%s%s:%s", prefixCode, scene, identifier)
 

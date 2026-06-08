@@ -103,13 +103,18 @@ func InitializeApp(configPath string) (*server.App, error) {
 	verifSvc := auth.NewVerificationService(redisClient, &cfg.Auth.Verification)
 	tokenStore := auth.NewRedisRefreshTokenStore(redisClient)
 	authRepo := auth.NewAuthRepository(db)
-	authSvc := auth.NewAuthService(authRepo, verifSvc, jwtSvc, tokenStore, &cfg.Auth)
+	authSvc := auth.NewAuthService(authRepo, verifSvc, jwtSvc, tokenStore, redisClient, &cfg.Auth)
 	authHandler := auth.NewAuthHandler(authSvc, jwtSvc)
 
-	idGen, err := knowpost.NewSnowflakeIdGenerator()
+	idGen, err := knowpost.NewSnowflakeIdGenerator(&cfg.IDGenerator)
 	if err != nil {
 		return nil, err
 	}
+	logger.Info("snowflake generator initialized",
+		zap.Int("machine_id", idGen.MachineID()),
+		zap.Int("worker_id", idGen.WorkerID()),
+		zap.Int64("node_id", idGen.NodeID()),
+	)
 
 	kpSvc := knowpost.NewKnowPostService(db, idGen, redisClient, detailCache, hotKeyDetector, &cfg.OSS)
 	feedSvc := knowpost.NewKnowPostFeedService(knowpost.NewKnowPostRepository(db), redisClient, feedPublicCache, feedMineCache, hotKeyDetector)
@@ -127,7 +132,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 	kpSvc.SetCounterClient(counterSvc)
 	feedSvc.SetCounterClient(counterSvc)
 
-	relSvc := relation.NewRelationService(db, redisClient, 10*1024*1024)
+	relSvc := relation.NewRelationService(db, redisClient, 10*1024*1024, idGen)
 	relHandler := relation.NewRelationHandler(relSvc)
 
 	var searchSvc *search.SearchService
