@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	defaultTTL       = 5 * time.Second
-	defaultOpTimeout = time.Second
+	defaultTTL           = 5 * time.Second
+	defaultOpTimeout     = time.Second
+	defaultRetryInterval = 50 * time.Millisecond
 )
 
 // Options 定义分布式锁的行为参数。
@@ -77,13 +78,17 @@ end
 return 0
 `)
 
-// Acquire 尝试获取一个带看门狗续租能力的 Redis 分布式锁。
+// TryAcquire 尝试获取一个带看门狗续租能力的 Redis 分布式锁。
 //
 // 返回值：
 //   - *Lock: 抢锁成功时返回锁对象
 //   - bool: 是否成功抢到锁
 //   - error: Redis 操作失败时返回错误
-func Acquire(ctx context.Context, client *redis.Client, lockKey string, options Options) (*Lock, bool, error) {
+//
+// 语义说明：
+//   - 这是一次性的 try-lock，不会在包内部自旋等待。
+//   - 如果调用方需要“直到拿到锁或 ctx 结束”为止的语义，应使用 AcquireWithRetry。
+func TryAcquire(ctx context.Context, client *redis.Client, lockKey string, options Options) (*Lock, bool, error) {
 	opts := options.normalized()
 	token := uuid.NewString()
 
@@ -102,6 +107,42 @@ func Acquire(ctx context.Context, client *redis.Client, lockKey string, options 
 	}
 	go lock.watchdog()
 	return lock, true, nil
+}
+
+// AcquireWithRetry 持续重试直到成功获取锁或 ctx 结束。
+//
+// 使用场景：
+//   - 调用方确实需要阻塞等待锁，而不是一次 try-lock 后自己决定后续逻辑。
+//   - 例如某些串行化写操作、后台任务抢占等场景。
+//
+// 注意：
+//   - 这里仅对“锁被占用（locked=false）”做重试。
+//   - 如果 Redis 自身返回错误，则直接返回给调用方，由上层决定是否降级或告警。
+//   - retryInterval <= 0 时，默认使用 50ms。
+func AcquireWithRetry(
+	ctx context.Context,
+	client *redis.Client,
+	lockKey string,
+	options Options,
+	retryInterval time.Duration,
+) (*Lock, error) {
+	interval := retryInterval
+	if interval <= 0 {
+		interval = defaultRetryInterval
+	}
+
+	for {
+		lock, locked, err := TryAcquire(ctx, client, lockKey, options)
+		if err != nil {
+			return nil, err
+		}
+		if locked {
+			return lock, nil
+		}
+		if !sleepRetry(ctx, interval) {
+			return nil, ctx.Err()
+		}
+	}
 }
 
 // Release 停止看门狗并在 token 匹配时安全释放锁。
@@ -166,4 +207,15 @@ func (l *Lock) stopWatchdog() {
 		close(l.stopCh)
 		<-l.doneCh
 	})
+}
+
+func sleepRetry(ctx context.Context, retryInterval time.Duration) bool {
+	timer := time.NewTimer(retryInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }

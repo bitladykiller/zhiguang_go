@@ -112,7 +112,7 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pageKey string, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	lockKey := "lock:" + pageKey
 	for {
-		lock, locked, err := redislock.Acquire(ctx, s.redis, lockKey, knowPostLockOptions())
+		lock, locked, err := redislock.TryAcquire(ctx, s.redis, lockKey, knowPostLockOptions())
 		if err != nil {
 			return nil, err
 		}

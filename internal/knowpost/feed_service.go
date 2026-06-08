@@ -176,7 +176,7 @@ func (s *KnowPostFeedService) GetPublicFeed(page, size int, currentUserID *uint6
 func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey, hasMoreKey, localPageKey string, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
 	lockKey := "lock:" + idsKey
 	for {
-		lock, locked, err := redislock.Acquire(ctx, s.redis, lockKey, knowPostLockOptions())
+		lock, locked, err := redislock.TryAcquire(ctx, s.redis, lockKey, knowPostLockOptions())
 		if err != nil {
 			return nil, err
 		}
