@@ -219,7 +219,9 @@ services:
     logging: *default-logging
 
   canal:
-    image: canal/canal-server:v1.1.5
+    build:
+      context: .
+      dockerfile: docker/canal/Dockerfile
     platform: linux/amd64
     container_name: zhiguang-canal
     restart: unless-stopped
@@ -230,7 +232,8 @@ services:
       mysql:
         condition: service_healthy
     volumes:
-      - ./docker/canal/conf/example/instance.properties:/home/admin/canal-server/conf/example/instance.properties:ro
+      - canal_conf:/home/admin/canal-server/conf/example
+      - canal_logs:/home/admin/canal-server/logs
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 11111"]
       interval: 15s
@@ -263,6 +266,8 @@ volumes:
   kafka1_data:
   kafka2_data:
   kafka3_data:
+  canal_conf:
+  canal_logs:
   es_data:
 
 secrets:

@@ -16,6 +16,7 @@
 - `canal.enabled=false` 时，不会启动异步 outbox 消费链路
 - Kafka 本地环境已调整为 3 broker；`counter-events` 与 `canal-outbox` 主题使用 3 副本并要求 `min.insync.replicas=2`
 - `docker-compose.yml` 已包含本地 Canal 服务，默认会订阅 `zhiguang.outbox`
+- Canal 配置通过自定义镜像内置，`conf/example` 与 `logs` 使用 Docker 命名卷持久化
 - LLM/RAG、OSS 存储在配置不完整时会自动降级为 `503`，不会阻塞服务启动
 
 ## 技术栈
