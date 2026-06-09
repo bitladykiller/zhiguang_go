@@ -47,6 +47,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      canal:
+        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
       elasticsearch:
@@ -67,6 +69,7 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: root123
+      MYSQL_ROOT_HOST: "%"
       MYSQL_DATABASE: zhiguang
       MYSQL_USER: zhiguang
       MYSQL_PASSWORD: zhiguang123
@@ -74,6 +77,10 @@ services:
       - --default-authentication-plugin=mysql_native_password
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -207,6 +214,29 @@ services:
         cub kafka-ready -b kafka3:9092 1 60
         kafka-topics --bootstrap-server kafka:9092,kafka2:9092,kafka3:9092 --create --if-not-exists --topic counter-events --replication-factor 3 --partitions 3 --config min.insync.replicas=2
         kafka-topics --bootstrap-server kafka:9092,kafka2:9092,kafka3:9092 --create --if-not-exists --topic canal-outbox --replication-factor 3 --partitions 3 --config min.insync.replicas=2
+    networks:
+      - backend
+    logging: *default-logging
+
+  canal:
+    image: canal/canal-server:v1.1.5
+    platform: linux/amd64
+    container_name: zhiguang-canal
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ./docker/canal/conf/example/instance.properties:/home/admin/canal-server/conf/example/instance.properties:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 11111"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks:
       - backend
     logging: *default-logging

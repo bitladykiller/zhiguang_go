@@ -15,6 +15,7 @@
 - `canal.enabled=true` 时，会切换为与 Java 版一致的 `Canal -> Kafka -> relation/search consumers` 链路
 - `canal.enabled=false` 时，不会启动异步 outbox 消费链路
 - Kafka 本地环境已调整为 3 broker；`counter-events` 与 `canal-outbox` 主题使用 3 副本并要求 `min.insync.replicas=2`
+- `docker-compose.yml` 已包含本地 Canal 服务，默认会订阅 `zhiguang.outbox`
 - LLM/RAG、OSS 存储在配置不完整时会自动降级为 `503`，不会阻塞服务启动
 
 ## 技术栈
@@ -98,6 +99,7 @@ make dev-up
 - MySQL 8.0.30
 - Redis 7
 - Kafka(3 brokers) + Zookeeper
+- Canal Server
 - Elasticsearch 8.5.0
 
 ### 2. 初始化数据库

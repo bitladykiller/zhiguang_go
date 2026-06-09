@@ -163,7 +163,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 		relationEventProcessor,
 		logger,
 	)
-	canalBridge := canal.NewBridge(&cfg.Canal, redisClient, canalOutboxWriter, logger)
+	canalBridge := canal.NewBridge(&cfg.Canal, canalOutboxWriter, logger)
 
 	descSvc := buildDescriptionService(cfg, logger)
 	ragQuerySvc := buildRagQueryService(cfg, logger)

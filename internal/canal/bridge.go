@@ -14,14 +14,12 @@ import (
 	"errors"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 	"github.com/withlin/canal-go/client"
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/pkg/config"
-	"github.com/zhiguang/app/pkg/redislock"
 )
 
 const (
@@ -41,7 +39,6 @@ const (
 // 中断重连策略：当连接意外断开时，会以 IntervalMs 间隔无限重试，直到 ctx 被取消。
 type Bridge struct {
 	cfg    *config.CanalConfig
-	redis  *redis.Client
 	writer *kafka.Writer
 	logger *zap.Logger
 }
@@ -67,11 +64,11 @@ type Bridge struct {
 //	配置未启用时，调用方只需跳过启动即可，不需要处理错误。
 //	这样 App.Run() 中可以直接对 bridge 做 nil 检查：
 //	  if b != nil { go b.Start(ctx) }
-func NewBridge(cfg *config.CanalConfig, redisClient *redis.Client, writer *kafka.Writer, logger *zap.Logger) *Bridge {
-	if cfg == nil || !cfg.Enabled || redisClient == nil || writer == nil {
+func NewBridge(cfg *config.CanalConfig, writer *kafka.Writer, logger *zap.Logger) *Bridge {
+	if cfg == nil || !cfg.Enabled || writer == nil {
 		return nil
 	}
-	return &Bridge{cfg: cfg, redis: redisClient, writer: writer, logger: logger}
+	return &Bridge{cfg: cfg, writer: writer, logger: logger}
 }
 
 // Start 持续连接 Canal 并将 outbox 表变更写入 Kafka。
@@ -80,10 +77,9 @@ func NewBridge(cfg *config.CanalConfig, redisClient *redis.Client, writer *kafka
 //
 //	阻塞式运行，在无限循环中：
 //	Step 1: 调用 runOnce 建立 Canal 连接并轮询 binlog 变更。
-//	Step 2: 在多实例下先争抢 leader 分布式锁；只有 leader 实例才会真正连接 Canal。
-//	Step 3: 如果 runOnce 返回错误（网络断开、认证失败等），
-//	        等待 IntervalMs 毫秒后重试（以 Bridge 级别的重试间隔）。
-//	Step 4: 如果 ctx 被取消，立即退出循环。
+//	Step 2: 如果 runOnce 返回错误（网络断开、认证失败等），
+//	        等待 IntervalMs 毫秒后重试。
+//	Step 3: 如果 ctx 被取消，立即退出循环。
 //
 // 参数：
 //   - ctx: 上下文。当 ctx 被取消时（服务关闭），方法会退出并关闭 Kafka Writer。
@@ -100,6 +96,11 @@ func NewBridge(cfg *config.CanalConfig, redisClient *redis.Client, writer *kafka
 //	retryDelay 使用 cfg.IntervalMs 作为重试间隔（最小 1 秒），
 //	而不是指数退避。这是因为 Canal 服务的连接中断通常是临时性的
 //	（网络抖动或重启），固定的短间隔重试更简单且足够。
+//
+//	WHY 不需要 leader 锁：
+//	Canal Server 每个 destination 只允许一个客户端连接，自带单实例消费约束。
+//	如果多个实例同时连接同一个 destination，Canal Server 会拒绝后续连接。
+//	因此应用层不需要额外的分布式锁来选主。
 func (b *Bridge) Start(ctx context.Context) {
 	if b == nil {
 		return
@@ -111,21 +112,7 @@ func (b *Bridge) Start(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		lock, err := redislock.AcquireWithRetry(ctx, b.redis, b.leaderLockKey(), canalLeaderLockOptions(), retryDelay)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			if b.logger != nil {
-				b.logger.Warn("acquire canal bridge leader lock failed", zap.Error(err))
-			}
-			if !sleepContext(ctx, retryDelay) {
-				return
-			}
-			continue
-		}
-		err = b.runOnce(ctx)
-		lock.Release()
+		err := b.runOnce(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) && b.logger != nil {
 			b.logger.Warn("canal bridge stopped unexpectedly, will retry", zap.Error(err))
 		}
@@ -148,42 +135,28 @@ func (b *Bridge) Start(ctx context.Context) {
 //	  b. 如果无数据（message.Id == -1 或 entries 为空），休眠 pollDelay 后继续。
 //	  c. 调用 parseEntries 将 protobuf Entry 解析为 JSON 格式的 CanalEnvelope。
 //	  d. 将 JSON 消息批量写入 Kafka（b.writer.WriteMessages）。
-//	  e. 写入成功后，调用 connector.Ack(batchID) 确认消费。
-//	  f. 写入失败时，调用 connector.RollBack(batchID) 回滚，后续重试会重新获取该批次。
-//	Step 5: 遇到错误（Canal 连接断开、Kafka 写入失败等）时断开连接并返回错误。
+//	  e. 写入成功后调用 connector.Ack(batchID) 确认该批次。
+//	  f. 写入失败则调用 connector.RollBack(batchID)，下次重试会重新获取该批次。
 //
 // 参数：
-//   - ctx: 上下文，用于取消轮询
+//   - ctx: 上下文，用于取消长时间运行的轮询循环
 //
 // 返回值：
-//   - error: 连接失败、订阅失败、Canal 轮询错误或 Kafka 写入错误时返回
+//   - error: 遇到的第一个不可恢复错误（网络断开、认证失败等）
 //
-// 函数调用说明（canal-go client connector）：
-//   - client.NewSimpleCanalConnector(host, port, username, password, destination, soTimeout, idleTimeout):
-//     创建 Canal 客户端连接器。destination 是 Canal 实例名（对应 Canal Server 配置中的实例名）。
-//     soTimeout 是套接字超时（毫秒），idleTimeout 是空闲超时（毫秒）。
-//   - connector.Connect():
-//     建立与 Canal Server 的 TCP 连接，并进行认证握手。
-//     返回 error（连接失败或认证失败）。
+// 错误处理策略：
+//   - RollBack：写入 Kafka 失败时回滚，下次重试能重新获取同一批数据
+//   - Ack：写入 Kafka 成功后确认，Canal Server 会移动消费位点
+//
+// 函数调用说明：
+//   - client.NewSimpleCanalConnector:
+//     创建 Canal 客户端连接器，支持自动重连。
 //   - connector.Subscribe(filter):
-//     订阅指定过滤规则的 binlog 变更。filter 格式为 MySQL 表名模式，
-//     例如 "test\\.outbox" 表示只订阅 test 数据库的 outbox 表。
-//   - connector.RollBack(batchID):
-//     回滚到指定 batchID。传入 0 表示从最新位置开始消费。
-//   - connector.GetWithOutAck(batchSize, timeout, unit):
-//     获取一批 binlog 变更，不自动确认（需要手动 Ack）。
-//     batchSize 指定最大条目数。返回 Message 包含 Id（batchID）和 Entries（变更条目）。
-//   - connector.Ack(batchID):
-//     确认消费指定的 batchID，告知 Canal Server 可以丢弃该批次。
-//   - connector.RollBack(batchID):
-//     回滚到指定的 batchID，下次 GetWithOutAck 会重新获取该批次的变更。
-//
-// 边界情况：
-//   - message == nil 或 message.Id == -1: 无可用数据，继续轮询
-//   - parseEntries 返回空数组: 可能所有条目都是 DELETE 类型（被过滤），
-//     此时直接 Ack 避免累积未确认的消息
-//   - Kafka 写入失败: RollBack 让 Canal 保留该批次，重试时重新处理
-//   - ctx 被取消: 返回 ctx.Err()，上层 Start 循环会退出
+//     订阅 binlog 过滤规则，例如 "zhiguang\\.outbox" 只监听 outbox 表。
+//   - connector.GetWithOutAck(batchSize):
+//     获取一批 binlog 变更但不自动 ACK，需要手动调用 Ack/RollBack。
+//   - parseEntries:
+//     将 protobuf 格式的 Entry 转为 JSON 格式的 CanalEnvelope。
 func (b *Bridge) runOnce(ctx context.Context) error {
 	connector := client.NewSimpleCanalConnector(
 		b.cfg.Host,
@@ -191,10 +164,9 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		b.cfg.Username,
 		b.cfg.Password,
 		b.cfg.Destination,
-		defaultCanalSocketTimeoutMs,
-		defaultCanalIdleTimeoutMs,
+		int32(defaultCanalSocketTimeoutMs),
+		int32(defaultCanalIdleTimeoutMs),
 	)
-
 	if err := connector.Connect(); err != nil {
 		return err
 	}
@@ -203,34 +175,22 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 	if err := connector.Subscribe(b.cfg.Filter); err != nil {
 		return err
 	}
-	if err := connector.RollBack(0); err != nil {
-		return err
-	}
-
-	if b.logger != nil {
-		b.logger.Info("canal bridge connected",
-			zap.String("host", b.cfg.Host),
-			zap.Int("port", b.cfg.Port),
-			zap.String("destination", b.cfg.Destination),
-			zap.String("filter", b.cfg.Filter),
-			zap.Int("batch_size", b.cfg.BatchSize),
-		)
-	}
 
 	pollDelay := time.Duration(maxInt(b.cfg.IntervalMs, 100)) * time.Millisecond
 	for {
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return ctx.Err()
+		default:
 		}
 
 		message, err := connector.GetWithOutAck(int32(maxInt(b.cfg.BatchSize, 1)), nil, nil)
 		if err != nil {
 			return err
 		}
-		if message == nil || message.Id == -1 || len(message.Entries) == 0 {
-			if !sleepContext(ctx, pollDelay) {
-				return ctx.Err()
-			}
+
+		if message.Id == -1 || len(message.Entries) == 0 {
+			_ = sleepContext(ctx, pollDelay)
 			continue
 		}
 

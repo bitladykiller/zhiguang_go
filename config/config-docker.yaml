@@ -74,11 +74,11 @@ oss:
   folder: avatars
 
 canal:
-  enabled: false
-  host: 127.0.0.1
+  enabled: true
+  host: canal
   port: 11111
   destination: example
-  username: canal
+  username: ""
   password: ""
   filter: zhiguang\\.outbox
   batch_size: 1000
