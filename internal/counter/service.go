@@ -135,6 +135,7 @@ type CounterService struct {
 	rebuildLockOptions redislock.Options
 	failureRecorder    CounterFailureRecorder
 	failureTopic       string
+	messageIDGenerator MessageIDGenerator
 }
 
 // NewCounterService 创建计数器服务实例。
@@ -153,6 +154,10 @@ func NewCounterService(rdb *redis.Client, producer CounterEventPublisher, cfg *c
 func (s *CounterService) SetFailureRecorder(recorder CounterFailureRecorder, topic string) {
 	s.failureRecorder = recorder
 	s.failureTopic = topic
+}
+
+func (s *CounterService) SetMessageIDGenerator(generator MessageIDGenerator) {
+	s.messageIDGenerator = generator
 }
 
 // ============================================================================
@@ -250,6 +255,7 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 			delta = -1
 		}
 		event := &CounterEvent{
+			MessageID:  s.nextMessageID(),
 			EntityType: entityType,
 			EntityID:   entityID,
 			Metric:     metric,
@@ -688,6 +694,13 @@ func failureErrorMessage(cause error) string {
 		return message[:1024]
 	}
 	return message
+}
+
+func (s *CounterService) nextMessageID() uint64 {
+	if s == nil || s.messageIDGenerator == nil {
+		return 0
+	}
+	return s.messageIDGenerator.NextID()
 }
 
 // bitCountShards 统计指定指标的所有位图片段的 SETBIT 总数量。

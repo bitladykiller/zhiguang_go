@@ -57,6 +57,34 @@ func TestTogglePublishFailureMarksDirty(t *testing.T) {
 	}
 }
 
+func TestTogglePublishesSnowflakeMessageID(t *testing.T) {
+	t.Helper()
+
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	publisher := &stubCapturingCounterPublisher{published: make(chan *CounterEvent, 1)}
+	svc := NewCounterService(rdb, publisher, nil)
+	svc.SetMessageIDGenerator(stubMessageIDGenerator{next: 987654321})
+
+	changed, err := svc.Like(context.Background(), 1001, "knowpost", "66")
+	if err != nil {
+		t.Fatalf("like: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected toggle to change bitmap state")
+	}
+
+	select {
+	case event := <-publisher.published:
+		if event.MessageID != 987654321 {
+			t.Fatalf("unexpected message id: got=%d want=987654321", event.MessageID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for published event")
+	}
+}
+
 func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 	t.Helper()
 
@@ -327,6 +355,25 @@ func (p *stubCounterPublisher) Publish(event *CounterEvent) error {
 	return p.err
 }
 
+type stubCapturingCounterPublisher struct {
+	published chan *CounterEvent
+}
+
+func (p *stubCapturingCounterPublisher) Publish(event *CounterEvent) error {
+	if p != nil && p.published != nil {
+		p.published <- cloneCounterEvent(event)
+	}
+	return nil
+}
+
+type stubMessageIDGenerator struct {
+	next uint64
+}
+
+func (g stubMessageIDGenerator) NextID() uint64 {
+	return g.next
+}
+
 type stubCounterFailureRecorder struct {
 	mu      sync.Mutex
 	records []*CounterFailedMessage
@@ -370,6 +417,14 @@ func cloneCounterFailedMessage(message *CounterFailedMessage) *CounterFailedMess
 		return nil
 	}
 	cloned := *message
+	return &cloned
+}
+
+func cloneCounterEvent(event *CounterEvent) *CounterEvent {
+	if event == nil {
+		return nil
+	}
+	cloned := *event
 	return &cloned
 }
 

@@ -30,6 +30,7 @@ import (
 
 // CounterEvent 表示发往 Kafka、供异步聚合消费的计数变更事件。
 type CounterEvent struct {
+	MessageID  uint64 `json:"message_id"`
 	EntityType string `json:"entity_type"`
 	EntityID   string `json:"entity_id"`
 	Metric     string `json:"metric"`
