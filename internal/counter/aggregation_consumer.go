@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
@@ -34,7 +34,8 @@ type AggregationConsumer struct {
 	service          *CounterService
 	logger           *zap.Logger
 	commitFn         func(ctx context.Context, msgs ...kafka.Message) error
-	deduper          *localCounterDeduper
+	groupID          string
+	topic            string
 	batchSize        int
 	flushInterval    time.Duration
 	flushRetryDelay  time.Duration
@@ -76,12 +77,15 @@ func NewAggregationConsumer(
 		}
 	}
 
+	readerCfg := reader.Config()
+
 	return &AggregationConsumer{
 		reader:           reader,
 		service:          service,
 		logger:           logger,
 		commitFn:         reader.CommitMessages,
-		deduper:          newLocalCounterDeduper(defaultCounterDedupBucketCount, defaultCounterDedupBucketDuration),
+		groupID:          readerCfg.GroupID,
+		topic:            readerCfg.Topic,
 		batchSize:        batchSize,
 		flushInterval:    flushInterval,
 		flushRetryDelay:  defaultCounterFlushRetryDelay,
@@ -106,15 +110,29 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 }
 
 func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
-	batch := newCounterBatch(c.batchSize)
-	var openedAt time.Time
+	batches := make(map[int]*counterBatch)
 
 	for {
-		if batch.size() == 0 {
-			msg, err := c.reader.FetchMessage(ctx)
+		if flushed := c.flushExpiredBatches(ctx, batches, time.Now()); flushed {
+			continue
+		}
+
+		fetchCtx := ctx
+		if deadline, ok := nextBatchDeadline(batches, c.flushInterval); ok {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				continue
+			}
+			var cancel context.CancelFunc
+			fetchCtx, cancel = context.WithTimeout(ctx, remaining)
+			msg, err := c.reader.FetchMessage(fetchCtx)
+			cancel()
 			if err != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					continue
 				}
 				c.logWarn("fetch counter kafka message failed", err)
 				if !sleepCounterConsumer(ctx, time.Second) {
@@ -122,43 +140,16 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 				}
 				continue
 			}
-
-			evt, err := parseCounterEvent(msg.Value)
-			if err != nil {
-				c.skipMalformedMessage(ctx, msg, err)
-				continue
-			}
-			if c.isDuplicateMessage(evt.MessageID) {
-				c.skipDuplicateMessage(ctx, msg, evt.MessageID)
-				continue
-			}
-			if err := batch.addEvent(msg, evt); err != nil {
-				c.skipMalformedMessage(ctx, msg, err)
-				continue
-			}
-			openedAt = time.Now()
-			if batch.size() >= c.batchSize {
-				c.flushAndReset(ctx, batch)
+			if err := c.acceptMessage(ctx, batches, msg); err != nil {
+				c.logWarn("accept counter kafka message failed", err)
 			}
 			continue
 		}
 
-		remaining := time.Until(openedAt.Add(c.flushInterval))
-		if remaining <= 0 {
-			c.flushAndReset(ctx, batch)
-			continue
-		}
-
-		fetchCtx, cancel := context.WithTimeout(ctx, remaining)
 		msg, err := c.reader.FetchMessage(fetchCtx)
-		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
 				return
-			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				c.flushAndReset(ctx, batch)
-				continue
 			}
 			c.logWarn("fetch counter kafka message failed", err)
 			if !sleepCounterConsumer(ctx, time.Second) {
@@ -166,22 +157,8 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 			}
 			continue
 		}
-
-		evt, err := parseCounterEvent(msg.Value)
-		if err != nil {
-			c.skipMalformedMessage(ctx, msg, err)
-			continue
-		}
-		if c.isDuplicateMessage(evt.MessageID) {
-			c.skipDuplicateMessage(ctx, msg, evt.MessageID)
-			continue
-		}
-		if err := batch.addEvent(msg, evt); err != nil {
-			c.skipMalformedMessage(ctx, msg, err)
-			continue
-		}
-		if batch.size() >= c.batchSize {
-			c.flushAndReset(ctx, batch)
+		if err := c.acceptMessage(ctx, batches, msg); err != nil {
+			c.logWarn("accept counter kafka message failed", err)
 		}
 	}
 }
@@ -199,6 +176,9 @@ func (c *AggregationConsumer) flushAndReset(ctx context.Context, batch *counterB
 				recordCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 				if recordErr := c.service.recordFailedKafkaMessages(recordCtx, counterFailureStageFlush, batch.messages, err); recordErr != nil {
 					c.logWarn("persist counter failed messages failed", recordErr)
+				}
+				if markErr := c.service.markDirtyMembers(recordCtx, batch.collectDirtyMembers()); markErr != nil {
+					c.logWarn("mark dirty members after exhausted retries failed", markErr)
 				}
 				cancel()
 				c.logWarn(
@@ -224,80 +204,53 @@ func (c *AggregationConsumer) flushBatch(ctx context.Context, batch *counterBatc
 		return nil
 	}
 
-	if !batch.dirtyMarked {
-		batch.dirtyMembers = batch.collectDirtyMembers()
-		if err := c.service.markDirtyMembers(ctx, batch.dirtyMembers); err != nil {
-			return fmt.Errorf("mark dirty members: %w", err)
-		}
-		batch.dirtyMarked = true
-	}
-
-	if !batch.applied {
-		if err := c.applyBatch(ctx, batch); err != nil {
-			return fmt.Errorf("apply counter batch: %w", err)
-		}
-		batch.applied = true
+	if err := c.applyBatch(ctx, batch); err != nil {
+		return fmt.Errorf("apply counter batch: %w", err)
 	}
 
 	if err := c.commitMessages(ctx, batch.messages...); err != nil {
 		return fmt.Errorf("commit counter batch: %w", err)
 	}
-	c.markProcessedMessages(batch.messageIDs)
-
-	if err := c.service.clearDirtyMembers(ctx, batch.dirtyMembers); err != nil {
-		c.logWarn("clear dirty members failed after commit", err)
-	}
 	return nil
 }
 
 func (c *AggregationConsumer) applyBatch(ctx context.Context, batch *counterBatch) error {
-	pipe := c.service.redis.Pipeline()
-	cmds := make([]*redis.Cmd, 0, batch.commandCount())
-
-	for _, entity := range batch.entities {
-		cntKey := SdsKey(entity.entityType, entity.entityID)
-		for idx, delta := range entity.deltas {
-			if delta == 0 {
-				continue
-			}
-			cmds = append(cmds, pipe.Eval(
-				ctx,
-				INCR_SDS_FIELD_LUA,
-				[]string{cntKey},
-				SchemaLen,
-				FieldSize,
-				idx+1,
-				delta,
-			))
-		}
-	}
-
-	if len(cmds) == 0 {
+	if batch == nil || batch.size() == 0 {
 		return nil
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil {
+	appliedKey, err := c.appliedOffsetKey(batch.partition)
+	if err != nil {
 		return err
 	}
-	for _, cmd := range cmds {
-		if err := cmd.Err(); err != nil {
-			return err
-		}
+
+	cntKeys, keyIndexes := batch.cntKeys()
+	keys := make([]string, 0, len(cntKeys)+1)
+	keys = append(keys, appliedKey)
+	keys = append(keys, cntKeys...)
+
+	args := make([]any, 0, 3+len(batch.events)*4)
+	args = append(args, SchemaLen, FieldSize, len(batch.events))
+	for _, event := range batch.events {
+		args = append(args,
+			event.offset,
+			keyIndexes[DirtyMember(event.entityType, event.entityID)],
+			event.index,
+			event.delta,
+		)
 	}
-	return nil
+
+	return applyPartitionBatchScript.Run(ctx, c.service.redis, keys, args...).Err()
 }
 
 func (c *AggregationConsumer) skipMalformedMessage(ctx context.Context, msg kafka.Message, cause error) {
 	c.logWarn("skip malformed counter kafka message", cause)
+	if err := c.advanceAppliedOffset(ctx, msg.Partition, msg.Offset); err != nil {
+		c.logWarn("advance malformed counter kafka message offset failed", err)
+		return
+	}
 	if err := c.commitMessages(ctx, msg); err != nil {
 		c.logWarn("commit malformed counter kafka message failed", err)
-	}
-}
-
-func (c *AggregationConsumer) skipDuplicateMessage(ctx context.Context, msg kafka.Message, messageID uint64) {
-	c.logWarn(fmt.Sprintf("skip duplicated counter kafka message (message_id=%d)", messageID), nil)
-	if err := c.commitMessages(ctx, msg); err != nil {
-		c.logWarn("commit duplicated counter kafka message failed", err)
 	}
 }
 
@@ -311,20 +264,105 @@ func (c *AggregationConsumer) commitMessages(ctx context.Context, msgs ...kafka.
 	return nil
 }
 
-func (c *AggregationConsumer) isDuplicateMessage(messageID uint64) bool {
-	if c == nil || c.deduper == nil || messageID == 0 {
-		return false
+func (c *AggregationConsumer) acceptMessage(ctx context.Context, batches map[int]*counterBatch, msg kafka.Message) error {
+	if batch := batches[msg.Partition]; batch != nil && batch.size() > 0 && msg.Offset != batch.endOffset+1 {
+		c.flushPartitionBatch(ctx, batches, msg.Partition)
 	}
-	return c.deduper.Seen(messageID)
+
+	evt, err := parseCounterEvent(msg.Value)
+	if err != nil {
+		if batch := batches[msg.Partition]; batch != nil && batch.size() > 0 {
+			c.flushPartitionBatch(ctx, batches, msg.Partition)
+		}
+		c.skipMalformedMessage(ctx, msg, err)
+		return nil
+	}
+
+	batch := batches[msg.Partition]
+	if batch == nil {
+		batch = newCounterBatch(c.batchSize)
+		batches[msg.Partition] = batch
+	}
+	if err := batch.addEvent(msg, evt); err != nil {
+		if batch.size() > 0 {
+			c.flushPartitionBatch(ctx, batches, msg.Partition)
+		}
+		c.skipMalformedMessage(ctx, msg, err)
+		return nil
+	}
+
+	if batch.size() >= c.batchSize {
+		c.flushPartitionBatch(ctx, batches, msg.Partition)
+	}
+	return nil
 }
 
-func (c *AggregationConsumer) markProcessedMessages(messageIDs []uint64) {
-	if c == nil || c.deduper == nil {
+func (c *AggregationConsumer) flushExpiredBatches(ctx context.Context, batches map[int]*counterBatch, now time.Time) bool {
+	expired := make([]int, 0, len(batches))
+	for partition, batch := range batches {
+		if batch == nil || batch.size() == 0 {
+			delete(batches, partition)
+			continue
+		}
+		if !now.Before(batch.openedAt.Add(c.flushInterval)) {
+			expired = append(expired, partition)
+		}
+	}
+	if len(expired) == 0 {
+		return false
+	}
+
+	sort.Ints(expired)
+	for _, partition := range expired {
+		c.flushPartitionBatch(ctx, batches, partition)
+	}
+	return true
+}
+
+func (c *AggregationConsumer) flushPartitionBatch(ctx context.Context, batches map[int]*counterBatch, partition int) {
+	batch := batches[partition]
+	if batch == nil || batch.size() == 0 {
+		delete(batches, partition)
 		return
 	}
-	for _, messageID := range messageIDs {
-		c.deduper.Remember(messageID)
+
+	c.flushAndReset(ctx, batch)
+	if batch.size() == 0 {
+		delete(batches, partition)
 	}
+}
+
+func nextBatchDeadline(batches map[int]*counterBatch, flushInterval time.Duration) (time.Time, bool) {
+	var (
+		deadline time.Time
+		ok       bool
+	)
+	for _, batch := range batches {
+		if batch == nil || batch.size() == 0 {
+			continue
+		}
+		current := batch.openedAt.Add(flushInterval)
+		if !ok || current.Before(deadline) {
+			deadline = current
+			ok = true
+		}
+	}
+	return deadline, ok
+}
+
+func (c *AggregationConsumer) appliedOffsetKey(partition int) (string, error) {
+	if c == nil || c.groupID == "" || c.topic == "" {
+		return "", fmt.Errorf("counter consumer applied offset scope is empty")
+	}
+	return AppliedOffsetKey(c.groupID, c.topic, partition), nil
+}
+
+func (c *AggregationConsumer) advanceAppliedOffset(ctx context.Context, partition int, offset int64) error {
+	appliedKey, err := c.appliedOffsetKey(partition)
+	if err != nil {
+		return err
+	}
+	return advanceAppliedOffsetScript.Run(ctx, c.service.redis, []string{appliedKey}, offset).Err()
 }
 
 func (c *AggregationConsumer) maxFlushAttempts() int {
@@ -446,18 +484,21 @@ func (c *AggregationConsumer) logWarn(msg string, err error) {
 }
 
 type counterBatch struct {
-	messages     []kafka.Message
-	messageIDs   []uint64
-	entities     map[string]*counterBatchEntity
-	dirtyMembers []string
-	dirtyMarked  bool
-	applied      bool
+	partition   int
+	openedAt    time.Time
+	startOffset int64
+	endOffset   int64
+	messages    []kafka.Message
+	events      []counterBatchEvent
+	entities    map[string]struct{}
 }
 
-type counterBatchEntity struct {
+type counterBatchEvent struct {
+	offset     int64
 	entityType string
 	entityID   string
-	deltas     map[int]int64
+	index      int
+	delta      int
 }
 
 func newCounterBatch(capacity int) *counterBatch {
@@ -465,9 +506,10 @@ func newCounterBatch(capacity int) *counterBatch {
 		capacity = 1
 	}
 	return &counterBatch{
-		messages:   make([]kafka.Message, 0, capacity),
-		messageIDs: make([]uint64, 0, capacity),
-		entities:   make(map[string]*counterBatchEntity, capacity),
+		partition: -1,
+		messages:  make([]kafka.Message, 0, capacity),
+		events:    make([]counterBatchEvent, 0, capacity),
+		entities:  make(map[string]struct{}, capacity),
 	}
 }
 
@@ -490,25 +532,30 @@ func (b *counterBatch) addEvent(msg kafka.Message, evt CounterEvent) error {
 		return fmt.Errorf("counter event delta is zero")
 	}
 
-	b.messages = append(b.messages, msg)
-	if evt.MessageID != 0 {
-		b.messageIDs = append(b.messageIDs, evt.MessageID)
+	if b.size() == 0 {
+		b.partition = msg.Partition
+		b.openedAt = time.Now()
+		b.startOffset = msg.Offset
+		b.endOffset = msg.Offset
+	} else {
+		if msg.Partition != b.partition {
+			return fmt.Errorf("counter batch partition mismatch: got=%d want=%d", msg.Partition, b.partition)
+		}
+		if msg.Offset != b.endOffset+1 {
+			return fmt.Errorf("counter batch offset gap: partition=%d got=%d want=%d", msg.Partition, msg.Offset, b.endOffset+1)
+		}
+		b.endOffset = msg.Offset
 	}
 
-	key := DirtyMember(evt.EntityType, evt.EntityID)
-	entity := b.entities[key]
-	if entity == nil {
-		entity = &counterBatchEntity{
-			entityType: evt.EntityType,
-			entityID:   evt.EntityID,
-			deltas:     make(map[int]int64, 2),
-		}
-		b.entities[key] = entity
-	}
-	entity.deltas[evt.Index] += int64(evt.Delta)
-	if entity.deltas[evt.Index] == 0 {
-		delete(entity.deltas, evt.Index)
-	}
+	b.messages = append(b.messages, msg)
+	b.events = append(b.events, counterBatchEvent{
+		offset:     msg.Offset,
+		entityType: evt.EntityType,
+		entityID:   evt.EntityID,
+		index:      evt.Index,
+		delta:      evt.Delta,
+	})
+	b.entities[DirtyMember(evt.EntityType, evt.EntityID)] = struct{}{}
 	return nil
 }
 
@@ -519,14 +566,6 @@ func (b *counterBatch) size() int {
 	return len(b.messages)
 }
 
-func (b *counterBatch) commandCount() int {
-	total := 0
-	for _, entity := range b.entities {
-		total += len(entity.deltas)
-	}
-	return total
-}
-
 func (b *counterBatch) collectDirtyMembers() []string {
 	members := make([]string, 0, len(b.entities))
 	for member := range b.entities {
@@ -535,16 +574,34 @@ func (b *counterBatch) collectDirtyMembers() []string {
 	return members
 }
 
+func (b *counterBatch) cntKeys() ([]string, map[string]int) {
+	members := b.collectDirtyMembers()
+	sort.Strings(members)
+
+	keys := make([]string, 0, len(members))
+	indexes := make(map[string]int, len(members))
+	for i, member := range members {
+		entityType, entityID, err := ParseDirtyMember(member)
+		if err != nil {
+			continue
+		}
+		keys = append(keys, SdsKey(entityType, entityID))
+		indexes[member] = i
+	}
+	return keys, indexes
+}
+
 func (b *counterBatch) reset() {
 	if b == nil {
 		return
 	}
+	b.partition = -1
+	b.openedAt = time.Time{}
+	b.startOffset = 0
+	b.endOffset = 0
 	b.messages = b.messages[:0]
-	b.messageIDs = b.messageIDs[:0]
+	b.events = b.events[:0]
 	clear(b.entities)
-	b.dirtyMembers = nil
-	b.dirtyMarked = false
-	b.applied = false
 }
 
 func parseCounterEvent(value []byte) (CounterEvent, error) {
