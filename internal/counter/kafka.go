@@ -10,8 +10,8 @@ import (
 // CounterEventProducer 负责把计数变化事件发布到 Kafka。
 //
 // 计数器事件用于异步聚合。当用户点赞/收藏时，会先在 Redis 位图中完成原子切换，
-// 并让 SDS 立即失效（这样下次读取计数时从位图重建），同时通过 Kafka 事件
-// 做最终一致的异步聚合。
+// 然后把 delta 发往 Kafka；消费者先把 delta 累加到 agg:* 聚合桶，
+// 再周期性 flush 到 cnt:* 这份 SDS 快照。
 //
 // 消息键设计：使用 `{entityType}:{entityID}` 作为消息键，
 // 以保证同实体的所有事件进入同一分区并保持消费顺序。
@@ -28,8 +28,9 @@ type CounterEventProducer struct {
 //     通常是异步模式（Async=true）的 writer，以提升吞吐能力。
 //
 // 注意：
-//   如果传入 nil writer，Publish 方法会 panic，因此调用方应确保
-//   writer 在 CounterService 的整个生命周期内有效。
+//
+//	如果传入 nil writer，Publish 方法会 panic，因此调用方应确保
+//	writer 在 CounterService 的整个生命周期内有效。
 func NewCounterEventProducer(writer *kafka.Writer) *CounterEventProducer {
 	return &CounterEventProducer{writer: writer}
 }
