@@ -77,6 +77,26 @@ CREATE TABLE IF NOT EXISTS outbox (
     KEY ix_outbox_ct (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS counter_failed_messages (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    stage VARCHAR(32) NOT NULL,
+    topic VARCHAR(64) NOT NULL,
+    message_key VARCHAR(128) NOT NULL,
+    entity_type VARCHAR(64) NOT NULL,
+    entity_id VARCHAR(64) NOT NULL,
+    metric VARCHAR(32) NOT NULL,
+    delta INT NOT NULL,
+    payload JSON NOT NULL,
+    error_message TEXT NOT NULL,
+    retry_count INT NOT NULL DEFAULT 0,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY ix_counter_failed_status_ct (status, created_at),
+    KEY ix_counter_failed_entity (entity_type, entity_id, metric)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS following (
     id BIGINT UNSIGNED NOT NULL,
     from_user_id BIGINT UNSIGNED NOT NULL,

@@ -124,6 +124,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 
 	counterProducer := counter.NewCounterEventProducer(kafkaWriter)
 	counterSvc := counter.NewCounterService(redisClient, counterProducer, &cfg.Counter)
+	counterSvc.SetFailureRecorder(counter.NewCounterFailedMessageRepository(db), cfg.Kafka.Topics.CounterEvents)
 	counterAggConsumer := counter.NewAggregationConsumer(
 		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, cfg.Kafka.Topics.CounterEvents, cfg.Kafka.ConsumerGroup),
 		counterSvc,

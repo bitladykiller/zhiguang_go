@@ -3,11 +3,13 @@ package counter
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/redislock"
 )
@@ -131,6 +133,8 @@ type CounterService struct {
 	redis              *redis.Client
 	producer           CounterEventPublisher
 	rebuildLockOptions redislock.Options
+	failureRecorder    CounterFailureRecorder
+	failureTopic       string
 }
 
 // NewCounterService 创建计数器服务实例。
@@ -144,6 +148,11 @@ func NewCounterService(rdb *redis.Client, producer CounterEventPublisher, cfg *c
 		producer:           producer,
 		rebuildLockOptions: rebuildLockOptions(cfg),
 	}
+}
+
+func (s *CounterService) SetFailureRecorder(recorder CounterFailureRecorder, topic string) {
+	s.failureRecorder = recorder
+	s.failureTopic = topic
 }
 
 // ============================================================================
@@ -571,6 +580,7 @@ func (s *CounterService) publishCounterEvent(event *CounterEvent) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = s.markDirty(ctx, event.EntityType, event.EntityID)
+		_ = s.recordFailedEvent(ctx, counterFailureStagePublish, event, err)
 	}
 }
 
@@ -613,6 +623,71 @@ func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType
 		writeInt32BE(raw, i*FieldSize, int32(total))
 	}
 	return raw, nil
+}
+
+func (s *CounterService) recordFailedEvent(ctx context.Context, stage string, event *CounterEvent, cause error) error {
+	if s == nil || s.failureRecorder == nil || event == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	return s.failureRecorder.Create(ctx, &CounterFailedMessage{
+		Stage:        stage,
+		Topic:        s.failureTopic,
+		MessageKey:   event.EntityType + ":" + event.EntityID,
+		EntityType:   event.EntityType,
+		EntityID:     event.EntityID,
+		Metric:       event.Metric,
+		Delta:        event.Delta,
+		Payload:      string(payload),
+		ErrorMessage: failureErrorMessage(cause),
+		RetryCount:   0,
+		Status:       counterFailureStatusPending,
+	})
+}
+
+func (s *CounterService) recordFailedKafkaMessages(ctx context.Context, stage string, messages []kafka.Message, cause error) error {
+	if s == nil || s.failureRecorder == nil || len(messages) == 0 {
+		return nil
+	}
+
+	records := make([]*CounterFailedMessage, 0, len(messages))
+	for _, message := range messages {
+		var event CounterEvent
+		if err := json.Unmarshal(message.Value, &event); err != nil {
+			continue
+		}
+		records = append(records, &CounterFailedMessage{
+			Stage:        stage,
+			Topic:        s.failureTopic,
+			MessageKey:   string(message.Key),
+			EntityType:   event.EntityType,
+			EntityID:     event.EntityID,
+			Metric:       event.Metric,
+			Delta:        event.Delta,
+			Payload:      string(message.Value),
+			ErrorMessage: failureErrorMessage(cause),
+			RetryCount:   0,
+			Status:       counterFailureStatusPending,
+		})
+	}
+
+	return s.failureRecorder.CreateBatch(ctx, records)
+}
+
+func failureErrorMessage(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	message := cause.Error()
+	if len(message) > 1024 {
+		return message[:1024]
+	}
+	return message
 }
 
 // bitCountShards 统计指定指标的所有位图片段的 SETBIT 总数量。
