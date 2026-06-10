@@ -4,8 +4,8 @@
 // 架构概述：
 //
 //	┌──────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
-//	│ Lua 原子 │    │ Bitmap shard │    │ Kafka / agg  │    │ SDS binary  │
-//	│ 切换操作  │ -> │ (用户位图)    │ -> │ (增量聚合桶)   │ -> │ (正式快照)   │
+//	│ Lua 原子 │    │ Bitmap shard │    │ Kafka / MQ   │    │ SDS binary  │
+//	│ 切换操作  │ -> │ (用户位图)    │ -> │ (批量增量消费) │ -> │ (正式快照)   │
 //	└──────────┘    └──────────────┘    └──────────────┘    └─────────────┘
 //
 //	Bitmap shards：每个用户按 userID % ChunkSize 映射到一个分片中的某个 bit，
@@ -16,13 +16,17 @@
 //	它是 Redis 中的正式快照，用于快速读取实体计数。
 //
 //	Lua atomic toggle：在一次 Redis 调用中完成 GETBIT+SETBIT，
-//	并同步发送 Kafka 事件用于异步聚合。
+//	并在状态确实变化时发送 Kafka 事件用于异步聚合。
 //
-//	Rebuild：当 SDS 缺失或通过校验长度检查发现损坏时，从所有位图片段重新统计，
-//	并配合指数退避与分布式锁控制重建频率，防止重建风暴。
+//	Repair / Rebuild：当 MQ 发布、批量 flush 或 offset 提交等链路出现不确定状态时，
+//	实体会先进入 dirty set，后台任务再从位图重新统计并覆盖 cnt:*。
+//	读路径在发现 SDS 缺失或损坏时，也会触发按需重建。
 package counter
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // CounterEvent 表示发往 Kafka、供异步聚合消费的计数变更事件。
 type CounterEvent struct {
@@ -76,6 +80,21 @@ func BitmapKey(metric, entityType, entityID string, chunk uint64) string {
 func SdsKey(entityType, entityID string) string {
 	return fmt.Sprintf("cnt:%s:%s", entityType, entityID)
 }
-func AggKey(entityType, entityID string) string {
-	return fmt.Sprintf("agg:%s:%s", entityType, entityID)
+
+const counterDirtySetKey = "repair:counter:dirty"
+
+func DirtySetKey() string {
+	return counterDirtySetKey
+}
+
+func DirtyMember(entityType, entityID string) string {
+	return entityType + ":" + entityID
+}
+
+func ParseDirtyMember(member string) (string, string, error) {
+	parts := strings.SplitN(member, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid dirty member: %s", member)
+	}
+	return parts[0], parts[1], nil
 }

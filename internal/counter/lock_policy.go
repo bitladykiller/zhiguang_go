@@ -10,7 +10,7 @@ import (
 const (
 	defaultRebuildLockTTL       = 10 * time.Second
 	rebuildLockRetryInterval    = 50 * time.Millisecond
-	defaultAggFlushLockTTL      = 5 * time.Second
+	defaultRepairLeaderLockTTL  = 5 * time.Second
 	defaultLockOperationTimeout = time.Second
 )
 
@@ -41,11 +41,11 @@ func rebuildLockOptions(cfg *config.CounterConfig) redislock.Options {
 	}
 }
 
-// aggregationFlushLockOptions 返回聚合桶 flush 场景的全局 leader 锁配置。
-func aggregationFlushLockOptions() redislock.Options {
+// counterRepairLockOptions 返回 dirty repair 任务的全局 leader 锁配置。
+func counterRepairLockOptions() redislock.Options {
 	return redislock.Options{
-		TTL:              defaultAggFlushLockTTL,
-		WatchdogInterval: defaultAggFlushLockTTL / 3,
+		TTL:              defaultRepairLeaderLockTTL,
+		WatchdogInterval: defaultRepairLeaderLockTTL / 3,
 		OpTimeout:        defaultLockOperationTimeout,
 	}
 }

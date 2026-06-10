@@ -3,6 +3,8 @@ package counter
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"net"
 	"os/exec"
 	"strconv"
@@ -10,28 +12,19 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
-func TestToggleKeepsSnapshotAndAggregationBucket(t *testing.T) {
+func TestTogglePublishFailureMarksDirty(t *testing.T) {
 	t.Helper()
 
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil)
+	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")}, nil)
 	ctx := context.Background()
-
 	entityType := "knowpost"
 	entityID := "42"
-
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 7)
-	if err := rdb.Set(ctx, SdsKey(entityType, entityID), raw, 0).Err(); err != nil {
-		t.Fatalf("seed sds: %v", err)
-	}
-	if err := rdb.HSet(ctx, AggKey(entityType, entityID), "0", 3).Err(); err != nil {
-		t.Fatalf("seed agg: %v", err)
-	}
 
 	changed, err := svc.Like(ctx, 1001, entityType, entityID)
 	if err != nil {
@@ -41,27 +34,13 @@ func TestToggleKeepsSnapshotAndAggregationBucket(t *testing.T) {
 		t.Fatalf("expected toggle to change bitmap state")
 	}
 
-	gotRaw, err := rdb.Get(ctx, SdsKey(entityType, entityID)).Bytes()
-	if err != nil {
-		t.Fatalf("get sds: %v", err)
-	}
-	if len(gotRaw) != len(raw) {
-		t.Fatalf("unexpected sds length: got=%d want=%d", len(gotRaw), len(raw))
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
-		t.Fatalf("unexpected like count in sds: got=%d want=7", got)
-	}
-
-	agg, err := rdb.HGet(ctx, AggKey(entityType, entityID), "0").Int64()
-	if err != nil {
-		t.Fatalf("get agg field: %v", err)
-	}
-	if agg != 3 {
-		t.Fatalf("unexpected agg delta: got=%d want=3", agg)
-	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
+		return err == nil && ok
+	})
 }
 
-func TestFlushAggregationWritesDeltaIntoSds(t *testing.T) {
+func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 	t.Helper()
 
 	rdb, shutdown := startTestRedis(t)
@@ -70,7 +49,6 @@ func TestFlushAggregationWritesDeltaIntoSds(t *testing.T) {
 	ctx := context.Background()
 	entityType := "knowpost"
 	entityID := "99"
-	aggKey := AggKey(entityType, entityID)
 	cntKey := SdsKey(entityType, entityID)
 
 	raw := make([]byte, SchemaLen*FieldSize)
@@ -79,33 +57,137 @@ func TestFlushAggregationWritesDeltaIntoSds(t *testing.T) {
 	if err := rdb.Set(ctx, cntKey, raw, 0).Err(); err != nil {
 		t.Fatalf("seed sds: %v", err)
 	}
-	if err := rdb.HSet(ctx, aggKey, "0", 2, "1", -1).Err(); err != nil {
-		t.Fatalf("seed agg: %v", err)
+
+	svc := NewCounterService(rdb, nil, nil)
+	consumer := &AggregationConsumer{service: svc}
+	batch := newCounterBatch(2)
+	if err := batch.add(mustCounterMessage(t, CounterEvent{
+		EntityType: entityType,
+		EntityID:   entityID,
+		Metric:     "like",
+		Index:      IdxLike,
+		Delta:      2,
+	})); err != nil {
+		t.Fatalf("add like event: %v", err)
+	}
+	if err := batch.add(mustCounterMessage(t, CounterEvent{
+		EntityType: entityType,
+		EntityID:   entityID,
+		Metric:     "fav",
+		Index:      IdxFav,
+		Delta:      -1,
+	})); err != nil {
+		t.Fatalf("add fav event: %v", err)
 	}
 
-	consumer := &AggregationConsumer{redis: rdb}
-	if err := consumer.flushAggregation(ctx, aggKey); err != nil {
-		t.Fatalf("flush aggregation: %v", err)
+	if err := svc.markDirtyMembers(ctx, batch.dirtyMembers()); err != nil {
+		t.Fatalf("mark dirty: %v", err)
+	}
+	if err := consumer.applyBatch(ctx, batch); err != nil {
+		t.Fatalf("apply batch: %v", err)
 	}
 
 	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
 	if err != nil {
-		t.Fatalf("get sds after flush: %v", err)
+		t.Fatalf("get sds after apply: %v", err)
 	}
 	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
-		t.Fatalf("unexpected like count after flush: got=%d want=7", got)
+		t.Fatalf("unexpected like count after apply: got=%d want=7", got)
 	}
 	if got := readInt32BE(gotRaw, IdxFav*FieldSize); got != 0 {
-		t.Fatalf("unexpected fav count after flush: got=%d want=0", got)
+		t.Fatalf("unexpected fav count after apply: got=%d want=0", got)
 	}
 
-	exists, err := rdb.Exists(ctx, aggKey).Result()
+	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
 	if err != nil {
-		t.Fatalf("check agg exists: %v", err)
+		t.Fatalf("check dirty set: %v", err)
 	}
-	if exists != 0 {
-		t.Fatalf("expected agg key to be deleted after flush, exists=%d", exists)
+	if !ok {
+		t.Fatalf("expected dirty marker to be present before commit cleanup")
 	}
+}
+
+func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
+	t.Helper()
+
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	ctx := context.Background()
+	entityType := "knowpost"
+	entityID := "77"
+
+	svc := NewCounterService(rdb, nil, nil)
+	if _, err := svc.Like(ctx, 1001, entityType, entityID); err != nil {
+		t.Fatalf("like first user: %v", err)
+	}
+	if _, err := svc.Like(ctx, 1002, entityType, entityID); err != nil {
+		t.Fatalf("like second user: %v", err)
+	}
+
+	raw := make([]byte, SchemaLen*FieldSize)
+	writeInt32BE(raw, IdxLike*FieldSize, 9)
+	if err := rdb.Set(ctx, SdsKey(entityType, entityID), raw, 0).Err(); err != nil {
+		t.Fatalf("seed wrong sds: %v", err)
+	}
+	if err := svc.markDirty(ctx, entityType, entityID); err != nil {
+		t.Fatalf("mark dirty: %v", err)
+	}
+
+	consumer := &AggregationConsumer{service: svc}
+	if err := consumer.repairDirtyMember(ctx, DirtyMember(entityType, entityID)); err != nil {
+		t.Fatalf("repair dirty member: %v", err)
+	}
+
+	gotRaw, err := rdb.Get(ctx, SdsKey(entityType, entityID)).Bytes()
+	if err != nil {
+		t.Fatalf("get repaired sds: %v", err)
+	}
+	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 2 {
+		t.Fatalf("unexpected like count after repair: got=%d want=2", got)
+	}
+
+	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
+	if err != nil {
+		t.Fatalf("check dirty set: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected dirty marker to be removed after repair")
+	}
+}
+
+type stubCounterPublisher struct {
+	err error
+}
+
+func (p *stubCounterPublisher) Publish(event *CounterEvent) error {
+	return p.err
+}
+
+func mustCounterMessage(t *testing.T, event CounterEvent) kafka.Message {
+	t.Helper()
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	return kafka.Message{
+		Key:   []byte(event.EntityType + ":" + event.EntityID),
+		Value: data,
+	}
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("condition was not met within %s", timeout)
 }
 
 func startTestRedis(t *testing.T) (*redis.Client, func()) {

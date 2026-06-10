@@ -126,10 +126,10 @@ var rateLimitScript = redis.NewScript(RATE_LIMIT_LUA)
 //
 // 数据流：
 //
-//	toggle (Lua) → 修改位图 → 发送 Kafka 事件（异步） → 消费者累加 agg:* → 周期 flush 到 SDS
+//	toggle (Lua) → 修改位图 → 发送 Kafka 事件（异步） → 消费者批量聚合 → flush 到 cnt:*
 type CounterService struct {
 	redis              *redis.Client
-	producer           *CounterEventProducer
+	producer           CounterEventPublisher
 	rebuildLockOptions redislock.Options
 }
 
@@ -138,7 +138,7 @@ type CounterService struct {
 // 参数：
 //   - rdb: Redis 客户端，用于执行 Lua 脚本和 SDS/Bitmap 操作
 //   - producer: Kafka 事件生产者，用于异步发布计数变更事件
-func NewCounterService(rdb *redis.Client, producer *CounterEventProducer, cfg *config.CounterConfig) *CounterService {
+func NewCounterService(rdb *redis.Client, producer CounterEventPublisher, cfg *config.CounterConfig) *CounterService {
 	return &CounterService{
 		redis:              rdb,
 		producer:           producer,
@@ -222,10 +222,9 @@ func (s *CounterService) IncrementFollowers(ctx context.Context, userID uint64, 
 //     .Int() 将 Lua 返回值转为 Go int。
 //
 // 设计决策：
-//   - Bitmap 仍然是权威数据源，但 cnt:* 不再按写请求直接删除，
-//     而是作为正式快照由 MQ -> agg:* -> SDS 这条链路持续维护。
+//   - Bitmap 仍然是权威数据源，cnt:* 是被 MQ 增量维护的正式快照。
 //   - Kafka 发布采用 fire-and-forget（goroutine 异步执行），
-//     不阻塞主请求路径。计数事件可以容忍偶尔丢失，因为缺失时仍可从位图重建。
+//     不阻塞主请求路径；如果发布失败，会把实体标记到 dirty set，交给后台位图修复。
 func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, entityID, metric, op string) (bool, error) {
 	chunk := ChunkOf(userID)
 	offset := BitOf(userID)
@@ -251,7 +250,7 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 		}
 		// 这里采用 fire-and-forget，Kafka 发布只做尽力而为。
 		if s.producer != nil {
-			go func() { _ = s.producer.Publish(event) }()
+			go s.publishCounterEvent(event)
 		}
 		return true, nil
 	}
@@ -498,7 +497,7 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 //	        对每个指标调用 bitCountShards 汇总所有位图片段的 BITCOUNT 值。
 //	Step 5: 将汇总结果以固定长度（4 字节/字段）写入 SDS 字节数组。
 //	Step 6: 将 SDS 写回 Redis（SET 命令，不过期）。
-//	Step 7: 清理聚合桶键（AggKey），释放锁并重置退避状态。
+//	Step 7: 释放锁并重置退避状态。
 //
 // 参数：
 //   - entityType: 实体类型
@@ -510,11 +509,11 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 //
 // 设计决策：
 //   - 位图是权威数据源，SDS 是通过聚合位图得到的正式快照。
-//     正常情况下快照由 Kafka -> agg:* -> flush 链路持续维护；
+//     正常情况下快照由 Kafka 批量消费链路持续维护；
 //     只有缺失、损坏或异常漂移时才回退到位图重建。
 //   - 退避策略防止频繁失败的重建请求过度消耗 Redis 资源。
 //   - 看门狗分布式锁防止多实例并发重建同一个 SDS，造成"惊群效应"。
-//   - 聚合桶清理：AGG 键是 Kafka 消费后的增量桶；重建后当前桶内 delta 已被位图全量覆盖，故清理。
+//   - dirty repair：对于 MQ 链路中出现的不确定状态，后台任务会直接用位图绝对值覆盖 cnt:*。
 //   - 重建成功后 SDS 不过期（TTL=0），由外部异常处理或 Redis 生命周期决定是否丢失。
 func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID string) ([]byte, error) {
 	sdsKey := SdsKey(entityType, entityID)
@@ -546,30 +545,73 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 		return raw, nil
 	}
 
-	// 统计所有位图片段
-	metrics := []string{"like", "fav", "follower", "following", "posts"}
-	raw = make([]byte, SchemaLen*FieldSize)
-	for i, metric := range metrics {
-		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
-		if err != nil {
-			s.escalateBackoff(ctx, entityType, entityID)
-			return nil, err
-		}
-		writeInt32BE(raw, i*FieldSize, int32(total))
+	raw, err = s.buildSnapshotFromBitmap(ctx, entityType, entityID)
+	if err != nil {
+		s.escalateBackoff(ctx, entityType, entityID)
+		return nil, err
 	}
 
-	// 回写 SDS
 	if err := s.redis.Set(ctx, sdsKey, raw, 0).Err(); err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, err
 	}
 
-	// 清理聚合桶
-	s.redis.Del(ctx, AggKey(entityType, entityID))
-
 	// 重置退避状态
 	s.resetBackoff(ctx, entityType, entityID)
 
+	return raw, nil
+}
+
+func (s *CounterService) publishCounterEvent(event *CounterEvent) {
+	if s == nil || s.producer == nil || event == nil {
+		return
+	}
+
+	if err := s.producer.Publish(event); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = s.markDirty(ctx, event.EntityType, event.EntityID)
+	}
+}
+
+func (s *CounterService) markDirty(ctx context.Context, entityType, entityID string) error {
+	return s.redis.SAdd(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Err()
+}
+
+func (s *CounterService) markDirtyMembers(ctx context.Context, members []string) error {
+	if len(members) == 0 {
+		return nil
+	}
+
+	args := make([]any, 0, len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	return s.redis.SAdd(ctx, DirtySetKey(), args...).Err()
+}
+
+func (s *CounterService) clearDirtyMembers(ctx context.Context, members []string) error {
+	if len(members) == 0 {
+		return nil
+	}
+
+	args := make([]any, 0, len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	return s.redis.SRem(ctx, DirtySetKey(), args...).Err()
+}
+
+func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType, entityID string) ([]byte, error) {
+	metrics := []string{"like", "fav", "follower", "following", "posts"}
+	raw := make([]byte, SchemaLen*FieldSize)
+	for i, metric := range metrics {
+		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
+		if err != nil {
+			return nil, err
+		}
+		writeInt32BE(raw, i*FieldSize, int32(total))
+	}
 	return raw, nil
 }
 
