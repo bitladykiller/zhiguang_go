@@ -8,6 +8,7 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,8 @@ func TestTogglePublishFailureMarksDirty(t *testing.T) {
 	defer shutdown()
 
 	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")}, nil)
+	recorder := &stubCounterFailureRecorder{}
+	svc.SetFailureRecorder(recorder, "counter-events")
 	ctx := context.Background()
 	entityType := "knowpost"
 	entityID := "42"
@@ -38,6 +41,20 @@ func TestTogglePublishFailureMarksDirty(t *testing.T) {
 		ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
 		return err == nil && ok
 	})
+	waitForCondition(t, 2*time.Second, func() bool {
+		return recorder.totalRecords() == 1
+	})
+
+	record := recorder.singleRecord(t)
+	if record.Stage != counterFailureStagePublish {
+		t.Fatalf("unexpected publish failure stage: got=%s want=%s", record.Stage, counterFailureStagePublish)
+	}
+	if record.Topic != "counter-events" {
+		t.Fatalf("unexpected publish failure topic: got=%s want=counter-events", record.Topic)
+	}
+	if record.EntityType != entityType || record.EntityID != entityID || record.Metric != "like" || record.Delta != 1 {
+		t.Fatalf("unexpected publish failure record: %+v", record)
+	}
 }
 
 func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
@@ -80,7 +97,7 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 		t.Fatalf("add fav event: %v", err)
 	}
 
-	if err := svc.markDirtyMembers(ctx, batch.dirtyMembers()); err != nil {
+	if err := svc.markDirtyMembers(ctx, batch.collectDirtyMembers()); err != nil {
 		t.Fatalf("mark dirty: %v", err)
 	}
 	if err := consumer.applyBatch(ctx, batch); err != nil {
@@ -156,12 +173,204 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 	}
 }
 
+func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
+	t.Helper()
+
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	ctx := context.Background()
+	entityType := "knowpost"
+	entityID := "108"
+	cntKey := SdsKey(entityType, entityID)
+
+	raw := make([]byte, SchemaLen*FieldSize)
+	writeInt32BE(raw, IdxLike*FieldSize, 5)
+	if err := rdb.Set(ctx, cntKey, raw, 0).Err(); err != nil {
+		t.Fatalf("seed sds: %v", err)
+	}
+
+	svc := NewCounterService(rdb, nil, nil)
+	recorder := &stubCounterFailureRecorder{}
+	svc.SetFailureRecorder(recorder, "counter-events")
+	commitCalls := 0
+	consumer := &AggregationConsumer{
+		service:          svc,
+		flushMaxAttempts: 3,
+		flushRetryDelay:  time.Millisecond,
+		commitFn: func(ctx context.Context, msgs ...kafka.Message) error {
+			commitCalls++
+			if commitCalls < 3 {
+				return errors.New("commit failed")
+			}
+			return nil
+		},
+	}
+
+	batch := newCounterBatch(1)
+	if err := batch.add(mustCounterMessage(t, CounterEvent{
+		EntityType: entityType,
+		EntityID:   entityID,
+		Metric:     "like",
+		Index:      IdxLike,
+		Delta:      2,
+	})); err != nil {
+		t.Fatalf("add like event: %v", err)
+	}
+
+	consumer.flushAndReset(ctx, batch)
+
+	if commitCalls != 3 {
+		t.Fatalf("unexpected commit attempts: got=%d want=3", commitCalls)
+	}
+	if batch.size() != 0 {
+		t.Fatalf("expected batch to be reset after flush attempts")
+	}
+
+	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
+	if err != nil {
+		t.Fatalf("get sds after retries: %v", err)
+	}
+	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
+		t.Fatalf("unexpected like count after retries: got=%d want=7", got)
+	}
+
+	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
+	if err != nil {
+		t.Fatalf("check dirty set after retries: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected dirty marker to be removed after successful retry")
+	}
+	if recorder.totalRecords() != 0 {
+		t.Fatalf("did not expect failed records after successful retry, got=%d", recorder.totalRecords())
+	}
+}
+
+func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
+	t.Helper()
+
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	ctx := context.Background()
+	entityType := "knowpost"
+	entityID := "109"
+	cntKey := SdsKey(entityType, entityID)
+
+	raw := make([]byte, SchemaLen*FieldSize)
+	writeInt32BE(raw, IdxLike*FieldSize, 5)
+	if err := rdb.Set(ctx, cntKey, raw, 0).Err(); err != nil {
+		t.Fatalf("seed sds: %v", err)
+	}
+
+	svc := NewCounterService(rdb, nil, nil)
+	recorder := &stubCounterFailureRecorder{}
+	svc.SetFailureRecorder(recorder, "counter-events")
+
+	commitCalls := 0
+	consumer := &AggregationConsumer{
+		service:          svc,
+		flushMaxAttempts: 3,
+		flushRetryDelay:  time.Millisecond,
+		commitFn: func(ctx context.Context, msgs ...kafka.Message) error {
+			commitCalls++
+			return errors.New("commit failed")
+		},
+	}
+
+	batch := newCounterBatch(1)
+	if err := batch.add(mustCounterMessage(t, CounterEvent{
+		EntityType: entityType,
+		EntityID:   entityID,
+		Metric:     "like",
+		Index:      IdxLike,
+		Delta:      2,
+	})); err != nil {
+		t.Fatalf("add like event: %v", err)
+	}
+
+	consumer.flushAndReset(ctx, batch)
+
+	if commitCalls != 3 {
+		t.Fatalf("unexpected commit attempts: got=%d want=3", commitCalls)
+	}
+
+	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
+	if err != nil {
+		t.Fatalf("get sds after failed retries: %v", err)
+	}
+	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
+		t.Fatalf("unexpected like count after failed retries: got=%d want=7", got)
+	}
+
+	if recorder.totalRecords() != 1 {
+		t.Fatalf("expected one failed record after exhausted retries, got=%d", recorder.totalRecords())
+	}
+	record := recorder.singleRecord(t)
+	if record.Stage != counterFailureStageFlush {
+		t.Fatalf("unexpected flush failure stage: got=%s want=%s", record.Stage, counterFailureStageFlush)
+	}
+	if record.Topic != "counter-events" {
+		t.Fatalf("unexpected flush failure topic: got=%s want=counter-events", record.Topic)
+	}
+	if record.EntityType != entityType || record.EntityID != entityID || record.Metric != "like" || record.Delta != 2 {
+		t.Fatalf("unexpected flush failure record: %+v", record)
+	}
+}
+
 type stubCounterPublisher struct {
 	err error
 }
 
 func (p *stubCounterPublisher) Publish(event *CounterEvent) error {
 	return p.err
+}
+
+type stubCounterFailureRecorder struct {
+	mu      sync.Mutex
+	records []*CounterFailedMessage
+}
+
+func (r *stubCounterFailureRecorder) Create(ctx context.Context, message *CounterFailedMessage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = append(r.records, cloneCounterFailedMessage(message))
+	return nil
+}
+
+func (r *stubCounterFailureRecorder) CreateBatch(ctx context.Context, messages []*CounterFailedMessage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, message := range messages {
+		r.records = append(r.records, cloneCounterFailedMessage(message))
+	}
+	return nil
+}
+
+func (r *stubCounterFailureRecorder) totalRecords() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.records)
+}
+
+func (r *stubCounterFailureRecorder) singleRecord(t *testing.T) *CounterFailedMessage {
+	t.Helper()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.records) != 1 {
+		t.Fatalf("expected exactly one failed record, got=%d", len(r.records))
+	}
+	return cloneCounterFailedMessage(r.records[0])
+}
+
+func cloneCounterFailedMessage(message *CounterFailedMessage) *CounterFailedMessage {
+	if message == nil {
+		return nil
+	}
+	cloned := *message
+	return &cloned
 }
 
 func mustCounterMessage(t *testing.T, event CounterEvent) kafka.Message {

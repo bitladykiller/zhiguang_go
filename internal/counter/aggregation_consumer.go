@@ -17,6 +17,11 @@ import (
 
 const counterRepairLeaderLockKey = "lock:counter:repair"
 
+const (
+	defaultCounterFlushMaxAttempts = 3
+	defaultCounterFlushRetryDelay  = time.Second
+)
+
 // AggregationConsumer 消费 counter-events，并按批次把增量直接折叠到 cnt:*。
 //
 // 这里不再使用 Redis agg:* 中转桶，原因是当前方案把“批量聚合”放在 MQ 消费端：
@@ -25,14 +30,17 @@ const counterRepairLeaderLockKey = "lock:counter:repair"
 //   - 如果 publish、flush 或 offset commit 出现失败，对应实体会进入 dirty set，
 //     再由 repair loop 用位图的绝对值覆盖 cnt:*。
 type AggregationConsumer struct {
-	reader         *kafka.Reader
-	service        *CounterService
-	logger         *zap.Logger
-	batchSize      int
-	flushInterval  time.Duration
-	repairEnabled  bool
-	repairInterval time.Duration
-	repairBatch    int
+	reader           *kafka.Reader
+	service          *CounterService
+	logger           *zap.Logger
+	commitFn         func(ctx context.Context, msgs ...kafka.Message) error
+	batchSize        int
+	flushInterval    time.Duration
+	flushRetryDelay  time.Duration
+	flushMaxAttempts int
+	repairEnabled    bool
+	repairInterval   time.Duration
+	repairBatch      int
 }
 
 func NewAggregationConsumer(
@@ -68,14 +76,17 @@ func NewAggregationConsumer(
 	}
 
 	return &AggregationConsumer{
-		reader:         reader,
-		service:        service,
-		logger:         logger,
-		batchSize:      batchSize,
-		flushInterval:  flushInterval,
-		repairEnabled:  repairEnabled,
-		repairInterval: repairInterval,
-		repairBatch:    repairBatch,
+		reader:           reader,
+		service:          service,
+		logger:           logger,
+		commitFn:         reader.CommitMessages,
+		batchSize:        batchSize,
+		flushInterval:    flushInterval,
+		flushRetryDelay:  defaultCounterFlushRetryDelay,
+		flushMaxAttempts: defaultCounterFlushMaxAttempts,
+		repairEnabled:    repairEnabled,
+		repairInterval:   repairInterval,
+		repairBatch:      repairBatch,
 	}
 }
 
@@ -160,12 +171,31 @@ func (c *AggregationConsumer) flushAndReset(ctx context.Context, batch *counterB
 		return
 	}
 
-	if err := c.flushBatch(ctx, batch); err != nil {
-		c.logWarn("flush counter batch failed", err)
-		if !sleepCounterConsumer(ctx, time.Second) {
-			return
+	maxAttempts := c.maxFlushAttempts()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := c.flushBatch(ctx, batch); err != nil {
+			c.logWarn(fmt.Sprintf("flush counter batch failed (attempt %d/%d)", attempt, maxAttempts), err)
+			if attempt == maxAttempts {
+				recordCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+				if recordErr := c.service.recordFailedKafkaMessages(recordCtx, counterFailureStageFlush, batch.messages, err); recordErr != nil {
+					c.logWarn("persist counter failed messages failed", recordErr)
+				}
+				cancel()
+				c.logWarn(
+					fmt.Sprintf("flush counter batch exhausted retries and will drop batch (attempts=%d, messages=%d)", maxAttempts, batch.size()),
+					err,
+				)
+				break
+			}
+			if !sleepCounterConsumer(ctx, c.retryDelay()) {
+				return
+			}
+			continue
 		}
+		batch.reset()
+		return
 	}
+
 	batch.reset()
 }
 
@@ -174,20 +204,26 @@ func (c *AggregationConsumer) flushBatch(ctx context.Context, batch *counterBatc
 		return nil
 	}
 
-	dirtyMembers := batch.dirtyMembers()
-	if err := c.service.markDirtyMembers(ctx, dirtyMembers); err != nil {
-		return fmt.Errorf("mark dirty members: %w", err)
+	if !batch.dirtyMarked {
+		batch.dirtyMembers = batch.collectDirtyMembers()
+		if err := c.service.markDirtyMembers(ctx, batch.dirtyMembers); err != nil {
+			return fmt.Errorf("mark dirty members: %w", err)
+		}
+		batch.dirtyMarked = true
 	}
 
-	if err := c.applyBatch(ctx, batch); err != nil {
-		return fmt.Errorf("apply counter batch: %w", err)
+	if !batch.applied {
+		if err := c.applyBatch(ctx, batch); err != nil {
+			return fmt.Errorf("apply counter batch: %w", err)
+		}
+		batch.applied = true
 	}
 
-	if err := c.reader.CommitMessages(ctx, batch.messages...); err != nil {
+	if err := c.commitMessages(ctx, batch.messages...); err != nil {
 		return fmt.Errorf("commit counter batch: %w", err)
 	}
 
-	if err := c.service.clearDirtyMembers(ctx, dirtyMembers); err != nil {
+	if err := c.service.clearDirtyMembers(ctx, batch.dirtyMembers); err != nil {
 		c.logWarn("clear dirty members failed after commit", err)
 	}
 	return nil
@@ -232,9 +268,33 @@ func (c *AggregationConsumer) applyBatch(ctx context.Context, batch *counterBatc
 
 func (c *AggregationConsumer) skipMalformedMessage(ctx context.Context, msg kafka.Message, cause error) {
 	c.logWarn("skip malformed counter kafka message", cause)
-	if err := c.reader.CommitMessages(ctx, msg); err != nil {
+	if err := c.commitMessages(ctx, msg); err != nil {
 		c.logWarn("commit malformed counter kafka message failed", err)
 	}
+}
+
+func (c *AggregationConsumer) commitMessages(ctx context.Context, msgs ...kafka.Message) error {
+	if c != nil && c.commitFn != nil {
+		return c.commitFn(ctx, msgs...)
+	}
+	if c != nil && c.reader != nil {
+		return c.reader.CommitMessages(ctx, msgs...)
+	}
+	return nil
+}
+
+func (c *AggregationConsumer) maxFlushAttempts() int {
+	if c != nil && c.flushMaxAttempts > 0 {
+		return c.flushMaxAttempts
+	}
+	return defaultCounterFlushMaxAttempts
+}
+
+func (c *AggregationConsumer) retryDelay() time.Duration {
+	if c != nil && c.flushRetryDelay > 0 {
+		return c.flushRetryDelay
+	}
+	return defaultCounterFlushRetryDelay
 }
 
 func (c *AggregationConsumer) repairLoop(ctx context.Context) {
@@ -342,8 +402,11 @@ func (c *AggregationConsumer) logWarn(msg string, err error) {
 }
 
 type counterBatch struct {
-	messages []kafka.Message
-	entities map[string]*counterBatchEntity
+	messages     []kafka.Message
+	entities     map[string]*counterBatchEntity
+	dirtyMembers []string
+	dirtyMarked  bool
+	applied      bool
 }
 
 type counterBatchEntity struct {
@@ -411,7 +474,7 @@ func (b *counterBatch) commandCount() int {
 	return total
 }
 
-func (b *counterBatch) dirtyMembers() []string {
+func (b *counterBatch) collectDirtyMembers() []string {
 	members := make([]string, 0, len(b.entities))
 	for member := range b.entities {
 		members = append(members, member)
@@ -425,6 +488,9 @@ func (b *counterBatch) reset() {
 	}
 	b.messages = b.messages[:0]
 	clear(b.entities)
+	b.dirtyMembers = nil
+	b.dirtyMarked = false
+	b.applied = false
 }
 
 func sleepCounterConsumer(ctx context.Context, d time.Duration) bool {
