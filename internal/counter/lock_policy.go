@@ -10,7 +10,6 @@ import (
 const (
 	defaultRebuildLockTTL       = 10 * time.Second
 	rebuildLockRetryInterval    = 50 * time.Millisecond
-	defaultRepairLeaderLockTTL  = 5 * time.Second
 	defaultLockOperationTimeout = time.Second
 )
 
@@ -37,15 +36,6 @@ func rebuildLockOptions(cfg *config.CounterConfig) redislock.Options {
 	return redislock.Options{
 		TTL:              leaseTTL,
 		WatchdogInterval: leaseTTL / 3,
-		OpTimeout:        defaultLockOperationTimeout,
-	}
-}
-
-// counterRepairLockOptions 返回 dirty repair 任务的全局 leader 锁配置。
-func counterRepairLockOptions() redislock.Options {
-	return redislock.Options{
-		TTL:              defaultRepairLeaderLockTTL,
-		WatchdogInterval: defaultRepairLeaderLockTTL / 3,
 		OpTimeout:        defaultLockOperationTimeout,
 	}
 }

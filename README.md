@@ -259,6 +259,6 @@ docker compose build
 - 搜索、LLM、OSS 在依赖缺失时改为显式 `503`
 - 搜索索引已补齐 `tag_id` mapping 兼容逻辑，旧索引无需手工删除也能支持标签过滤
 - `knowpost` 搜索同步改为事务内 outbox，并由 Canal/Kafka 消费链路异步写入 Elasticsearch
-- 计数器写操作现在保留 `cnt:*` SDS 快照，计数 delta 通过 `counter-events -> agg:* -> cnt:*` 异步折叠；SDS 缺失或损坏时仍可从位图重建
+- 计数器写操作现在保留 `cnt:*` SDS 快照，计数 delta 通过 `counter-events` 批量消费后直接折叠到 `cnt:*`；发布或 apply 失败会落到 `counter_failed_messages`，由后台补偿 worker 修复
 - 扩展业务错误码现在会映射到正确的 HTTP 状态码
 - `db/schema.sql` 的 MySQL 拼写错误已修复，可正常初始化

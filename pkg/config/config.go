@@ -201,7 +201,7 @@ type CanalConfig struct {
 	IntervalMs  int    `yaml:"interval_ms"`
 }
 
-// CounterConfig 配置 SDS 计数器重建行为。
+// CounterConfig 配置计数消费、补偿与 SDS 重建行为。
 type CounterConfig struct {
 	Consumer ConsumerConfig `yaml:"consumer"`
 	Repair   RepairConfig   `yaml:"repair"`
@@ -214,11 +214,14 @@ type ConsumerConfig struct {
 	FlushIntervalMs int `yaml:"flush_interval_ms"`
 }
 
-// RepairConfig 控制 dirty set 修复任务行为。
+// RepairConfig 控制失败任务补偿与历史记录清理行为。
 type RepairConfig struct {
-	Enabled    bool `yaml:"enabled"`
-	IntervalMs int  `yaml:"interval_ms"`
-	BatchSize  int  `yaml:"batch_size"`
+	Enabled            bool `yaml:"enabled"`
+	IntervalMs         int  `yaml:"interval_ms"`
+	BatchSize          int  `yaml:"batch_size"`
+	CleanupIntervalMs  int  `yaml:"cleanup_interval_ms"`
+	CleanupBatchSize   int  `yaml:"cleanup_batch_size"`
+	DoneRetentionHours int  `yaml:"done_retention_hours"`
 }
 
 // RebuildConfig 控制 SDS 重建过程中的限流策略。

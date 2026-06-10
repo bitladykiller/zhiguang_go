@@ -74,7 +74,7 @@ func NewCounterEventProducer(writer *kafka.Writer) *CounterEventProducer {
 //   - event 中的 EntityID 或 EntityType 为空时，消息仍然会发送
 //     （kafka-go 不会校验内容）
 //   - Kafka broker 不可用时，WriteMessages 会返回连接错误，
-//     调用方会把对应实体标记到 dirty set，交给后台位图修复兜底。
+//     调用方会把失败事件落到 MySQL 失败任务表，交给后台补发/修复链路兜底。
 func (p *CounterEventProducer) Publish(event *CounterEvent) error {
 	if p == nil || p.writer == nil {
 		return fmt.Errorf("counter kafka writer is nil")

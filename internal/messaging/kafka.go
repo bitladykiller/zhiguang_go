@@ -47,8 +47,9 @@ const (
 //
 // 设计决策：
 //
-//	计数事件仍然允许偶发丢失，但 cnt:* 已经是正式快照，
-//	因此 writer 至少需要等待 broker 确认并保留基本重试能力。
+//	计数事件不是核心资金链路，但 cnt:* 已经是正式快照，
+//	因此 writer 仍然需要等待 broker 确认并保留基本重试能力，
+//	尽量减少后续失败任务补偿链路的压力。
 //	真正是否阻塞请求由调用方控制；当前 counter 包仍在 goroutine 中调用 Publish。
 func NewKafkaWriter(cfg *config.KafkaConfig) *kafka.Writer {
 	return NewTopicWriter(cfg, cfg.Topics.CounterEvents, false)

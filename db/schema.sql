@@ -90,10 +90,11 @@ CREATE TABLE IF NOT EXISTS counter_failed_messages (
     error_message TEXT NOT NULL,
     retry_count INT NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    next_retry_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
-    KEY ix_counter_failed_status_ct (status, created_at),
+    KEY ix_counter_failed_status_retry_ct (status, next_retry_at, created_at),
     KEY ix_counter_failed_entity (entity_type, entity_id, metric)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

@@ -92,6 +92,9 @@ counter:
     enabled: true
     interval_ms: 60000
     batch_size: 100
+    cleanup_interval_ms: 3600000
+    cleanup_batch_size: 500
+    done_retention_hours: 168
   rebuild:
     enabled: false
     lock:

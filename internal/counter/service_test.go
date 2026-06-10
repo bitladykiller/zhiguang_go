@@ -16,7 +16,7 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-func TestTogglePublishFailureMarksDirty(t *testing.T) {
+func TestTogglePublishFailureStoresFailureTask(t *testing.T) {
 	t.Helper()
 
 	rdb, shutdown := startTestRedis(t)
@@ -38,10 +38,6 @@ func TestTogglePublishFailureMarksDirty(t *testing.T) {
 	}
 
 	waitForCondition(t, 2*time.Second, func() bool {
-		ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
-		return err == nil && ok
-	})
-	waitForCondition(t, 2*time.Second, func() bool {
 		return recorder.totalRecords() == 1
 	})
 
@@ -54,6 +50,9 @@ func TestTogglePublishFailureMarksDirty(t *testing.T) {
 	}
 	if record.EntityType != entityType || record.EntityID != entityID || record.Metric != "like" || record.Delta != 1 {
 		t.Fatalf("unexpected publish failure record: %+v", record)
+	}
+	if record.NextRetryAt.IsZero() {
+		t.Fatalf("expected publish failure task next retry time to be set")
 	}
 }
 
@@ -200,55 +199,6 @@ func TestApplyBatchSkipsAlreadyAppliedPrefix(t *testing.T) {
 	}
 }
 
-func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
-	t.Helper()
-
-	rdb, shutdown := startTestRedis(t)
-	defer shutdown()
-
-	ctx := context.Background()
-	entityType := "knowpost"
-	entityID := "77"
-
-	svc := NewCounterService(rdb, nil, nil)
-	if _, err := svc.Like(ctx, 1001, entityType, entityID); err != nil {
-		t.Fatalf("like first user: %v", err)
-	}
-	if _, err := svc.Like(ctx, 1002, entityType, entityID); err != nil {
-		t.Fatalf("like second user: %v", err)
-	}
-
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 9)
-	if err := rdb.Set(ctx, SdsKey(entityType, entityID), raw, 0).Err(); err != nil {
-		t.Fatalf("seed wrong sds: %v", err)
-	}
-	if err := svc.markDirty(ctx, entityType, entityID); err != nil {
-		t.Fatalf("mark dirty: %v", err)
-	}
-
-	consumer := &AggregationConsumer{service: svc}
-	if err := consumer.repairDirtyMember(ctx, DirtyMember(entityType, entityID)); err != nil {
-		t.Fatalf("repair dirty member: %v", err)
-	}
-
-	gotRaw, err := rdb.Get(ctx, SdsKey(entityType, entityID)).Bytes()
-	if err != nil {
-		t.Fatalf("get repaired sds: %v", err)
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 2 {
-		t.Fatalf("unexpected like count after repair: got=%d want=2", got)
-	}
-
-	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
-	if err != nil {
-		t.Fatalf("check dirty set: %v", err)
-	}
-	if ok {
-		t.Fatalf("expected dirty marker to be removed after repair")
-	}
-}
-
 func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 	t.Helper()
 
@@ -325,7 +275,7 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 	}
 }
 
-func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
+func TestFlushBatchExhaustedCommitRetriesDoesNotStoreFailedMessages(t *testing.T) {
 	t.Helper()
 
 	rdb, shutdown := startTestRedis(t)
@@ -392,26 +342,96 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 		t.Fatalf("unexpected applied offset after failed retries: got=%d want=30", offset)
 	}
 
-	if recorder.totalRecords() != 1 {
-		t.Fatalf("expected one failed record after exhausted retries, got=%d", recorder.totalRecords())
+	if recorder.totalRecords() != 0 {
+		t.Fatalf("did not expect failed records after exhausted commit retries, got=%d", recorder.totalRecords())
 	}
-	record := recorder.singleRecord(t)
-	if record.Stage != counterFailureStageFlush {
-		t.Fatalf("unexpected flush failure stage: got=%s want=%s", record.Stage, counterFailureStageFlush)
-	}
-	if record.Topic != "counter-events" {
-		t.Fatalf("unexpected flush failure topic: got=%s want=counter-events", record.Topic)
-	}
-	if record.EntityType != entityType || record.EntityID != entityID || record.Metric != "like" || record.Delta != 2 {
-		t.Fatalf("unexpected flush failure record: %+v", record)
+}
+
+func TestFlushBatchExhaustedApplyRetriesStoresFailureTask(t *testing.T) {
+	t.Helper()
+
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	ctx := context.Background()
+	svc := NewCounterService(rdb, nil, nil)
+	recorder := &stubCounterFailureRecorder{}
+	svc.SetFailureRecorder(recorder, "counter-events")
+
+	consumer := &AggregationConsumer{
+		service:          svc,
+		groupID:          "",
+		topic:            "",
+		flushMaxAttempts: 3,
+		flushRetryDelay:  time.Millisecond,
 	}
 
-	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
-	if err != nil {
-		t.Fatalf("check dirty set after exhausted retries: %v", err)
+	batch := newCounterBatch(1)
+	if err := batch.add(mustCounterMessageAt(t, 5, 41, CounterEvent{
+		EntityType: "knowpost",
+		EntityID:   "110",
+		Metric:     "like",
+		Index:      IdxLike,
+		Delta:      1,
+	})); err != nil {
+		t.Fatalf("add like event: %v", err)
 	}
-	if !ok {
-		t.Fatalf("expected dirty marker after exhausted retries")
+
+	consumer.flushAndReset(ctx, batch)
+
+	if recorder.totalRecords() != 1 {
+		t.Fatalf("expected one apply failure task after exhausted retries, got=%d", recorder.totalRecords())
+	}
+
+	record := recorder.singleRecord(t)
+	if record.Stage != counterFailureStageApply {
+		t.Fatalf("unexpected apply failure stage: got=%s want=%s", record.Stage, counterFailureStageApply)
+	}
+	if record.Topic != "counter-events" {
+		t.Fatalf("unexpected apply failure topic: got=%s want=counter-events", record.Topic)
+	}
+	if record.EntityType != "knowpost" || record.EntityID != "110" || record.Metric != "like" || record.Delta != 1 {
+		t.Fatalf("unexpected apply failure record: %+v", record)
+	}
+	if record.NextRetryAt.IsZero() {
+		t.Fatalf("expected apply failure task next retry time to be set")
+	}
+}
+
+func TestRecordFailedKafkaMessagesDeduplicatesApplyTasksByEntityMetric(t *testing.T) {
+	t.Helper()
+
+	recorder := &stubCounterFailureRecorder{}
+	svc := &CounterService{failureRecorder: recorder, failureTopic: "counter-events"}
+
+	messages := []kafka.Message{
+		mustCounterMessageAt(t, 6, 51, CounterEvent{
+			EntityType: "knowpost",
+			EntityID:   "111",
+			Metric:     "like",
+			Index:      IdxLike,
+			Delta:      1,
+		}),
+		mustCounterMessageAt(t, 6, 52, CounterEvent{
+			EntityType: "knowpost",
+			EntityID:   "111",
+			Metric:     "like",
+			Index:      IdxLike,
+			Delta:      1,
+		}),
+	}
+
+	if err := svc.recordFailedKafkaMessages(context.Background(), counterFailureStageApply, messages, errors.New("apply failed")); err != nil {
+		t.Fatalf("record failed kafka messages: %v", err)
+	}
+
+	if recorder.totalRecords() != 1 {
+		t.Fatalf("expected apply repair task to be deduplicated, got=%d", recorder.totalRecords())
+	}
+
+	record := recorder.singleRecord(t)
+	if record.Delta != 2 {
+		t.Fatalf("unexpected aggregated delta: got=%d want=2", record.Delta)
 	}
 }
 

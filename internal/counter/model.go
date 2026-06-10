@@ -18,8 +18,8 @@
 //	Lua atomic toggle：在一次 Redis 调用中完成 GETBIT+SETBIT，
 //	并在状态确实变化时发送 Kafka 事件用于异步聚合。
 //
-//	Repair / Rebuild：当 MQ 发布、批量 flush 或 offset 提交等链路出现不确定状态时，
-//	实体会先进入 dirty set，后台任务再从位图重新统计并覆盖 cnt:*。
+//	Repair / Rebuild：当 MQ 发布或批量 apply 失败时，
+//	失败任务会先落到 MySQL，后台 worker 再从位图重新统计并修正 cnt:*。
 //	读路径在发现 SDS 缺失或损坏时，也会触发按需重建。
 package counter
 
@@ -82,20 +82,16 @@ func SdsKey(entityType, entityID string) string {
 	return fmt.Sprintf("cnt:%s:%s", entityType, entityID)
 }
 
-const counterDirtySetKey = "repair:counter:dirty"
-
-func DirtySetKey() string {
-	return counterDirtySetKey
-}
-
-func DirtyMember(entityType, entityID string) string {
+// CounterEntityMember 把实体类型和实体 ID 拼成批量消费阶段使用的稳定键。
+func CounterEntityMember(entityType, entityID string) string {
 	return entityType + ":" + entityID
 }
 
-func ParseDirtyMember(member string) (string, string, error) {
+// ParseCounterEntityMember 从批量消费阶段使用的稳定键中解析出实体类型和实体 ID。
+func ParseCounterEntityMember(member string) (string, string, error) {
 	parts := strings.SplitN(member, ":", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("invalid dirty member: %s", member)
+		return "", "", fmt.Errorf("invalid counter entity member: %s", member)
 	}
 	return parts[0], parts[1], nil
 }

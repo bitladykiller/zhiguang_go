@@ -93,6 +93,31 @@ redis.call('SET', cntKey, cnt)
 return 1
 `
 
+// SET_SDS_FIELD_LUA 按绝对值覆写 SDS 中的单个槽位。
+//
+// 用途：
+//   - 当 apply 失败进入补偿链路后，后台 worker 会从 bitmap 重新计算某个 metric 的绝对值，
+//     然后只覆写对应槽位，而不是重建整条 cnt:*。
+const SET_SDS_FIELD_LUA = `
+local cntKey = KEYS[1]
+local schemaLen = tonumber(ARGV[1])
+local fieldSize = tonumber(ARGV[2])
+local idx = tonumber(ARGV[3])
+local value = tonumber(ARGV[4])
+local function write32be(n)
+  local t = {}
+  for i=4,1,-1 do t[i] = n % 256; n = math.floor(n/256) end
+  return string.char(unpack(t))
+end
+local cnt = redis.call('GET', cntKey)
+if not cnt then cnt = string.rep(string.char(0), schemaLen * fieldSize) end
+local off = (idx - 1) * fieldSize
+local seg = write32be(value)
+cnt = string.sub(cnt, 1, off) .. seg .. string.sub(cnt, off+fieldSize+1)
+redis.call('SET', cntKey, cnt)
+return 1
+`
+
 // RATE_LIMIT_LUA 原子递增限流计数器并设置过期时间。
 //
 // 解决 INCR + 条件 EXPIRE 的竞态条件：
@@ -238,7 +263,7 @@ func (s *CounterService) IncrementFollowers(ctx context.Context, userID uint64, 
 // 设计决策：
 //   - Bitmap 仍然是权威数据源，cnt:* 是被 MQ 增量维护的正式快照。
 //   - Kafka 发布采用 fire-and-forget（goroutine 异步执行），
-//     不阻塞主请求路径；如果发布失败，会把实体标记到 dirty set，交给后台位图修复。
+//     不阻塞主请求路径；如果发布失败，会把失败任务落到 MySQL，交给后台补发 worker 处理。
 func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, entityID, metric, op string) (bool, error) {
 	chunk := ChunkOf(userID)
 	offset := BitOf(userID)
@@ -528,7 +553,7 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 //     只有缺失、损坏或异常漂移时才回退到位图重建。
 //   - 退避策略防止频繁失败的重建请求过度消耗 Redis 资源。
 //   - 看门狗分布式锁防止多实例并发重建同一个 SDS，造成"惊群效应"。
-//   - dirty repair：对于 MQ 链路中出现的不确定状态，后台任务会直接用位图绝对值覆盖 cnt:*。
+//   - failure task repair：对于 MQ 链路中出现的发布/批量 apply 失败，后台任务会直接用位图绝对值覆盖 cnt:*。
 //   - 重建成功后 SDS 不过期（TTL=0），由外部异常处理或 Redis 生命周期决定是否丢失。
 func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID string) ([]byte, error) {
 	sdsKey := SdsKey(entityType, entityID)
@@ -585,37 +610,8 @@ func (s *CounterService) publishCounterEvent(event *CounterEvent) {
 	if err := s.producer.Publish(event); err != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_ = s.markDirty(ctx, event.EntityType, event.EntityID)
 		_ = s.recordFailedEvent(ctx, counterFailureStagePublish, event, err)
 	}
-}
-
-func (s *CounterService) markDirty(ctx context.Context, entityType, entityID string) error {
-	return s.redis.SAdd(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Err()
-}
-
-func (s *CounterService) markDirtyMembers(ctx context.Context, members []string) error {
-	if len(members) == 0 {
-		return nil
-	}
-
-	args := make([]any, 0, len(members))
-	for _, member := range members {
-		args = append(args, member)
-	}
-	return s.redis.SAdd(ctx, DirtySetKey(), args...).Err()
-}
-
-func (s *CounterService) clearDirtyMembers(ctx context.Context, members []string) error {
-	if len(members) == 0 {
-		return nil
-	}
-
-	args := make([]any, 0, len(members))
-	for _, member := range members {
-		args = append(args, member)
-	}
-	return s.redis.SRem(ctx, DirtySetKey(), args...).Err()
 }
 
 func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType, entityID string) ([]byte, error) {
@@ -629,6 +625,30 @@ func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType
 		writeInt32BE(raw, i*FieldSize, int32(total))
 	}
 	return raw, nil
+}
+
+func (s *CounterService) repairMetricFromBitmap(ctx context.Context, entityType, entityID, metric string) error {
+	if s == nil || s.redis == nil {
+		return fmt.Errorf("counter redis is nil")
+	}
+
+	idx, ok := NameToIdx[metric]
+	if !ok {
+		return fmt.Errorf("unknown metric: %s", metric)
+	}
+
+	total, err := s.bitCountShards(ctx, metric, entityType, entityID)
+	if err != nil {
+		return err
+	}
+	if total < 0 {
+		total = 0
+	}
+	if total > int64(^uint32(0)>>1) {
+		total = int64(^uint32(0) >> 1)
+	}
+
+	return s.redis.Eval(ctx, SET_SDS_FIELD_LUA, []string{SdsKey(entityType, entityID)}, SchemaLen, FieldSize, idx+1, total).Err()
 }
 
 func (s *CounterService) recordFailedEvent(ctx context.Context, stage string, event *CounterEvent, cause error) error {
@@ -653,6 +673,7 @@ func (s *CounterService) recordFailedEvent(ctx context.Context, stage string, ev
 		ErrorMessage: failureErrorMessage(cause),
 		RetryCount:   0,
 		Status:       counterFailureStatusPending,
+		NextRetryAt:  time.Now(),
 	})
 }
 
@@ -661,13 +682,26 @@ func (s *CounterService) recordFailedKafkaMessages(ctx context.Context, stage st
 		return nil
 	}
 
+	now := time.Now()
+	recordsByKey := make(map[string]*CounterFailedMessage, len(messages))
 	records := make([]*CounterFailedMessage, 0, len(messages))
 	for _, message := range messages {
 		var event CounterEvent
 		if err := json.Unmarshal(message.Value, &event); err != nil {
 			continue
 		}
-		records = append(records, &CounterFailedMessage{
+
+		// apply 失败进入的是“按 entity + metric 做定点修复”的补偿链路，
+		// 同一批里相同实体指标只需要保留一条任务即可，避免重复修复。
+		if stage == counterFailureStageApply || stage == counterFailureStageFlush {
+			recordKey := CounterEntityMember(event.EntityType, event.EntityID) + ":" + event.Metric
+			if record := recordsByKey[recordKey]; record != nil {
+				record.Delta += event.Delta
+				continue
+			}
+		}
+
+		record := &CounterFailedMessage{
 			Stage:        stage,
 			Topic:        s.failureTopic,
 			MessageKey:   string(message.Key),
@@ -679,7 +713,13 @@ func (s *CounterService) recordFailedKafkaMessages(ctx context.Context, stage st
 			ErrorMessage: failureErrorMessage(cause),
 			RetryCount:   0,
 			Status:       counterFailureStatusPending,
-		})
+			NextRetryAt:  now,
+		}
+		records = append(records, record)
+		if stage == counterFailureStageApply || stage == counterFailureStageFlush {
+			recordKey := CounterEntityMember(event.EntityType, event.EntityID) + ":" + event.Metric
+			recordsByKey[recordKey] = record
+		}
 	}
 
 	return s.failureRecorder.CreateBatch(ctx, records)

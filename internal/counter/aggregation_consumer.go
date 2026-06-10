@@ -12,23 +12,22 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/pkg/config"
-	"github.com/zhiguang/app/pkg/redislock"
 )
-
-const counterRepairLeaderLockKey = "lock:counter:repair"
 
 const (
 	defaultCounterFlushMaxAttempts = 3
 	defaultCounterFlushRetryDelay  = time.Second
 )
 
+var errCounterBatchCommit = errors.New("counter batch commit failed")
+
 // AggregationConsumer 消费 counter-events，并按批次把增量直接折叠到 cnt:*。
 //
 // 这里不再使用 Redis agg:* 中转桶，原因是当前方案把“批量聚合”放在 MQ 消费端：
 //   - 同一批 Kafka 消息先在进程内做内存聚合。
 //   - 到达批次大小或时间窗口后，一次性把 delta flush 到 cnt:*。
-//   - 如果 publish、flush 或 offset commit 出现失败，对应实体会进入 dirty set，
-//     再由 repair loop 用位图的绝对值覆盖 cnt:*。
+//   - 如果 apply 失败，会把失败任务落到 MySQL，后台按 entity + metric 做定点修复。
+//   - 如果 commit 失败，只要 Redis 水位线已经推进，重复投递也不会重复应用。
 type AggregationConsumer struct {
 	reader           *kafka.Reader
 	service          *CounterService
@@ -40,9 +39,6 @@ type AggregationConsumer struct {
 	flushInterval    time.Duration
 	flushRetryDelay  time.Duration
 	flushMaxAttempts int
-	repairEnabled    bool
-	repairInterval   time.Duration
-	repairBatch      int
 }
 
 func NewAggregationConsumer(
@@ -57,9 +53,6 @@ func NewAggregationConsumer(
 
 	batchSize := 100
 	flushInterval := time.Second
-	repairEnabled := false
-	repairInterval := time.Minute
-	repairBatch := batchSize
 
 	if cfg != nil {
 		if cfg.Consumer.BatchSize > 0 {
@@ -67,13 +60,6 @@ func NewAggregationConsumer(
 		}
 		if cfg.Consumer.FlushIntervalMs > 0 {
 			flushInterval = time.Duration(cfg.Consumer.FlushIntervalMs) * time.Millisecond
-		}
-		repairEnabled = cfg.Repair.Enabled
-		if cfg.Repair.IntervalMs > 0 {
-			repairInterval = time.Duration(cfg.Repair.IntervalMs) * time.Millisecond
-		}
-		if cfg.Repair.BatchSize > 0 {
-			repairBatch = cfg.Repair.BatchSize
 		}
 	}
 
@@ -90,9 +76,6 @@ func NewAggregationConsumer(
 		flushInterval:    flushInterval,
 		flushRetryDelay:  defaultCounterFlushRetryDelay,
 		flushMaxAttempts: defaultCounterFlushMaxAttempts,
-		repairEnabled:    repairEnabled,
-		repairInterval:   repairInterval,
-		repairBatch:      repairBatch,
 	}
 }
 
@@ -101,10 +84,6 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 		return
 	}
 	defer c.reader.Close()
-
-	if c.repairEnabled {
-		go c.repairLoop(ctx)
-	}
 
 	c.consumeLoop(ctx)
 }
@@ -172,17 +151,21 @@ func (c *AggregationConsumer) flushAndReset(ctx context.Context, batch *counterB
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := c.flushBatch(ctx, batch); err != nil {
 			c.logWarn(fmt.Sprintf("flush counter batch failed (attempt %d/%d)", attempt, maxAttempts), err)
-			if attempt == maxAttempts {
+			if !isCounterCommitError(err) && attempt == maxAttempts {
 				recordCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-				if recordErr := c.service.recordFailedKafkaMessages(recordCtx, counterFailureStageFlush, batch.messages, err); recordErr != nil {
-					c.logWarn("persist counter failed messages failed", recordErr)
-				}
-				if markErr := c.service.markDirtyMembers(recordCtx, batch.collectDirtyMembers()); markErr != nil {
-					c.logWarn("mark dirty members after exhausted retries failed", markErr)
+				if recordErr := c.service.recordFailedKafkaMessages(recordCtx, counterFailureStageApply, batch.messages, err); recordErr != nil {
+					c.logWarn("persist counter apply failure tasks failed", recordErr)
 				}
 				cancel()
 				c.logWarn(
-					fmt.Sprintf("flush counter batch exhausted retries and will drop batch (attempts=%d, messages=%d)", maxAttempts, batch.size()),
+					fmt.Sprintf("flush counter batch exhausted retries and will defer repair task (attempts=%d, messages=%d)", maxAttempts, batch.size()),
+					err,
+				)
+				break
+			}
+			if attempt == maxAttempts {
+				c.logWarn(
+					fmt.Sprintf("flush counter batch exhausted commit retries; redis watermark will absorb redelivery (attempts=%d, messages=%d)", maxAttempts, batch.size()),
 					err,
 				)
 				break
@@ -209,7 +192,7 @@ func (c *AggregationConsumer) flushBatch(ctx context.Context, batch *counterBatc
 	}
 
 	if err := c.commitMessages(ctx, batch.messages...); err != nil {
-		return fmt.Errorf("commit counter batch: %w", err)
+		return fmt.Errorf("%w: %v", errCounterBatchCommit, err)
 	}
 	return nil
 }
@@ -234,7 +217,7 @@ func (c *AggregationConsumer) applyBatch(ctx context.Context, batch *counterBatc
 	for _, event := range batch.events {
 		args = append(args,
 			event.offset,
-			keyIndexes[DirtyMember(event.entityType, event.entityID)],
+			keyIndexes[CounterEntityMember(event.entityType, event.entityID)],
 			event.index,
 			event.delta,
 		)
@@ -365,6 +348,10 @@ func (c *AggregationConsumer) advanceAppliedOffset(ctx context.Context, partitio
 	return advanceAppliedOffsetScript.Run(ctx, c.service.redis, []string{appliedKey}, offset).Err()
 }
 
+func isCounterCommitError(err error) bool {
+	return errors.Is(err, errCounterBatchCommit)
+}
+
 func (c *AggregationConsumer) maxFlushAttempts() int {
 	if c != nil && c.flushMaxAttempts > 0 {
 		return c.flushMaxAttempts
@@ -377,104 +364,6 @@ func (c *AggregationConsumer) retryDelay() time.Duration {
 		return c.flushRetryDelay
 	}
 	return defaultCounterFlushRetryDelay
-}
-
-func (c *AggregationConsumer) repairLoop(ctx context.Context) {
-	ticker := time.NewTicker(c.repairInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := c.repairAsLeader(ctx); err != nil {
-				c.logWarn("repair dirty counters failed", err)
-			}
-		}
-	}
-}
-
-func (c *AggregationConsumer) repairAsLeader(ctx context.Context) error {
-	lock, locked, err := redislock.TryAcquire(ctx, c.service.redis, counterRepairLeaderLockKey, counterRepairLockOptions())
-	if err != nil {
-		return err
-	}
-	if !locked {
-		return nil
-	}
-	defer lock.Release()
-
-	return c.repairDirtyMembers(ctx)
-}
-
-func (c *AggregationConsumer) repairDirtyMembers(ctx context.Context) error {
-	members, err := c.listDirtyMembers(ctx, c.repairBatch)
-	if err != nil || len(members) == 0 {
-		return err
-	}
-
-	var firstErr error
-	for _, member := range members {
-		if err := c.repairDirtyMember(ctx, member); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-func (c *AggregationConsumer) listDirtyMembers(ctx context.Context, limit int) ([]string, error) {
-	if limit <= 0 {
-		return nil, nil
-	}
-
-	members := make([]string, 0, limit)
-	var cursor uint64
-	for len(members) < limit {
-		items, next, err := c.service.redis.SScan(ctx, DirtySetKey(), cursor, "", int64(limit-len(members))).Result()
-		if err != nil {
-			return nil, err
-		}
-		members = append(members, items...)
-		cursor = next
-		if cursor == 0 {
-			break
-		}
-	}
-	return members, nil
-}
-
-func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member string) error {
-	entityType, entityID, err := ParseDirtyMember(member)
-	if err != nil {
-		if clearErr := c.service.clearDirtyMembers(ctx, []string{member}); clearErr != nil {
-			return fmt.Errorf("drop invalid dirty member: %w", clearErr)
-		}
-		return nil
-	}
-
-	lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
-	lock, locked, err := redislock.TryAcquire(ctx, c.service.redis, lockKey, c.service.rebuildLockOptions)
-	if err != nil {
-		return err
-	}
-	if !locked {
-		return nil
-	}
-	defer lock.Release()
-
-	raw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)
-	if err != nil {
-		return err
-	}
-	if err := c.service.redis.Set(ctx, SdsKey(entityType, entityID), raw, 0).Err(); err != nil {
-		return err
-	}
-	if err := c.service.clearDirtyMembers(ctx, []string{member}); err != nil {
-		return err
-	}
-	c.service.resetBackoff(ctx, entityType, entityID)
-	return nil
 }
 
 func (c *AggregationConsumer) logWarn(msg string, err error) {
@@ -555,7 +444,7 @@ func (b *counterBatch) addEvent(msg kafka.Message, evt CounterEvent) error {
 		index:      evt.Index,
 		delta:      evt.Delta,
 	})
-	b.entities[DirtyMember(evt.EntityType, evt.EntityID)] = struct{}{}
+	b.entities[CounterEntityMember(evt.EntityType, evt.EntityID)] = struct{}{}
 	return nil
 }
 
@@ -566,7 +455,7 @@ func (b *counterBatch) size() int {
 	return len(b.messages)
 }
 
-func (b *counterBatch) collectDirtyMembers() []string {
+func (b *counterBatch) collectEntityMembers() []string {
 	members := make([]string, 0, len(b.entities))
 	for member := range b.entities {
 		members = append(members, member)
@@ -575,13 +464,13 @@ func (b *counterBatch) collectDirtyMembers() []string {
 }
 
 func (b *counterBatch) cntKeys() ([]string, map[string]int) {
-	members := b.collectDirtyMembers()
+	members := b.collectEntityMembers()
 	sort.Strings(members)
 
 	keys := make([]string, 0, len(members))
 	indexes := make(map[string]int, len(members))
 	for i, member := range members {
-		entityType, entityID, err := ParseDirtyMember(member)
+		entityType, entityID, err := ParseCounterEntityMember(member)
 		if err != nil {
 			continue
 		}
