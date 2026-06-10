@@ -17,6 +17,7 @@
 package bootstrap
 
 import (
+	"context"
 	"strings"
 
 	"github.com/coocood/freecache"
@@ -123,10 +124,13 @@ func InitializeApp(configPath string) (*server.App, error) {
 
 	counterProducer := counter.NewCounterEventProducer(kafkaWriter)
 	counterSvc := counter.NewCounterService(redisClient, counterProducer, &cfg.Counter)
+	counterSvc.SetFailureRecorder(counter.NewCounterFailedMessageRepository(db), cfg.Kafka.Topics.CounterEvents)
+	counterSvc.SetMessageIDGenerator(idGen)
 	counterAggConsumer := counter.NewAggregationConsumer(
 		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, cfg.Kafka.Topics.CounterEvents, cfg.Kafka.ConsumerGroup),
-		redisClient,
+		counterSvc,
 		logger,
+		&cfg.Counter,
 	)
 	counterHandler := counter.NewCounterHandler(counterSvc)
 	kpSvc.SetCounterClient(counterSvc)
@@ -197,6 +201,12 @@ func InitializeApp(configPath string) (*server.App, error) {
 	}
 
 	app := server.NewApp(router, cfg, logger, backgroundRunners...)
+	app.AddCleanup(
+		func(context.Context) error { return kafkaWriter.Close() },
+		func(context.Context) error { return canalOutboxWriter.Close() },
+		func(context.Context) error { return redisClient.Close() },
+		func(context.Context) error { return db.Close() },
+	)
 	return app, nil
 }
 

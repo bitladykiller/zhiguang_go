@@ -3,11 +3,13 @@ package counter
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/redislock"
 )
@@ -126,11 +128,14 @@ var rateLimitScript = redis.NewScript(RATE_LIMIT_LUA)
 //
 // 数据流：
 //
-//	toggle (Lua) → 修改位图 → 失效 SDS（触发按需重建） → 发送 Kafka 事件（异步）
+//	toggle (Lua) → 修改位图 → 发送 Kafka 事件（异步） → 消费者批量聚合 → flush 到 cnt:*
 type CounterService struct {
 	redis              *redis.Client
-	producer           *CounterEventProducer
+	producer           CounterEventPublisher
 	rebuildLockOptions redislock.Options
+	failureRecorder    CounterFailureRecorder
+	failureTopic       string
+	messageIDGenerator MessageIDGenerator
 }
 
 // NewCounterService 创建计数器服务实例。
@@ -138,12 +143,21 @@ type CounterService struct {
 // 参数：
 //   - rdb: Redis 客户端，用于执行 Lua 脚本和 SDS/Bitmap 操作
 //   - producer: Kafka 事件生产者，用于异步发布计数变更事件
-func NewCounterService(rdb *redis.Client, producer *CounterEventProducer, cfg *config.CounterConfig) *CounterService {
+func NewCounterService(rdb *redis.Client, producer CounterEventPublisher, cfg *config.CounterConfig) *CounterService {
 	return &CounterService{
 		redis:              rdb,
 		producer:           producer,
 		rebuildLockOptions: rebuildLockOptions(cfg),
 	}
+}
+
+func (s *CounterService) SetFailureRecorder(recorder CounterFailureRecorder, topic string) {
+	s.failureRecorder = recorder
+	s.failureTopic = topic
+}
+
+func (s *CounterService) SetMessageIDGenerator(generator MessageIDGenerator) {
+	s.messageIDGenerator = generator
 }
 
 // ============================================================================
@@ -210,7 +224,7 @@ func (s *CounterService) IncrementFollowers(ctx context.Context, userID uint64, 
 //  2. 构造完整的 bitmap 键：bm:{metric}:{entityType}:{entityID}:{chunk}。
 //  3. 使用 Redis Eval 执行 TOGGLE_LUA 脚本，原子完成 GETBIT + SETBIT。
 //  4. 如果 val == 1（状态发生变化）：
-//     a. 立即让 SDS 失效（invalidateDerivedCounts），这样下一次读取会从位图重建。
+//     a. 构造计数 delta 事件。
 //     b. 异步发送 CounterEvent 到 Kafka（fire-and-forget）。
 //
 // 函数调用说明：
@@ -222,10 +236,9 @@ func (s *CounterService) IncrementFollowers(ctx context.Context, userID uint64, 
 //     .Int() 将 Lua 返回值转为 Go int。
 //
 // 设计决策：
-//   - Bitmap 是权威数据源，因此 toggle 后立即失效 SDS。
-//     这样即使 Kafka 异步聚合延迟或失败，后续读取也会从最新位图重建 SDS。
+//   - Bitmap 仍然是权威数据源，cnt:* 是被 MQ 增量维护的正式快照。
 //   - Kafka 发布采用 fire-and-forget（goroutine 异步执行），
-//     不阻塞主请求路径。计数事件可以容忍偶尔丢失。
+//     不阻塞主请求路径；如果发布失败，会把实体标记到 dirty set，交给后台位图修复。
 func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, entityID, metric, op string) (bool, error) {
 	chunk := ChunkOf(userID)
 	offset := BitOf(userID)
@@ -241,11 +254,8 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 		if op == "remove" {
 			delta = -1
 		}
-		// Bitmap 是权威数据源，因此要立即让 SDS 失效。
-		// 这样即使 Kafka 异步聚合延迟或失败，后续读取也会从最新位图重建。
-		s.invalidateDerivedCounts(ctx, entityType, entityID)
-
 		event := &CounterEvent{
+			MessageID:  s.nextMessageID(),
 			EntityType: entityType,
 			EntityID:   entityID,
 			Metric:     metric,
@@ -255,7 +265,7 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 		}
 		// 这里采用 fire-and-forget，Kafka 发布只做尽力而为。
 		if s.producer != nil {
-			go func() { _ = s.producer.Publish(event) }()
+			go s.publishCounterEvent(event)
 		}
 		return true, nil
 	}
@@ -502,7 +512,7 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 //	        对每个指标调用 bitCountShards 汇总所有位图片段的 BITCOUNT 值。
 //	Step 5: 将汇总结果以固定长度（4 字节/字段）写入 SDS 字节数组。
 //	Step 6: 将 SDS 写回 Redis（SET 命令，不过期）。
-//	Step 7: 清理聚合桶键（AggKey），释放锁并重置退避状态。
+//	Step 7: 释放锁并重置退避状态。
 //
 // 参数：
 //   - entityType: 实体类型
@@ -513,13 +523,13 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 //   - error: 退避中、被限流或 Redis 操作失败时返回错误
 //
 // 设计决策：
-//   - 位图是权威数据源，SDS 是通过聚合位图得到的缓存数据。
-//     这样设计的优势是 toggle 操作只需修改位图（O(1)），
-//     而 SDS 在需要时才重建（lazy rebuild），避免每次 toggle 都执行 BITCOUNT。
+//   - 位图是权威数据源，SDS 是通过聚合位图得到的正式快照。
+//     正常情况下快照由 Kafka 批量消费链路持续维护；
+//     只有缺失、损坏或异常漂移时才回退到位图重建。
 //   - 退避策略防止频繁失败的重建请求过度消耗 Redis 资源。
 //   - 看门狗分布式锁防止多实例并发重建同一个 SDS，造成"惊群效应"。
-//   - 聚合桶清理：AGG 键是存储增量事件的桶，重建后桶数据已经过期，故清理。
-//   - 重建成功后 SDS 不过期（TTL=0），由外部失效机制控制其生命周期。
+//   - dirty repair：对于 MQ 链路中出现的不确定状态，后台任务会直接用位图绝对值覆盖 cnt:*。
+//   - 重建成功后 SDS 不过期（TTL=0），由外部异常处理或 Redis 生命周期决定是否丢失。
 func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID string) ([]byte, error) {
 	sdsKey := SdsKey(entityType, entityID)
 
@@ -550,31 +560,147 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 		return raw, nil
 	}
 
-	// 统计所有位图片段
-	metrics := []string{"like", "fav", "follower", "following", "posts"}
-	raw = make([]byte, SchemaLen*FieldSize)
-	for i, metric := range metrics {
-		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
-		if err != nil {
-			s.escalateBackoff(ctx, entityType, entityID)
-			return nil, err
-		}
-		writeInt32BE(raw, i*FieldSize, int32(total))
+	raw, err = s.buildSnapshotFromBitmap(ctx, entityType, entityID)
+	if err != nil {
+		s.escalateBackoff(ctx, entityType, entityID)
+		return nil, err
 	}
 
-	// 回写 SDS
 	if err := s.redis.Set(ctx, sdsKey, raw, 0).Err(); err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, err
 	}
 
-	// 清理聚合桶
-	s.redis.Del(ctx, AggKey(entityType, entityID))
-
 	// 重置退避状态
 	s.resetBackoff(ctx, entityType, entityID)
 
 	return raw, nil
+}
+
+func (s *CounterService) publishCounterEvent(event *CounterEvent) {
+	if s == nil || s.producer == nil || event == nil {
+		return
+	}
+
+	if err := s.producer.Publish(event); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = s.markDirty(ctx, event.EntityType, event.EntityID)
+		_ = s.recordFailedEvent(ctx, counterFailureStagePublish, event, err)
+	}
+}
+
+func (s *CounterService) markDirty(ctx context.Context, entityType, entityID string) error {
+	return s.redis.SAdd(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Err()
+}
+
+func (s *CounterService) markDirtyMembers(ctx context.Context, members []string) error {
+	if len(members) == 0 {
+		return nil
+	}
+
+	args := make([]any, 0, len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	return s.redis.SAdd(ctx, DirtySetKey(), args...).Err()
+}
+
+func (s *CounterService) clearDirtyMembers(ctx context.Context, members []string) error {
+	if len(members) == 0 {
+		return nil
+	}
+
+	args := make([]any, 0, len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	return s.redis.SRem(ctx, DirtySetKey(), args...).Err()
+}
+
+func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType, entityID string) ([]byte, error) {
+	metrics := []string{"like", "fav", "follower", "following", "posts"}
+	raw := make([]byte, SchemaLen*FieldSize)
+	for i, metric := range metrics {
+		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
+		if err != nil {
+			return nil, err
+		}
+		writeInt32BE(raw, i*FieldSize, int32(total))
+	}
+	return raw, nil
+}
+
+func (s *CounterService) recordFailedEvent(ctx context.Context, stage string, event *CounterEvent, cause error) error {
+	if s == nil || s.failureRecorder == nil || event == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	return s.failureRecorder.Create(ctx, &CounterFailedMessage{
+		Stage:        stage,
+		Topic:        s.failureTopic,
+		MessageKey:   event.EntityType + ":" + event.EntityID,
+		EntityType:   event.EntityType,
+		EntityID:     event.EntityID,
+		Metric:       event.Metric,
+		Delta:        event.Delta,
+		Payload:      string(payload),
+		ErrorMessage: failureErrorMessage(cause),
+		RetryCount:   0,
+		Status:       counterFailureStatusPending,
+	})
+}
+
+func (s *CounterService) recordFailedKafkaMessages(ctx context.Context, stage string, messages []kafka.Message, cause error) error {
+	if s == nil || s.failureRecorder == nil || len(messages) == 0 {
+		return nil
+	}
+
+	records := make([]*CounterFailedMessage, 0, len(messages))
+	for _, message := range messages {
+		var event CounterEvent
+		if err := json.Unmarshal(message.Value, &event); err != nil {
+			continue
+		}
+		records = append(records, &CounterFailedMessage{
+			Stage:        stage,
+			Topic:        s.failureTopic,
+			MessageKey:   string(message.Key),
+			EntityType:   event.EntityType,
+			EntityID:     event.EntityID,
+			Metric:       event.Metric,
+			Delta:        event.Delta,
+			Payload:      string(message.Value),
+			ErrorMessage: failureErrorMessage(cause),
+			RetryCount:   0,
+			Status:       counterFailureStatusPending,
+		})
+	}
+
+	return s.failureRecorder.CreateBatch(ctx, records)
+}
+
+func failureErrorMessage(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	message := cause.Error()
+	if len(message) > 1024 {
+		return message[:1024]
+	}
+	return message
+}
+
+func (s *CounterService) nextMessageID() uint64 {
+	if s == nil || s.messageIDGenerator == nil {
+		return 0
+	}
+	return s.messageIDGenerator.NextID()
 }
 
 // bitCountShards 统计指定指标的所有位图片段的 SETBIT 总数量。
@@ -846,30 +972,4 @@ func readInt32BE(b []byte, offset int) int32 {
 //	writeInt32BE 始终写入刚好 4 字节。
 func writeInt32BE(b []byte, offset int, val int32) {
 	binary.BigEndian.PutUint32(b[offset:], uint32(val))
-}
-
-// invalidateDerivedCounts 清除指定实体的衍生计数缓存，触发下次读取时重建。
-//
-// 功能：
-//
-//	删除 SDS 缓存键和聚合桶键。
-//	这样下次读取 GetCounts 时会发现 SDS 缺失，进而触发 rebuildSds 重建。
-//
-// 参数：
-//   - entityType: 实体类型
-//   - entityID:   实体 ID
-//
-// 调用时机：
-//
-//	在 toggle 操作（Like/Unlike/Fav/Unfav）改变位图后立即调用。
-//	这样即使 Kafka 事件异步消费有延迟，后续读取计数时仍会从最新位图重建。
-//
-// 设计决策：
-//
-//	位图（Bitmap）是权威数据源，SDS 和聚合桶都是可丢弃的衍生数据。
-//	当位图发生变化时，直接清除衍生数据，让下一次读取自然从位图重建，
-//	保证最终一致性。
-func (s *CounterService) invalidateDerivedCounts(ctx context.Context, entityType, entityID string) {
-	s.redis.Del(ctx, SdsKey(entityType, entityID))
-	s.redis.Del(ctx, AggKey(entityType, entityID))
 }
