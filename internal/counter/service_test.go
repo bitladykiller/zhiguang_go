@@ -104,9 +104,9 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 	}
 
 	svc := NewCounterService(rdb, nil, nil)
-	consumer := &AggregationConsumer{service: svc}
+	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
 	batch := newCounterBatch(2)
-	if err := batch.add(mustCounterMessage(t, CounterEvent{
+	if err := batch.add(mustCounterMessageAt(t, 3, 10, CounterEvent{
 		EntityType: entityType,
 		EntityID:   entityID,
 		Metric:     "like",
@@ -115,7 +115,7 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("add like event: %v", err)
 	}
-	if err := batch.add(mustCounterMessage(t, CounterEvent{
+	if err := batch.add(mustCounterMessageAt(t, 3, 11, CounterEvent{
 		EntityType: entityType,
 		EntityID:   entityID,
 		Metric:     "fav",
@@ -123,10 +123,6 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 		Delta:      -1,
 	})); err != nil {
 		t.Fatalf("add fav event: %v", err)
-	}
-
-	if err := svc.markDirtyMembers(ctx, batch.collectDirtyMembers()); err != nil {
-		t.Fatalf("mark dirty: %v", err)
 	}
 	if err := consumer.applyBatch(ctx, batch); err != nil {
 		t.Fatalf("apply batch: %v", err)
@@ -143,12 +139,64 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 		t.Fatalf("unexpected fav count after apply: got=%d want=0", got)
 	}
 
-	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
+	offset, err := rdb.Get(ctx, AppliedOffsetKey("counter-group", "counter-events", 3)).Int64()
 	if err != nil {
-		t.Fatalf("check dirty set: %v", err)
+		t.Fatalf("get applied offset after apply: %v", err)
 	}
-	if !ok {
-		t.Fatalf("expected dirty marker to be present before commit cleanup")
+	if offset != 11 {
+		t.Fatalf("unexpected applied offset after apply: got=%d want=11", offset)
+	}
+}
+
+func TestApplyBatchSkipsAlreadyAppliedPrefix(t *testing.T) {
+	t.Helper()
+
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	ctx := context.Background()
+	entityType := "knowpost"
+	entityID := "101"
+	cntKey := SdsKey(entityType, entityID)
+	offsetKey := AppliedOffsetKey("counter-group", "counter-events", 2)
+
+	if err := rdb.Set(ctx, offsetKey, 10, 0).Err(); err != nil {
+		t.Fatalf("seed applied offset: %v", err)
+	}
+
+	svc := NewCounterService(rdb, nil, nil)
+	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
+	batch := newCounterBatch(4)
+	for offset := int64(9); offset <= 12; offset++ {
+		if err := batch.add(mustCounterMessageAt(t, 2, offset, CounterEvent{
+			EntityType: entityType,
+			EntityID:   entityID,
+			Metric:     "like",
+			Index:      IdxLike,
+			Delta:      1,
+		})); err != nil {
+			t.Fatalf("add event offset=%d: %v", offset, err)
+		}
+	}
+
+	if err := consumer.applyBatch(ctx, batch); err != nil {
+		t.Fatalf("apply batch with replayed prefix: %v", err)
+	}
+
+	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
+	if err != nil {
+		t.Fatalf("get sds after replayed prefix: %v", err)
+	}
+	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 2 {
+		t.Fatalf("unexpected like count after replayed prefix: got=%d want=2", got)
+	}
+
+	offset, err := rdb.Get(ctx, offsetKey).Int64()
+	if err != nil {
+		t.Fatalf("get applied offset after replayed prefix: %v", err)
+	}
+	if offset != 12 {
+		t.Fatalf("unexpected applied offset after replayed prefix: got=%d want=12", offset)
 	}
 }
 
@@ -224,6 +272,8 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 	commitCalls := 0
 	consumer := &AggregationConsumer{
 		service:          svc,
+		groupID:          "counter-group",
+		topic:            "counter-events",
 		flushMaxAttempts: 3,
 		flushRetryDelay:  time.Millisecond,
 		commitFn: func(ctx context.Context, msgs ...kafka.Message) error {
@@ -236,7 +286,7 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 	}
 
 	batch := newCounterBatch(1)
-	if err := batch.add(mustCounterMessage(t, CounterEvent{
+	if err := batch.add(mustCounterMessageAt(t, 1, 20, CounterEvent{
 		EntityType: entityType,
 		EntityID:   entityID,
 		Metric:     "like",
@@ -263,12 +313,12 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 		t.Fatalf("unexpected like count after retries: got=%d want=7", got)
 	}
 
-	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
+	offset, err := rdb.Get(ctx, AppliedOffsetKey("counter-group", "counter-events", 1)).Int64()
 	if err != nil {
-		t.Fatalf("check dirty set after retries: %v", err)
+		t.Fatalf("get applied offset after retries: %v", err)
 	}
-	if ok {
-		t.Fatalf("expected dirty marker to be removed after successful retry")
+	if offset != 20 {
+		t.Fatalf("unexpected applied offset after retries: got=%d want=20", offset)
 	}
 	if recorder.totalRecords() != 0 {
 		t.Fatalf("did not expect failed records after successful retry, got=%d", recorder.totalRecords())
@@ -299,6 +349,8 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 	commitCalls := 0
 	consumer := &AggregationConsumer{
 		service:          svc,
+		groupID:          "counter-group",
+		topic:            "counter-events",
 		flushMaxAttempts: 3,
 		flushRetryDelay:  time.Millisecond,
 		commitFn: func(ctx context.Context, msgs ...kafka.Message) error {
@@ -308,7 +360,7 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 	}
 
 	batch := newCounterBatch(1)
-	if err := batch.add(mustCounterMessage(t, CounterEvent{
+	if err := batch.add(mustCounterMessageAt(t, 4, 30, CounterEvent{
 		EntityType: entityType,
 		EntityID:   entityID,
 		Metric:     "like",
@@ -332,6 +384,14 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 		t.Fatalf("unexpected like count after failed retries: got=%d want=7", got)
 	}
 
+	offset, err := rdb.Get(ctx, AppliedOffsetKey("counter-group", "counter-events", 4)).Int64()
+	if err != nil {
+		t.Fatalf("get applied offset after failed retries: %v", err)
+	}
+	if offset != 30 {
+		t.Fatalf("unexpected applied offset after failed retries: got=%d want=30", offset)
+	}
+
 	if recorder.totalRecords() != 1 {
 		t.Fatalf("expected one failed record after exhausted retries, got=%d", recorder.totalRecords())
 	}
@@ -344,6 +404,14 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 	}
 	if record.EntityType != entityType || record.EntityID != entityID || record.Metric != "like" || record.Delta != 2 {
 		t.Fatalf("unexpected flush failure record: %+v", record)
+	}
+
+	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
+	if err != nil {
+		t.Fatalf("check dirty set after exhausted retries: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected dirty marker after exhausted retries")
 	}
 }
 
@@ -428,7 +496,7 @@ func cloneCounterEvent(event *CounterEvent) *CounterEvent {
 	return &cloned
 }
 
-func mustCounterMessage(t *testing.T, event CounterEvent) kafka.Message {
+func mustCounterMessageAt(t *testing.T, partition int, offset int64, event CounterEvent) kafka.Message {
 	t.Helper()
 
 	data, err := json.Marshal(event)
@@ -436,8 +504,10 @@ func mustCounterMessage(t *testing.T, event CounterEvent) kafka.Message {
 		t.Fatalf("marshal event: %v", err)
 	}
 	return kafka.Message{
-		Key:   []byte(event.EntityType + ":" + event.EntityID),
-		Value: data,
+		Partition: partition,
+		Offset:    offset,
+		Key:       []byte(event.EntityType + ":" + event.EntityID),
+		Value:     data,
 	}
 }
 
