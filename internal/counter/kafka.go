@@ -25,7 +25,7 @@ type CounterEventProducer struct {
 //
 // 参数：
 //   - writer: *kafka.Writer 实例，由 messaging 包统一创建。
-//     通常是异步模式（Async=true）的 writer，以提升吞吐能力。
+//     当前采用同步等待 broker 确认的 writer，由调用方决定是否异步调用。
 //
 // 注意：
 //
@@ -52,7 +52,8 @@ func NewCounterEventProducer(writer *kafka.Writer) *CounterEventProducer {
 //   - p.writer.WriteMessages(ctx, msgs...):
 //     kafka-go 库的 Writer.WriteMessages 方法将消息写入 Kafka 主题。
 //     可以一次传入多条消息做批量发送。
-//     在计数场景中，每条消息独立发送（fire-and-forget 模式）。
+//     在计数场景中，每条消息独立发送。当前调用方会在 goroutine 中调用 Publish，
+//     因此不会把 broker ACK 延迟直接叠加到主请求路径上。
 //   - kafka.Message{Key, Value}:
 //     Key 用于分区路由：同一 Key 的消息进入同一分区，保证顺序消费。
 //     Value 是消息体，由业务消费端反序列化使用。
@@ -68,7 +69,7 @@ func NewCounterEventProducer(writer *kafka.Writer) *CounterEventProducer {
 //   - event 中的 EntityID 或 EntityType 为空时，消息仍然会发送
 //     （kafka-go 不会校验内容）
 //   - Kafka broker 不可用时，WriteMessages 会返回连接错误，
-//     但调用方（toggle 中的 goroutine）会静默忽略该错误（fire-and-forget）
+//     但调用方（toggle 中的 goroutine）会静默忽略该错误。
 func (p *CounterEventProducer) Publish(event *CounterEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {

@@ -17,6 +17,7 @@
 package bootstrap
 
 import (
+	"context"
 	"strings"
 
 	"github.com/coocood/freecache"
@@ -197,6 +198,12 @@ func InitializeApp(configPath string) (*server.App, error) {
 	}
 
 	app := server.NewApp(router, cfg, logger, backgroundRunners...)
+	app.AddCleanup(
+		func(context.Context) error { return kafkaWriter.Close() },
+		func(context.Context) error { return canalOutboxWriter.Close() },
+		func(context.Context) error { return redisClient.Close() },
+		func(context.Context) error { return db.Close() },
+	)
 	return app, nil
 }
 
