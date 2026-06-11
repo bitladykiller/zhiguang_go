@@ -11,10 +11,10 @@ import (
 
 // CounterHandler 暴露计数器模块的 HTTP 接口。
 type CounterHandler struct {
-	svc *CounterService
+	svc CounterUseCase
 }
 
-func NewCounterHandler(svc *CounterService) *CounterHandler {
+func NewCounterHandler(svc CounterUseCase) *CounterHandler {
 	return &CounterHandler{svc: svc}
 }
 
@@ -34,7 +34,8 @@ func (h *CounterHandler) RegisterRoutes(r *gin.RouterGroup) {
 // Like 处理 POST /counter/like 请求。
 //
 // 功能：
-//   为当前认证用户对指定实体打开点赞状态。
+//
+//	为当前认证用户对指定实体打开点赞状态。
 //
 // 请求体（JSON）：
 //   - entity_type: string, 必须 — 实体类型
@@ -75,10 +76,12 @@ func (h *CounterHandler) Like(c *gin.Context) {
 // Unlike 处理 POST /counter/unlike 请求。
 //
 // 功能：
-//   为当前认证用户取消对指定实体的点赞状态。
+//
+//	为当前认证用户取消对指定实体的点赞状态。
 //
 // 请求体与响应格式同 Like 接口，但操作方向相反。
-//   changed=true 表示状态从已点赞变为未点赞。
+//
+//	changed=true 表示状态从已点赞变为未点赞。
 //
 // 权限：要求登录。
 func (h *CounterHandler) Unlike(c *gin.Context) {
@@ -103,10 +106,12 @@ func (h *CounterHandler) Unlike(c *gin.Context) {
 // Fav 处理 POST /counter/fav 请求。
 //
 // 功能：
-//   为当前认证用户对指定实体打开收藏状态。
+//
+//	为当前认证用户对指定实体打开收藏状态。
 //
 // 请求体与响应格式同 Like 接口。
-//   changed=true 表示状态从未收藏变为已收藏。
+//
+//	changed=true 表示状态从未收藏变为已收藏。
 //
 // 权限：要求登录。
 func (h *CounterHandler) Fav(c *gin.Context) {
@@ -131,10 +136,12 @@ func (h *CounterHandler) Fav(c *gin.Context) {
 // Unfav 处理 POST /counter/unfav 请求。
 //
 // 功能：
-//   为当前认证用户取消对指定实体的收藏状态。
+//
+//	为当前认证用户取消对指定实体的收藏状态。
 //
 // 请求体与响应格式同 Like 接口，但操作方向相反。
-//   changed=true 表示状态从已收藏变为未收藏。
+//
+//	changed=true 表示状态从已收藏变为未收藏。
 //
 // 权限：要求登录。
 func (h *CounterHandler) Unfav(c *gin.Context) {
@@ -159,7 +166,8 @@ func (h *CounterHandler) Unfav(c *gin.Context) {
 // GetCounts 处理 GET /counter/counts 请求。
 //
 // 功能：
-//   返回指定实体的点赞数和收藏数（以及其他请求的计数值）。
+//
+//	返回指定实体的点赞数和收藏数（以及其他请求的计数值）。
 //
 // 查询参数说明：
 //   - entity_type: string, 必须 — 实体类型
@@ -167,7 +175,8 @@ func (h *CounterHandler) Unfav(c *gin.Context) {
 //   - metrics:     string, 可选 — 逗号分隔的指标名称列表，默认 "like,fav"
 //
 // 响应格式：
-//   成功 200: {"code": 200, "message": "ok", "data": {"like": 42, "fav": 10}}
+//
+//	成功 200: {"code": 200, "message": "ok", "data": {"like": 42, "fav": 10}}
 //
 // 函数调用说明：
 //   - c.Query("name"): Gin 中获取单个 URL 查询参数
@@ -203,15 +212,17 @@ func (h *CounterHandler) GetCounts(c *gin.Context) {
 // Status 处理 GET /counter/status 请求。
 //
 // 功能：
-//   返回当前登录用户对指定实体的点赞和收藏状态（是否已点/已收）。
-//   这是一个用户维度的查询接口，与 GetCounts 的实体总维度不同。
+//
+//	返回当前登录用户对指定实体的点赞和收藏状态（是否已点/已收）。
+//	这是一个用户维度的查询接口，与 GetCounts 的实体总维度不同。
 //
 // 查询参数说明：
 //   - entity_type: string, 必须 — 实体类型
 //   - entity_id:   string, 必须 — 实体 ID
 //
 // 响应格式：
-//   成功 200: {"code": 200, "message": "ok", "data": {"is_liked": true, "is_faved": false}}
+//
+//	成功 200: {"code": 200, "message": "ok", "data": {"is_liked": true, "is_faved": false}}
 //
 // 函数调用说明：
 //   - h.svc.IsLiked() / h.svc.IsFaved():

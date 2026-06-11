@@ -11,7 +11,7 @@ import (
 
 // ProfileHandler 负责处理资料相关接口。
 type ProfileHandler struct {
-	svc *Service
+	svc ProfileUseCase
 }
 
 // NewProfileHandler 创建资料 HTTP 处理器。
@@ -21,7 +21,7 @@ type ProfileHandler struct {
 //
 // 返回值:
 //   - *ProfileHandler: 处理器实例
-func NewProfileHandler(svc *Service) *ProfileHandler {
+func NewProfileHandler(svc ProfileUseCase) *ProfileHandler {
 	return &ProfileHandler{svc: svc}
 }
 
@@ -51,8 +51,9 @@ func (h *ProfileHandler) RegisterRoutes(r *gin.RouterGroup) {
 //   - 失败: HTTP 400（ID 格式错误）、HTTP 404（用户不存在）
 //
 // 说明:
-//   资料查询接口不限制访问权限，任何用户都可以查看其他用户的公开资料。
-//  auth.User 结构体中的 PasswordHash 字段 json tag 为 "-"，在序列化时自动排除。
+//
+//	 资料查询接口不限制访问权限，任何用户都可以查看其他用户的公开资料。
+//	auth.User 结构体中的 PasswordHash 字段 json tag 为 "-"，在序列化时自动排除。
 //
 // 边界情况:
 //   - id 非数值时返回 400
@@ -90,12 +91,12 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 // 响应:
 //   - 成功: HTTP 200 + { success: true }
 //   - 失败: HTTP 401（未登录）、HTTP 403（无权修改他人资料）、
-//           HTTP 400（无更新字段）、HTTP 500（更新失败）
+//     HTTP 400（无更新字段）、HTTP 500（更新失败）
 //
 // 鉴权流程:
-//   1. 从 JWT 上下文中获取当前登录用户 ID
-//   2. 比较 callerID 和 targetID：不同则返回 403
-//   3. handler 层不做完整权限校验（由 service 层在 callerID != targetID 时返回 ErrForbidden）
+//  1. 从 JWT 上下文中获取当前登录用户 ID
+//  2. 比较 callerID 和 targetID：不同则返回 403
+//  3. handler 层不做完整权限校验（由 service 层在 callerID != targetID 时返回 ErrForbidden）
 //
 // 边界情况:
 //   - 未携带 JWT Token → middleware 未设置 userID → 401

@@ -71,6 +71,23 @@
 - `helper.go`
 - `id.go`
 
+补充约束：
+
+- handler 依赖 `ports.go` 中定义的窄接口，而不是直接依赖具体 service
+- 跨领域依赖优先在 bootstrap 构造期通过 `Deps` / `Config` 结构体注入
+- 避免 `New(...)` 之后再用多个 `SetXxx(...)` 把对象补成可用状态
+
+## 架构说明
+
+如果你要继续维护这个项目，建议先看下面几份文档：
+
+- [项目架构说明](docs/project-architecture.md)
+  - 面向当前代码现状，解释模块边界、缓存策略、计数链路和 outbox 链路
+- [后端结构重构设计](docs/superpowers/specs/2026-06-04-backend-structure-refactor-design.md)
+  - 记录 bootstrap 拆分和依赖装配重构的设计背景
+- [Canal / Kafka 对齐设计](docs/superpowers/specs/2026-06-05-canal-kafka-alignment-design.md)
+  - 记录 outbox、Canal 和 Kafka 异步链路的演进原因
+
 ## 本地开发
 
 ### 前置条件
@@ -156,10 +173,45 @@ env GOCACHE=$(pwd)/.gocache go run ./cmd/server -config config/config-local.yaml
 ### 6. 常用命令
 
 ```bash
+make fmt
+make vet
 make test
 make lint
+make check
 make dev-logs
 make dev-down
+```
+
+代码质量约定：
+
+- `make fmt`
+  - 使用 `gofmt` 统一格式化全部 Go 源码
+- `make vet`
+  - 运行 `go vet ./...`
+- `make lint`
+  - 优先运行 `golangci-lint`，如果本机未安装则回退到 `go vet`
+- `make check`
+  - 本地提交前的一次性质量闸门，顺序执行 `vet + lint + test`
+
+当前这轮重构重点回归测试覆盖：
+
+- `pkg/config`
+  - 覆盖启动期默认值填充和核心配置校验
+- `internal/server`
+  - 覆盖应用生命周期、后台 runner 取消和 cleanup 执行
+- `internal/outbox`
+  - 覆盖 `partition + watermark` 幂等推进
+- `internal/counter`
+  - 覆盖消费端停机时内存批次 flush
+- `internal/knowpost`
+  - 覆盖详情缓存版本号失效策略
+- `internal/search` / `internal/relation`
+  - 覆盖异常 outbox 消息的兜底处理
+
+如果本机没有 `golangci-lint`，可以安装：
+
+```bash
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 ```
 
 ### 7. Docker 构建说明

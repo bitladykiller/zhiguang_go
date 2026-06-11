@@ -226,7 +226,7 @@ internal/<domain>/
 目标：
 
 - 拆成 `handler.go + service.go + repository.go + model.go + dto.go`
-- `JwtService`、`VerificationService`、`RefreshTokenStore` 保留在领域内
+- `JWTService`、`VerificationService`、`RefreshTokenStore` 保留在领域内
 
 建议结构：
 

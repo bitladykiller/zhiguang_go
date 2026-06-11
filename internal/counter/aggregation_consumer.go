@@ -17,6 +17,7 @@ import (
 const (
 	defaultCounterFlushMaxAttempts = 3
 	defaultCounterFlushRetryDelay  = time.Second
+	counterShutdownFlushTimeout    = 5 * time.Second
 )
 
 var errCounterBatchCommit = errors.New("counter batch commit failed")
@@ -90,6 +91,7 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 
 func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 	batches := make(map[int]*counterBatch)
+	defer c.flushRemainingBatches(batches)
 
 	for {
 		if flushed := c.flushExpiredBatches(ctx, batches, time.Now()); flushed {
@@ -139,6 +141,26 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 		if err := c.acceptMessage(ctx, batches, msg); err != nil {
 			c.logWarn("accept counter kafka message failed", err)
 		}
+	}
+}
+
+func (c *AggregationConsumer) flushRemainingBatches(batches map[int]*counterBatch) {
+	if len(batches) == 0 {
+		return
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), counterShutdownFlushTimeout)
+	defer cancel()
+
+	partitions := make([]int, 0, len(batches))
+	for partition, batch := range batches {
+		if batch != nil && batch.size() > 0 {
+			partitions = append(partitions, partition)
+		}
+	}
+	sort.Ints(partitions)
+	for _, partition := range partitions {
+		c.flushPartitionBatch(shutdownCtx, batches, partition)
 	}
 }
 
@@ -400,14 +422,6 @@ func newCounterBatch(capacity int) *counterBatch {
 		events:    make([]counterBatchEvent, 0, capacity),
 		entities:  make(map[string]struct{}, capacity),
 	}
-}
-
-func (b *counterBatch) add(msg kafka.Message) error {
-	evt, err := parseCounterEvent(msg.Value)
-	if err != nil {
-		return err
-	}
-	return b.addEvent(msg, evt)
 }
 
 func (b *counterBatch) addEvent(msg kafka.Message, evt CounterEvent) error {

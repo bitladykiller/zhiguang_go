@@ -52,30 +52,35 @@ type KnowPostFeedService struct {
 	counter  CounterClient
 }
 
+// KnowPostFeedServiceDeps 描述 Feed 读取服务的装配参数。
+//
+// Feed 读取链路同时依赖 repo、Redis、两套 L1 缓存和热点探测器，
+// 用参数结构体比 5~6 个位置参数更容易读，也更不容易在 bootstrap 中传错顺序。
+type KnowPostFeedServiceDeps struct {
+	Repo     *KnowPostRepository
+	Redis    *redis.Client
+	L1Public *freecache.Cache
+	L1Mine   *freecache.Cache
+	HotKey   *cache.HotKeyDetector
+	Counter  CounterClient
+}
+
 // FeedCacheInvalidator 暴露知文写操作所需的 feed 缓存失效能力。
 type FeedCacheInvalidator interface {
 	InvalidateAfterPostMutation(ctx context.Context, postID, creatorID uint64)
 }
 
 // NewKnowPostFeedService 创建带有 L1 缓存实例的 Feed 服务。
-func NewKnowPostFeedService(
-	repo *KnowPostRepository,
-	redisClient *redis.Client,
-	l1Public *freecache.Cache,
-	l1Mine *freecache.Cache,
-	hotKey *cache.HotKeyDetector,
-) *KnowPostFeedService {
+func NewKnowPostFeedService(deps KnowPostFeedServiceDeps) *KnowPostFeedService {
 	return &KnowPostFeedService{
-		repo:     repo,
-		redis:    redisClient,
-		l1Public: l1Public,
-		l1Mine:   l1Mine,
-		hotKey:   hotKey,
+		repo:     deps.Repo,
+		redis:    deps.Redis,
+		l1Public: deps.L1Public,
+		l1Mine:   deps.L1Mine,
+		hotKey:   deps.HotKey,
+		counter:  deps.Counter,
 	}
 }
-
-// SetCounterClient 注入计数器依赖。
-func (s *KnowPostFeedService) SetCounterClient(c CounterClient) { s.counter = c }
 
 // ============================================================================
 // 获取公共 Feed
@@ -278,7 +283,7 @@ func (s *KnowPostFeedService) GetMyPublished(userID uint64, page, size int) (*Fe
 	if err == nil && cached != "" {
 		resp, parseErr := s.parseFeedPage([]byte(cached))
 		if parseErr == nil {
-			s.l1Mine.Set([]byte(key), []byte(cached), 30)
+			setFreeCacheValue(s.l1Mine, key, []byte(cached), 30)
 			s.hotKey.Record(key)
 			return resp, nil
 		}
@@ -309,7 +314,7 @@ func (s *KnowPostFeedService) GetMyPublished(userID uint64, page, size int) (*Fe
 	jsonBytes, _ := json.Marshal(resp)
 	baseTTL := 30 + rand.Intn(21) // 30-50s with jitter
 	s.redis.Set(ctx, key, string(jsonBytes), time.Duration(baseTTL)*time.Second)
-	s.l1Mine.Set([]byte(key), jsonBytes, baseTTL)
+	setFreeCacheValue(s.l1Mine, key, jsonBytes, baseTTL)
 	s.hotKey.Record(key)
 
 	return resp, nil
@@ -627,7 +632,7 @@ func (s *KnowPostFeedService) recordItemHotKey(itemID string) {
 //   - cache: *freecache.Cache，目标缓存实例（公共 Feed 使用 l1Public，"我的 Feed" 使用 l1Mine）。
 func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, cache *freecache.Cache) {
 	jsonBytes, _ := json.Marshal(resp)
-	cache.Set([]byte(key), jsonBytes, 15) // 15s for L1 feed cache
+	setFreeCacheValue(cache, key, jsonBytes, 15) // 15s for L1 feed cache
 }
 
 // parseFeedPage 将 feed 页的 JSON 缓存数据反序列化为 FeedPageResponse。

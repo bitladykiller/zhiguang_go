@@ -9,18 +9,18 @@ import (
 	"github.com/zhiguang/app/pkg/response"
 )
 
-// LlmHandler 暴露 AI 相关 HTTP 接口。
-type LlmHandler struct {
-	descSvc *KnowPostDescriptionService
-	ragSvc  *RagQueryService
+// LLMHandler 暴露 AI 相关 HTTP 接口。
+type LLMHandler struct {
+	descSvc DescriptionSuggester
+	ragSvc  RagQueryUseCase
 }
 
-// NewLlmHandler 创建 LLM 处理器实例。
+// NewLLMHandler 创建 LLM 处理器实例。
 //
 // descSvc 和 ragSvc 可能为 nil（配置不完整时降级），
 // handler 会在调用前检查 nil 并返回 503。
-func NewLlmHandler(descSvc *KnowPostDescriptionService, ragSvc *RagQueryService) *LlmHandler {
-	return &LlmHandler{descSvc: descSvc, ragSvc: ragSvc}
+func NewLLMHandler(descSvc DescriptionSuggester, ragSvc RagQueryUseCase) *LLMHandler {
+	return &LLMHandler{descSvc: descSvc, ragSvc: ragSvc}
 }
 
 // RegisterRoutes 在给定的路由组下注册 LLM 相关 HTTP 接口。
@@ -33,9 +33,10 @@ func NewLlmHandler(descSvc *KnowPostDescriptionService, ragSvc *RagQueryService)
 //   - POST /knowposts/:id/rag/query: RAG 流式问答（SSE）
 //
 // 说明:
-//   所有接口都需要 JWT 登录认证。
-//   路由路径与 Java 版 zhiguang_be 保持一致，确保前端无需区分后端语言实现。
-func (h *LlmHandler) RegisterRoutes(r *gin.RouterGroup) {
+//
+//	所有接口都需要 JWT 登录认证。
+//	路由路径与 Java 版 zhiguang_be 保持一致，确保前端无需区分后端语言实现。
+func (h *LLMHandler) RegisterRoutes(r *gin.RouterGroup) {
 	llm := r.Group("/knowposts")
 	{
 		llm.POST("/:id/description/suggest", h.SuggestDescription)
@@ -50,7 +51,7 @@ func (h *LlmHandler) RegisterRoutes(r *gin.RouterGroup) {
 //
 // 请求体：{"title": "...", "content": "..."}
 // 响应体：{"description": "生成的摘要文本"}
-func (h *LlmHandler) SuggestDescription(c *gin.Context) {
+func (h *LLMHandler) SuggestDescription(c *gin.Context) {
 	_, ok := middleware.GetUserID(c)
 	if !ok {
 		response.Fail(c, 401, "unauthorized")
@@ -86,10 +87,11 @@ func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 //   - question (JSON 请求体): 用户问题（必填）
 //
 // 响应:
-//   使用 SSE (Server-Sent Events) 协议流式返回：
-//   - Content-Type: text/event-stream
-//   - Cache-Control: no-cache
-//   - Connection: keep-alive
+//
+//	使用 SSE (Server-Sent Events) 协议流式返回：
+//	- Content-Type: text/event-stream
+//	- Cache-Control: no-cache
+//	- Connection: keep-alive
 //
 // 处理流程:
 //  1. 校验用户登录状态（401 未登录）
@@ -111,7 +113,7 @@ func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 //   - question 为空或缺少时返回 400
 //   - 客户端断开连接时 channel 读操作仍正常完成（由 ragSvc.Query 负责检测 ctx）
 //   - streamChan 使用带缓冲 channel（容量 10），避免 goroutine 阻塞影响生成速度
-func (h *LlmHandler) RagQuery(c *gin.Context) {
+func (h *LLMHandler) RagQuery(c *gin.Context) {
 	_, ok := middleware.GetUserID(c)
 	if !ok {
 		response.Fail(c, 401, "unauthorized")
@@ -145,7 +147,9 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	streamChan := make(chan string, 10)
 
 	go func() {
-		h.ragSvc.Query(postID, req.Question, streamChan)
+		if err := h.ragSvc.Query(postID, req.Question, streamChan); err != nil {
+			return
+		}
 	}()
 
 	flusher, _ := c.Writer.(interface{ Flush() })

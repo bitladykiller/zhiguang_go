@@ -11,7 +11,7 @@ import (
 
 // StorageHandler 暴露 OSS 存储相关 HTTP 接口。
 type StorageHandler struct {
-	svc *OssStorageService
+	svc StorageUseCase
 }
 
 // NewStorageHandler 创建 OSS 存储处理器实例。
@@ -19,10 +19,10 @@ type StorageHandler struct {
 // 功能：将 OSS 存储服务注入 HTTP 处理器。
 //
 // 参数：
-//   - svc: *OssStorageService，OSS 存储服务实例。可能为 nil（配置不完整时）。
+//   - svc: StorageUseCase，存储服务抽象。可能为 nil（配置不完整时）。
 //
 // 返回值：*StorageHandler，创建好的处理器实例。
-func NewStorageHandler(svc *OssStorageService) *StorageHandler {
+func NewStorageHandler(svc StorageUseCase) *StorageHandler {
 	return &StorageHandler{svc: svc}
 }
 
@@ -32,7 +32,8 @@ func NewStorageHandler(svc *OssStorageService) *StorageHandler {
 //   - POST /storage/presign：生成供客户端直传 OSS 的预签名 URL
 //
 // 说明：
-//   所有存储接口都需要 JWT 登录认证。
+//
+//	所有存储接口都需要 JWT 登录认证。
 func (h *StorageHandler) RegisterRoutes(r *gin.RouterGroup) {
 	st := r.Group("/storage")
 	{

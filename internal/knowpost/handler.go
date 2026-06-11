@@ -11,12 +11,12 @@ import (
 
 // KnowPostHandler 暴露知文模块的 HTTP 接口，负责请求参数解析和响应组装。
 type KnowPostHandler struct {
-	svc     *KnowPostService
-	feedSvc *KnowPostFeedService
+	svc     KnowPostUseCase
+	feedSvc KnowPostFeedUseCase
 }
 
 // NewKnowPostHandler 创建处理器实例。
-func NewKnowPostHandler(svc *KnowPostService, feedSvc *KnowPostFeedService) *KnowPostHandler {
+func NewKnowPostHandler(svc KnowPostUseCase, feedSvc KnowPostFeedUseCase) *KnowPostHandler {
 	return &KnowPostHandler{svc: svc, feedSvc: feedSvc}
 }
 
@@ -355,9 +355,10 @@ func queryInt(c *gin.Context, key string, defaultVal int) int {
 // 如果是其他类型的 error（如数据库查询错误），包装为 ErrInternal。
 //
 // 这样设计的原因：
-//   服务层的业务逻辑可能返回 *errcode.AppError（如 ErrNotFound、ErrForbidden），
-//   也可能返回普通的 error（如数据库连接错误）。在转换成 HTTP 响应时，
-//   handler 通过 toAppErr 统一处理，确保非业务错误不会泄露内部细节。
+//
+//	服务层的业务逻辑可能返回 *errcode.AppError（如 ErrNotFound、ErrForbidden），
+//	也可能返回普通的 error（如数据库连接错误）。在转换成 HTTP 响应时，
+//	handler 通过 toAppErr 统一处理，确保非业务错误不会泄露内部细节。
 //
 // 参数：
 //   - err: error，原始错误。

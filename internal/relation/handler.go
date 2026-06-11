@@ -11,10 +11,10 @@ import (
 
 // RelationHandler 暴露关注、取关和关系列表相关 HTTP 接口。
 type RelationHandler struct {
-	svc *RelationService
+	svc RelationUseCase
 }
 
-func NewRelationHandler(svc *RelationService) *RelationHandler {
+func NewRelationHandler(svc RelationUseCase) *RelationHandler {
 	return &RelationHandler{svc: svc}
 }
 
@@ -71,7 +71,8 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 //
 // 请求：{"to_user_id": 12345}
 // 响应：200 {"code": 0, "data": {"success": true, "changed": true}}
-//   changed=true 表示取关成功；changed=false 表示之前就已取关。
+//
+//	changed=true 表示取关成功；changed=false 表示之前就已取关。
 func (h *RelationHandler) Unfollow(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {

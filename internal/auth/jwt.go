@@ -14,35 +14,35 @@ import (
 	"github.com/zhiguang/app/pkg/middleware"
 )
 
-// JwtService 负责使用 RS256 签名创建和校验 JWT。
+// JWTService 负责使用 RS256 签名创建和校验 JWT。
 //
 // 设计决策：
 //   - 使用 RS256（非对称签名）而非 HS256（对称签名）：
-//     + 公钥可以安全分发给其他微服务或前端 SDK 用于本地校验
-//     + 私钥仅在当前服务持有，降低了密钥泄漏的影响范围
+//   - 公钥可以安全分发给其他微服务或前端 SDK 用于本地校验
+//   - 私钥仅在当前服务持有，降低了密钥泄漏的影响范围
 //   - 双令牌模式：短期 access token + 长期 refresh token 的组合
 //   - 刷新令牌使用 Redis 白名单管理，支持主动吊销
 //   - Access Token 中嵌入用户昵称（Nickname），避免每次请求都查一次数据库
-type JwtService struct {
+type JWTService struct {
 	privateKey *rsa.PrivateKey
 	publicKey  *rsa.PublicKey
-	config     *config.JwtConfig
+	config     *config.JWTConfig
 }
 
-// NewJwtService 从配置指定的路径加载 RSA 密钥，并创建 JwtService。
+// NewJWTService 从配置指定的路径加载 RSA 密钥，并创建 JWTService。
 //
 // 参数：
 //   - cfg: JWT 配置（签发者、KeyID、私钥路径、公钥路径、令牌 TTL）
 //
 // 返回值：
-//   - *JwtService: 初始化完成的 JWT 服务实例
+//   - *JWTService: 初始化完成的 JWT 服务实例
 //   - error: 如果密钥文件无法读取或解析则返回错误
 //
 // 函数调用说明：
 //   - loadPrivateKey() 和 loadPublicKey():
 //     读取 PEM 编码的 RSA 密钥文件并解析为 Go 的 rsa.PrivateKey / rsa.PublicKey。
 //     支持 PKCS#8 和 PKCS#1 两种私钥格式，兼容 openssl 生成的不同格式。
-func NewJwtService(cfg *config.JwtConfig) (*JwtService, error) {
+func NewJWTService(cfg *config.JWTConfig) (*JWTService, error) {
 	privateKey, err := loadPrivateKey(cfg.PrivateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load private key from %s: %w", cfg.PrivateKeyPath, err)
@@ -53,7 +53,7 @@ func NewJwtService(cfg *config.JwtConfig) (*JwtService, error) {
 		return nil, fmt.Errorf("failed to load public key from %s: %w", cfg.PublicKeyPath, err)
 	}
 
-	return &JwtService{
+	return &JWTService{
 		privateKey: privateKey,
 		publicKey:  publicKey,
 		config:     cfg,
@@ -79,7 +79,7 @@ func NewJwtService(cfg *config.JwtConfig) (*JwtService, error) {
 //   - uuid.New().String():
 //     google/uuid 库，生成 V4 UUID（随机 UUID），用作 refresh token 的唯一标识符。
 //     后续通过此 ID 在 Redis 白名单中管理 refresh token 的有效性。
-func (s *JwtService) IssueTokenPair(user *User) (*TokenPair, error) {
+func (s *JWTService) IssueTokenPair(user *User) (*TokenPair, error) {
 	refreshTokenID := uuid.New().String()
 	now := time.Now()
 	accessExpiresAt := now.Add(s.config.AccessTokenTTL)
@@ -114,17 +114,17 @@ func (s *JwtService) IssueTokenPair(user *User) (*TokenPair, error) {
 //   - error: 如果签名校验失败、令牌过期或算法不匹配则返回错误
 //
 // 函数调用说明：
-//   - jwt.ParseWithClaims(tokenStr, &JwtClaims{}, keyFunc):
+//   - jwt.ParseWithClaims(tokenStr, &JWTClaims{}, keyFunc):
 //     golang-jwt 库的解析函数。
 //     第一个参数是 JWT 字符串。
-//     第二个参数是自定义 claims 结构体（JwtClaims）的指针，解析后会自动填充。
+//     第二个参数是自定义 claims 结构体（JWTClaims）的指针，解析后会自动填充。
 //     第三个参数是一个 keyFunc 回调，用于返回验证密钥。
 //     内部会自动校验：签名（RS256）、过期时间（exp）、签发时间（iat）等标准字段。
 //   - token.Method.(*jwt.SigningMethodRSA):
 //     类型断言，检查 JWT header 中声明的签名算法是否为 RSA 族算法。
 //     如果不是则拒绝，防止攻击者使用 HS256 等对称算法欺骗验证（算法混淆攻击）。
-func (s *JwtService) ValidateToken(tokenStr string) (middleware.TokenClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &JwtClaims{}, func(token *jwt.Token) (interface{}, error) {
+func (s *JWTService) ValidateToken(tokenStr string) (middleware.TokenClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
@@ -134,7 +134,7 @@ func (s *JwtService) ValidateToken(tokenStr string) (middleware.TokenClaims, err
 		return nil, err
 	}
 
-	if claims, ok := token.Claims.(*JwtClaims); ok && token.Valid {
+	if claims, ok := token.Claims.(*JWTClaims); ok && token.Valid {
 		return claims, nil
 	}
 
@@ -163,8 +163,8 @@ func (s *JwtService) ValidateToken(tokenStr string) (middleware.TokenClaims, err
 //     客户端可以通过 kid 字段选择正确的公钥进行校验。
 //   - token.SignedString(s.privateKey):
 //     使用私钥对 token 进行签名，生成最终的 JWT 字符串。
-func (s *JwtService) encode(user *User, issuedAt, expiresAt time.Time, tokenType, tokenID string) (string, error) {
-	claims := &JwtClaims{
+func (s *JWTService) encode(user *User, issuedAt, expiresAt time.Time, tokenType, tokenID string) (string, error) {
+	claims := &JWTClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    s.config.Issuer,
 			IssuedAt:  jwt.NewNumericDate(issuedAt),

@@ -10,11 +10,11 @@ import (
 // AuthHandler 负责鉴权模块的 HTTP 路由注册与请求适配。
 // 它将 HTTP 请求参数反序列化、验证后传递给 AuthService 处理，再组装响应。
 type AuthHandler struct {
-	svc    *AuthService
-	jwtSvc *JwtService
+	svc    AuthUseCase
+	jwtSvc middleware.TokenValidator
 }
 
-func NewAuthHandler(svc *AuthService, jwtSvc *JwtService) *AuthHandler {
+func NewAuthHandler(svc AuthUseCase, jwtSvc middleware.TokenValidator) *AuthHandler {
 	return &AuthHandler{svc: svc, jwtSvc: jwtSvc}
 }
 
@@ -43,9 +43,9 @@ func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
 // SendCode 处理验证码发送请求（POST /auth/send-code）。
 //
 // 步骤：
-//   1. 使用 c.ShouldBindJSON 将请求 JSON Body 绑定到 SendCodeRequest 结构体
-//   2. 调用 AuthService.SendCode 执行业务逻辑
-//   3. 根据结果返回成功响应或业务错误
+//  1. 使用 c.ShouldBindJSON 将请求 JSON Body 绑定到 SendCodeRequest 结构体
+//  2. 调用 AuthService.SendCode 执行业务逻辑
+//  3. 根据结果返回成功响应或业务错误
 //
 // Gin 绑定（ShouldBindJSON）说明：
 //   - 从 HTTP 请求 Body 读取 JSON，按结构体 tag（`json:"xxx"`）映射到字段
@@ -79,10 +79,10 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 // Register 处理用户注册请求（POST /auth/register）。
 //
 // 完整注册流程：
-//   1. 绑定请求 JSON 到 RegisterRequest 结构体（包含验证码、密码等）
-//   2. 通过 extractClientInfo(c) 提取客户端 IP 和 User-Agent（用于审计日志）
-//   3. 调用 AuthService.Register 执行注册逻辑（验证码校验 -> 创建用户 -> 颁发令牌）
-//   4. 成功返回 201 Created + 用户信息和令牌对
+//  1. 绑定请求 JSON 到 RegisterRequest 结构体（包含验证码、密码等）
+//  2. 通过 extractClientInfo(c) 提取客户端 IP 和 User-Agent（用于审计日志）
+//  3. 调用 AuthService.Register 执行注册逻辑（验证码校验 -> 创建用户 -> 颁发令牌）
+//  4. 成功返回 201 Created + 用户信息和令牌对
 //
 // 参数:
 //   - c: Gin 上下文
@@ -111,10 +111,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 // Login 处理用户登录请求（POST /auth/login）。
 //
 // 登录流程：
-//   1. 绑定请求 JSON 到 LoginRequest 结构体（包含标识、密码、标识类型）
-//   2. 通过 extractClientInfo(c) 提取客户端信息用于审计日志
-//   3. 调用 AuthService.Login 校验密码并颁发 access token + refresh token
-//   4. 记录登录审计日志（成功/失败均记录）
+//  1. 绑定请求 JSON 到 LoginRequest 结构体（包含标识、密码、标识类型）
+//  2. 通过 extractClientInfo(c) 提取客户端信息用于审计日志
+//  3. 调用 AuthService.Login 校验密码并颁发 access token + refresh token
+//  4. 记录登录审计日志（成功/失败均记录）
 //
 // 参数:
 //   - c: Gin 上下文
@@ -142,14 +142,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 // Refresh 处理令牌刷新请求（POST /auth/refresh）。
 //
 // 令牌轮换流程：
-//   1. 绑定请求 JSON 到 TokenRefreshRequest（包含 refresh_token 字段）
-//   2. 调用 AuthService.Refresh 执行刷新逻辑：
-//      a. 校验 refresh token 是否在 Redis 白名单中
-//      b. 解析 refresh token 获取用户 ID
-//      c. 吊销旧 refresh token（令牌轮换：一次刷新 = 一次吊销）
-//      d. 生成新的 access token + refresh token
-//      e. 新 refresh token 存入 Redis 白名单
-//   3. 返回新令牌对
+//  1. 绑定请求 JSON 到 TokenRefreshRequest（包含 refresh_token 字段）
+//  2. 调用 AuthService.Refresh 执行刷新逻辑：
+//     a. 校验 refresh token 是否在 Redis 白名单中
+//     b. 解析 refresh token 获取用户 ID
+//     c. 吊销旧 refresh token（令牌轮换：一次刷新 = 一次吊销）
+//     d. 生成新的 access token + refresh token
+//     e. 新 refresh token 存入 Redis 白名单
+//  3. 返回新令牌对
 //
 // 参数:
 //   - c: Gin 上下文
@@ -177,9 +177,9 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 // Logout 处理用户登出请求（POST /auth/logout）。
 //
 // 登出流程：
-//   1. 绑定请求 JSON 到 TokenRefreshRequest（接收 refresh_token）
-//   2. 调用 AuthService.Logout 从 Redis 白名单中移除该 refresh token
-//   3. 返回登出成功确认
+//  1. 绑定请求 JSON 到 TokenRefreshRequest（接收 refresh_token）
+//  2. 调用 AuthService.Logout 从 Redis 白名单中移除该 refresh token
+//  3. 返回登出成功确认
 //
 // 注意：access token 仍有效直到自然过期（JWT 无状态，无法被服务端吊销）。
 // 通过缩短 access token TTL（通常 15-30 分钟）将风险窗口控制在可接受范围。
@@ -207,13 +207,13 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 // ResetPassword 处理密码重置请求（POST /auth/reset-password）。
 //
 // 密码重置流程：
-//   1. 绑定请求 JSON 到 PasswordResetRequest（包含标识、验证码、新密码）
-//   2. 调用 AuthService.ResetPassword 执行重置：
-//      a. 校验验证码（验证码正确后才能重置）
-//      b. 对新密码进行 bcrypt 哈希
-//      c. 更新数据库中该用户的密码哈希
-//      d. 吊销该用户的所有 refresh token（RevokeAll），强制其他设备重新登录
-//   3. 返回成功确认
+//  1. 绑定请求 JSON 到 PasswordResetRequest（包含标识、验证码、新密码）
+//  2. 调用 AuthService.ResetPassword 执行重置：
+//     a. 校验验证码（验证码正确后才能重置）
+//     b. 对新密码进行 bcrypt 哈希
+//     c. 更新数据库中该用户的密码哈希
+//     d. 吊销该用户的所有 refresh token（RevokeAll），强制其他设备重新登录
+//  3. 返回成功确认
 //
 // 参数:
 //   - c: Gin 上下文
@@ -244,9 +244,9 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 // 未携带有效 access token 的请求会被 401 拦截。
 //
 // 流程：
-//   1. 通过 middleware.GetUserID(c) 从已解析的 JWT 中提取当前用户 ID
-//   2. 调用 AuthService.CurrentUser 查询用户详细信息
-//   3. 返回用户资料（手机号、昵称、头像、学校等）
+//  1. 通过 middleware.GetUserID(c) 从已解析的 JWT 中提取当前用户 ID
+//  2. 调用 AuthService.CurrentUser 查询用户详细信息
+//  3. 返回用户资料（手机号、昵称、头像、学校等）
 //
 // 参数:
 //   - c: Gin 上下文（已通过 AuthMiddleware 注入了解析后的用户信息）
@@ -275,14 +275,14 @@ func (h *AuthHandler) Me(c *gin.Context) {
 //
 // 提取的字段说明：
 //
-//   c.ClientIP()：
-//     自动处理 X-Forwarded-For、X-Real-IP 等代理转发头。
-//     如果请求经过反向代理（Nginx、ELB、Kong 等），返回的是原始客户端 IP 而非代理 IP。
-//     Gin 通过 TrustedProxies 配置控制信任的代理范围（默认信任全部内网代理）。
+//	c.ClientIP()：
+//	  自动处理 X-Forwarded-For、X-Real-IP 等代理转发头。
+//	  如果请求经过反向代理（Nginx、ELB、Kong 等），返回的是原始客户端 IP 而非代理 IP。
+//	  Gin 通过 TrustedProxies 配置控制信任的代理范围（默认信任全部内网代理）。
 //
-//   c.GetHeader("User-Agent")：
-//     获取 HTTP 请求头 User-Agent 的原始值。
-//     如果请求未携带此头，返回空字符串而非 error。
+//	c.GetHeader("User-Agent")：
+//	  获取 HTTP 请求头 User-Agent 的原始值。
+//	  如果请求未携带此头，返回空字符串而非 error。
 //
 // 参数:
 //   - c: Gin 上下文

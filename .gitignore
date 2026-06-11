@@ -16,5 +16,6 @@ config/config-local.yaml
 *.key
 coverage.out
 .gocache/
+.golangci-cache/
 frontend/.git.embedded-backup/
-server
+/server

@@ -7,6 +7,16 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const detailVersionKeyPattern = "knowpost:detail:version:%d"
+
+func detailVersionKey(id uint64) string {
+	return fmt.Sprintf(detailVersionKeyPattern, id)
+}
+
+func detailCacheKey(id uint64, version int64) string {
+	return fmt.Sprintf("knowpost:detail:%d:v%d:%d", id, detailLayoutVer, version)
+}
+
 // --- [缓存协调] ---
 
 // invalidateCache 删除知文详情页的 L1（freecache）和 L2（Redis）缓存。
@@ -15,9 +25,10 @@ import (
 // 然后同时删除 L1（进程级 freecache）和 L2（Redis）中的缓存数据。
 //
 // 缓存键格式：`knowpost:detail:{id}:v{version}`
-//   其中 version = detailLayoutVer（当前为 1）。
-//   这个版本号用于在缓存结构不兼容时全局爆破全部详情缓存。
-//   例如从 v1 升级到 v2 时，所有旧版本的缓存自然失效。
+//
+//	其中 version = detailLayoutVer（当前为 1）。
+//	这个版本号用于在缓存结构不兼容时全局爆破全部详情缓存。
+//	例如从 v1 升级到 v2 时，所有旧版本的缓存自然失效。
 //
 // 在写操作前后各调用一次（缓存双删策略，Cache-Aside Double Delete）：
 //   - 写入前删除：确保旧数据不会在写入过程中被读取到（最终一致性窗口最小化）。
@@ -25,13 +36,19 @@ import (
 //     在并发场景下，可能有一个读取线程在写入线程完成前将旧数据加载到缓存中，
 //     第二次删除可以清除这种竞争条件导致的不一致。
 //
+// 多实例一致性策略：
+//   - 单机内仍然执行本地 L1 删除。
+//   - 同时递增 Redis 中的 detail version，让所有实例在下一次读取时
+//     都切换到新的 cache key，避免继续命中其他实例残留的旧 L1。
+//
 // 参数：
 //   - id: uint64，知文 ID。
 func (s *KnowPostService) invalidateCache(id uint64) {
 	ctx := context.Background()
-	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
+	pageKey := detailCacheKey(id, s.currentDetailVersion(ctx, id))
 	s.redis.Del(ctx, pageKey)
 	s.l1Cache.Del([]byte(pageKey))
+	s.redis.Incr(ctx, detailVersionKey(id))
 }
 
 // invalidateFeedCaches 在知文发生变更后失效对应的 Feed 缓存。
@@ -49,7 +66,7 @@ func (s *KnowPostService) invalidateCache(id uint64) {
 //
 // 边界情况：
 //   - feedCache == nil：不做任何操作，不会 panic。
-//     这在 KnowPostService 刚构造完成但 SetFeedCacheInvalidator 尚未被调用时发生。
+//     这通常表示当前运行配置没有接入 Feed 缓存失效器。
 func (s *KnowPostService) invalidateFeedCaches(id, creatorID uint64) {
 	if s.feedCache == nil {
 		return
@@ -68,15 +85,17 @@ func (s *KnowPostService) invalidateFeedCaches(id, creatorID uint64) {
 //   - Feed 条目碎片缓存（feed:item:{id}）
 //
 // 设计意图：
-//   热点条目被大量用户频繁访问。如果不延长 TTL，这些条目会在每个 TTL 周期结束后
-//   引发大量缓存回源查询。通过 HotKeyDetector 的识别和 TTL 延长，
-//   热点条目在缓存中停留时间更长，有效降低数据库负载。
+//
+//	热点条目被大量用户频繁访问。如果不延长 TTL，这些条目会在每个 TTL 周期结束后
+//	引发大量缓存回源查询。通过 HotKeyDetector 的识别和 TTL 延长，
+//	热点条目在缓存中停留时间更长，有效降低数据库负载。
 //
 // TTL 延长使用 Lua 脚本保证只增不减：
-//   多实例并发延长同一 key 时，Lua 脚本在 Redis 中原子执行，
-//   先读当前 TTL，只有当前 TTL < 目标 TTL 时才 EXPIRE。
-//   不存在竞态条件导致 TTL 被缩短的问题。
-//   兼容 Redis 6.x（比 EXPIRE GT 要求 7.0+ 更通用）。
+//
+//	多实例并发延长同一 key 时，Lua 脚本在 Redis 中原子执行，
+//	先读当前 TTL，只有当前 TTL < 目标 TTL 时才 EXPIRE。
+//	不存在竞态条件导致 TTL 被缩短的问题。
+//	兼容 Redis 6.x（比 EXPIRE GT 要求 7.0+ 更通用）。
 //
 // 边界情况：
 //   - key 已过期（不存在）：Lua 脚本中 TTL 返回 -2，条件不满足，不操作。
@@ -88,10 +107,11 @@ func (s *KnowPostService) invalidateFeedCaches(id, creatorID uint64) {
 //   - pageKey: string，详情页的缓存键名。
 //
 // HotKeyDetector 的工作原理：
-//   cache.HotKeyDetector 使用本地 map 记录每个 key 在 6 秒窗口内的访问计数，
-//   每 6 秒批量 flush 到 Redis Hash 进行跨实例聚合。当某个 key 在 60 秒窗口内的
-//   全局访问计数超过配置阈值时，被认为是一个"热点 key"。
-//   TtlForPublic 方法根据热度和基础 TTL 计算出一个延长的 TTL 值。
+//
+//	cache.HotKeyDetector 使用本地 map 记录每个 key 在 6 秒窗口内的访问计数，
+//	每 6 秒批量 flush 到 Redis Hash 进行跨实例聚合。当某个 key 在 60 秒窗口内的
+//	全局访问计数超过配置阈值时，被认为是一个"热点 key"。
+//	TtlForPublic 方法根据热度和基础 TTL 计算出一个延长的 TTL 值。
 func (s *KnowPostService) recordHotKeyAndExtendTTL(id uint64, pageKey string) {
 	hotKeyID := fmt.Sprintf("knowpost:%d", id)
 	s.hotKey.Record(hotKeyID)
@@ -106,6 +126,18 @@ func (s *KnowPostService) recordHotKeyAndExtendTTL(id uint64, pageKey string) {
 	extendTTL(context.Background(), s.redis, itemKey, target)
 }
 
+// currentDetailVersion 返回指定知文详情缓存的当前版本号。
+//
+// 默认从 0 开始。每次写路径的双删都会递增一次版本号，
+// 从而让所有实例都切换到新的详情 cache key。
+func (s *KnowPostService) currentDetailVersion(ctx context.Context, id uint64) int64 {
+	version, err := s.redis.Get(ctx, detailVersionKey(id)).Int64()
+	if err == nil && version >= 0 {
+		return version
+	}
+	return 0
+}
+
 // extendTTLScript 是 Redis Lua 脚本，原子性地延长缓存 TTL（只增不减）。
 //
 // 逻辑：只有当 key 存在且当前 TTL 小于目标 TTL 时，才执行 EXPIRE。
@@ -114,12 +146,14 @@ func (s *KnowPostService) recordHotKeyAndExtendTTL(id uint64, pageKey string) {
 // 不会把其他实例刚延长的 TTL 缩短。
 //
 // 参数：
-//   KEYS[1]   = 缓存键名
-//   ARGV[1]   = 目标 TTL（秒）
+//
+//	KEYS[1]   = 缓存键名
+//	ARGV[1]   = 目标 TTL（秒）
 //
 // 返回值：
-//   1 = TTL 已延长
-//   0 = 未延长（key 不存在或当前 TTL >= 目标 TTL）
+//
+//	1 = TTL 已延长
+//	0 = 未延长（key 不存在或当前 TTL >= 目标 TTL）
 var extendTTLScript = redis.NewScript(`
 local current = redis.call('TTL', KEYS[1])
 if current > 0 and current < tonumber(ARGV[1]) then
@@ -141,8 +175,9 @@ return 0
 //   - targetSeconds: 目标 TTL（秒）
 //
 // 返回值：
-//   true  = TTL 已延长
-//   false = 未延长（key 不存在或当前 TTL >= 目标 TTL）
+//
+//	true  = TTL 已延长
+//	false = 未延长（key 不存在或当前 TTL >= 目标 TTL）
 //
 // 边界情况：
 //   - key 不存在（TTL 返回 -2）：条件不满足，不操作

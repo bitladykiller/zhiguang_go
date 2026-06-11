@@ -18,13 +18,12 @@ type UserCounterUpdater interface {
 // EventProcessor 处理由 canal-outbox 驱动的关系事件。
 //
 // 负责消费 FollowCreated 和 FollowCanceled 事件，并执行以下操作：
-//  1. 幂等校验（基于 Redis SETNX 的 10 分钟去重窗口）
+//  1. 二次幂等保护（基于 Redis SETNX 的 10 分钟去重窗口）
 //  2. 更新 Redis 中的关注/粉丝 ZSet 缓存
 //  3. 更新用户维度的关注/粉丝计数（通过 CounterService）
 //
-// WHY：不直接在关注/取关 API 中更新缓存，是因为 Redis 缓存可能已过期，
-// 或者 API 请求可能在缓存更新前就失败了。通过事件驱动的异步更新，
-// 可以使关注/粉丝列表的缓存最终一致。
+// 当前主幂等由 consumer 侧的 partition + watermark 提供。
+// 这里的 SETNX 只覆盖“副作用已执行，但水位线尚未推进”这类小窗口。
 type EventProcessor struct {
 	redis   *redis.Client
 	counter UserCounterUpdater
@@ -41,7 +40,9 @@ type EventProcessor struct {
 // 返回值：*EventProcessor，redisClient 为 nil 时返回 nil（避免后续调用报错）。
 //
 // 设计决策：
-//   返回 nil 而非 panic，使调用方可以在事件处理器未初始化时安全地消费消息
+//
+//	返回 nil 而非 panic，使调用方可以在事件处理器未初始化时安全地消费消息
+//
 // （在配置不完整时优雅降级）。
 func NewEventProcessor(redisClient *redis.Client, counter UserCounterUpdater) *EventProcessor {
 	if redisClient == nil {

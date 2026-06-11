@@ -3,7 +3,6 @@ package knowpost
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"strconv"
 	"time"
@@ -53,7 +52,7 @@ import (
 //     errcode.ErrForbidden（无权限查看）。
 func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	ctx := context.Background()
-	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
+	pageKey := detailCacheKey(id, s.currentDetailVersion(ctx, id))
 
 	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {
 		s.recordHotKeyAndExtendTTL(id, pageKey)
@@ -68,7 +67,7 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 		if cached == "NULL" {
 			return nil, errcode.ErrNotFound.WithMsg("content not found")
 		}
-		s.l1Cache.Set([]byte(pageKey), []byte(cached), 60)
+		setFreeCacheValue(s.l1Cache, pageKey, []byte(cached), 60)
 		s.recordHotKeyAndExtendTTL(id, pageKey)
 		resp, parseErr := s.parseDetail([]byte(cached))
 		if parseErr == nil {
@@ -125,7 +124,7 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			if cached != "" {
 				resp, parseErr := s.parseDetail([]byte(cached))
 				if parseErr == nil {
-					s.l1Cache.Set([]byte(pageKey), []byte(cached), 60)
+					setFreeCacheValue(s.l1Cache, pageKey, []byte(cached), 60)
 					return s.enrichDetail(ctx, resp, currentUserID, true), nil
 				}
 			}
@@ -191,7 +190,7 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			targetTTL = baseTTL
 		}
 		s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
-		s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
+		setFreeCacheValue(s.l1Cache, pageKey, jsonBytes, targetTTL)
 
 		return s.enrichDetail(ctx, resp, currentUserID, false), nil
 	}

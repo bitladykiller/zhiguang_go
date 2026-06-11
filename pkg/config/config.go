@@ -14,9 +14,12 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -29,7 +32,7 @@ type Config struct {
 	Kafka         KafkaConfig         `yaml:"kafka"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
 	Auth          AuthConfig          `yaml:"auth"`
-	OSS           OssConfig           `yaml:"oss"`
+	OSS           OSSConfig           `yaml:"oss"`
 	Canal         CanalConfig         `yaml:"canal"`
 	Counter       CounterConfig       `yaml:"counter"`
 	Cache         CacheConfig         `yaml:"cache"`
@@ -134,14 +137,14 @@ type ElasticsearchConfig struct {
 
 // AuthConfig 聚合所有鉴权相关配置。
 type AuthConfig struct {
-	Jwt          JwtConfig          `yaml:"jwt"`
+	JWT          JWTConfig          `yaml:"jwt"`
 	Verification VerificationConfig `yaml:"verification"`
 	Refresh      RefreshConfig      `yaml:"refresh"`
 	Password     PasswordConfig     `yaml:"password"`
 }
 
-// JwtConfig 配置 JWT 签名与过期时间。
-type JwtConfig struct {
+// JWTConfig 配置 JWT 签名与过期时间。
+type JWTConfig struct {
 	Issuer          string        `yaml:"issuer"`
 	KeyID           string        `yaml:"key_id"`
 	PrivateKeyPath  string        `yaml:"private_key_path"`
@@ -178,8 +181,8 @@ type AuthLockConfig struct {
 	RetryIntervalMs int `yaml:"retry_interval_ms"`
 }
 
-// OssConfig 配置阿里云 OSS 对象存储。
-type OssConfig struct {
+// OSSConfig 配置阿里云 OSS 对象存储。
+type OSSConfig struct {
 	Endpoint        string `yaml:"endpoint"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	AccessKeySecret string `yaml:"access_key_secret"`
@@ -326,34 +329,9 @@ type OpenAIConfig struct {
 	Dimensions     int    `yaml:"dimensions"`
 }
 
-// LoadConfig 从指定路径读取 YAML 配置文件并解析为 Config 结构体。
+// LoadConfig 从指定路径读取 YAML 配置，补默认值并做启动期校验。
 //
-// 功能：
-//
-//	Step 1: 使用 os.ReadFile 读取 YAML 文件的完整内容。
-//	Step 2: 使用 yaml.Unmarshal 将 YAML 字节数据反序列化为 Config 结构体。
-//	Step 3: 返回解析后的 Config 指针。
-//
-// 参数：
-//   - path: YAML 配置文件的路径（如 "config/config-local.yaml"）
-//
-// 返回值：
-//   - *Config: 解析后的配置结构体
-//   - error: 文件读取失败或 YAML 格式非法时返回
-//
-// 函数调用说明：
-//   - os.ReadFile(path):
-//     Go 标准库函数，读取文件的完整内容为 []byte。
-//     在 Go 1.16 中引入，替代了旧的 ioutil.ReadFile。
-//   - yaml.Unmarshal(data, cfg):
-//     gopkg.in/yaml.v3 包的 YAML 反序列化函数。
-//     根据结构体上的 yaml tag 将 YAML 字段映射到结构体字段。
-//
-// 注意：
-//
-//	此函数不会校验配置中的字段值是否合理（如端口是否在有效范围、超时值是否为正等），
-//	调用方应在构造连接时自行检查或使用默认值。
-//	也不会设置默认值（如 charset 默认 utf8mb4），需要调用方自行处理。
+// 启动时统一完成这三件事，可以把很多“运行到一半才暴露”的配置问题前移到启动阶段。
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -365,7 +343,407 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("config validation: %w", err)
+	}
+
 	return cfg, nil
+}
+
+// applyDefaults 为核心配置填充保守默认值。
+//
+// 这里主要处理两类默认值：
+//   - 基础设施连接与连接池
+//   - Counter / Cache / Auth 等核心模块的运行参数
+//
+// 对可选能力（ES、LLM、OSS）则不强塞默认值，避免制造“看似可用、实际错误”的假象。
+func (c *Config) applyDefaults() {
+	if c.Server.Port == 0 {
+		c.Server.Port = 8080
+	}
+	if strings.TrimSpace(c.Server.Mode) == "" {
+		c.Server.Mode = "debug"
+	}
+
+	if c.Database.Port == 0 {
+		c.Database.Port = 3306
+	}
+	if strings.TrimSpace(c.Database.Charset) == "" {
+		c.Database.Charset = "utf8mb4"
+	}
+	if c.Database.MaxOpenConns <= 0 {
+		c.Database.MaxOpenConns = 50
+	}
+	if c.Database.MaxIdleConns <= 0 {
+		c.Database.MaxIdleConns = 10
+	}
+	if c.Database.MaxIdleConns > c.Database.MaxOpenConns {
+		c.Database.MaxIdleConns = c.Database.MaxOpenConns
+	}
+	if c.Database.ConnMaxLifetime <= 0 {
+		c.Database.ConnMaxLifetime = 3600
+	}
+
+	if c.Redis.Port == 0 {
+		c.Redis.Port = 6379
+	}
+	if c.Redis.PoolSize <= 0 {
+		c.Redis.PoolSize = 20
+	}
+
+	if c.Kafka.ConsumerGroup == "" {
+		c.Kafka.ConsumerGroup = "counter-agg"
+	}
+	if c.Kafka.Topics.CounterEvents == "" {
+		c.Kafka.Topics.CounterEvents = "counter-events"
+	}
+
+	if c.Auth.JWT.AccessTokenTTL <= 0 {
+		c.Auth.JWT.AccessTokenTTL = 15 * time.Minute
+	}
+	if c.Auth.JWT.RefreshTokenTTL <= 0 {
+		c.Auth.JWT.RefreshTokenTTL = 168 * time.Hour
+	}
+	if c.Auth.Verification.CodeLength <= 0 {
+		c.Auth.Verification.CodeLength = 6
+	}
+	if c.Auth.Verification.TTL <= 0 {
+		c.Auth.Verification.TTL = 5 * time.Minute
+	}
+	if c.Auth.Verification.MaxAttempts <= 0 {
+		c.Auth.Verification.MaxAttempts = 5
+	}
+	if c.Auth.Verification.SendInterval <= 0 {
+		c.Auth.Verification.SendInterval = 60 * time.Second
+	}
+	if c.Auth.Verification.DailyLimit <= 0 {
+		c.Auth.Verification.DailyLimit = 10
+	}
+	applyAuthLockDefaults(&c.Auth.Verification.Lock)
+	applyAuthLockDefaults(&c.Auth.Refresh.Lock)
+	if c.Auth.Password.BcryptCost <= 0 {
+		c.Auth.Password.BcryptCost = 12
+	}
+	if c.Auth.Password.MinLength <= 0 {
+		c.Auth.Password.MinLength = 8
+	}
+
+	if c.Canal.Port == 0 {
+		c.Canal.Port = 11111
+	}
+	if c.Canal.BatchSize <= 0 {
+		c.Canal.BatchSize = 1000
+	}
+	if c.Canal.IntervalMs <= 0 {
+		c.Canal.IntervalMs = 1000
+	}
+
+	if c.Counter.Consumer.BatchSize <= 0 {
+		c.Counter.Consumer.BatchSize = 100
+	}
+	if c.Counter.Consumer.FlushIntervalMs <= 0 {
+		c.Counter.Consumer.FlushIntervalMs = 1000
+	}
+	if c.Counter.Repair.IntervalMs <= 0 {
+		c.Counter.Repair.IntervalMs = 60000
+	}
+	if c.Counter.Repair.BatchSize <= 0 {
+		c.Counter.Repair.BatchSize = 100
+	}
+	if c.Counter.Repair.CleanupIntervalMs <= 0 {
+		c.Counter.Repair.CleanupIntervalMs = 3600000
+	}
+	if c.Counter.Repair.CleanupBatchSize <= 0 {
+		c.Counter.Repair.CleanupBatchSize = 500
+	}
+	if c.Counter.Repair.DoneRetentionHours <= 0 {
+		c.Counter.Repair.DoneRetentionHours = 168
+	}
+	if c.Counter.Rebuild.Lock.TTLMs <= 0 {
+		c.Counter.Rebuild.Lock.TTLMs = 5000
+	}
+	if c.Counter.Rebuild.Lock.WatchdogMs <= 0 {
+		c.Counter.Rebuild.Lock.WatchdogMs = 30000
+	}
+	if c.Counter.Rebuild.Rate.Permits <= 0 {
+		c.Counter.Rebuild.Rate.Permits = 3
+	}
+	if c.Counter.Rebuild.Rate.WindowSeconds <= 0 {
+		c.Counter.Rebuild.Rate.WindowSeconds = 10
+	}
+	if c.Counter.Rebuild.Backoff.BaseMs <= 0 {
+		c.Counter.Rebuild.Backoff.BaseMs = 500
+	}
+	if c.Counter.Rebuild.Backoff.MaxMs <= 0 {
+		c.Counter.Rebuild.Backoff.MaxMs = 30000
+	}
+
+	if c.Cache.L2.PublicCfg.TTLSeconds <= 0 {
+		c.Cache.L2.PublicCfg.TTLSeconds = 15
+	}
+	if c.Cache.L2.PublicCfg.MaxSize <= 0 {
+		c.Cache.L2.PublicCfg.MaxSize = 1000
+	}
+	if c.Cache.L2.MineCfg.TTLSeconds <= 0 {
+		c.Cache.L2.MineCfg.TTLSeconds = 10
+	}
+	if c.Cache.L2.MineCfg.MaxSize <= 0 {
+		c.Cache.L2.MineCfg.MaxSize = 1000
+	}
+	if c.Cache.HotKey.BucketSizeSeconds <= 0 {
+		c.Cache.HotKey.BucketSizeSeconds = 6
+	}
+	if c.Cache.HotKey.BucketCount <= 0 {
+		c.Cache.HotKey.BucketCount = 10
+	}
+	if c.Cache.HotKey.FlushIntervalSeconds <= 0 {
+		c.Cache.HotKey.FlushIntervalSeconds = 6
+	}
+	if c.Cache.HotKey.StatTTLSeconds <= 0 {
+		c.Cache.HotKey.StatTTLSeconds = 120
+	}
+	if c.Cache.HotKey.LevelLow <= 0 {
+		c.Cache.HotKey.LevelLow = 50
+	}
+	if c.Cache.HotKey.LevelMedium <= 0 {
+		c.Cache.HotKey.LevelMedium = 200
+	}
+	if c.Cache.HotKey.LevelHigh <= 0 {
+		c.Cache.HotKey.LevelHigh = 500
+	}
+	if c.Cache.HotKey.ExtendLowSeconds <= 0 {
+		c.Cache.HotKey.ExtendLowSeconds = 20
+	}
+	if c.Cache.HotKey.ExtendMediumSeconds <= 0 {
+		c.Cache.HotKey.ExtendMediumSeconds = 60
+	}
+	if c.Cache.HotKey.ExtendHighSeconds <= 0 {
+		c.Cache.HotKey.ExtendHighSeconds = 120
+	}
+	if c.Cache.HotKey.HotMarkTTLSeconds <= 0 {
+		c.Cache.HotKey.HotMarkTTLSeconds = 60
+	}
+
+	if c.LLM.OpenAI.Dimensions <= 0 {
+		c.LLM.OpenAI.Dimensions = 1536
+	}
+}
+
+// Validate 校验启动所需的核心配置。
+//
+// 约束原则：
+//   - 核心链路配置必须完整，否则直接启动失败
+//   - 可选能力允许缺失，由 bootstrap 层统一降级
+func (c *Config) Validate() error {
+	if err := validatePort("server.port", c.Server.Port); err != nil {
+		return err
+	}
+	switch c.Server.Mode {
+	case "debug", "release", "test":
+	default:
+		return fmt.Errorf("server.mode must be one of debug/release/test")
+	}
+
+	if strings.TrimSpace(c.Database.Host) == "" {
+		return fmt.Errorf("database.host is required")
+	}
+	if err := validatePort("database.port", c.Database.Port); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.Database.User) == "" {
+		return fmt.Errorf("database.user is required")
+	}
+	if strings.TrimSpace(c.Database.Name) == "" {
+		return fmt.Errorf("database.name is required")
+	}
+	if c.Database.MaxOpenConns <= 0 {
+		return fmt.Errorf("database.max_open_conns must be > 0")
+	}
+	if c.Database.MaxIdleConns < 0 {
+		return fmt.Errorf("database.max_idle_conns must be >= 0")
+	}
+	if c.Database.MaxIdleConns > c.Database.MaxOpenConns {
+		return fmt.Errorf("database.max_idle_conns must be <= max_open_conns")
+	}
+	if c.Database.ConnMaxLifetime <= 0 {
+		return fmt.Errorf("database.conn_max_lifetime must be > 0")
+	}
+
+	if err := validatePort("redis.port", c.Redis.Port); err != nil {
+		return err
+	}
+	if c.Redis.DB < 0 {
+		return fmt.Errorf("redis.db must be >= 0")
+	}
+	if c.Redis.PoolSize <= 0 {
+		return fmt.Errorf("redis.pool_size must be > 0")
+	}
+
+	if c.IDGenerator.MachineID < 0 || c.IDGenerator.MachineID > 31 {
+		return fmt.Errorf("id_generator.machine_id must be in [0,31]")
+	}
+	if c.IDGenerator.WorkerID < 0 || c.IDGenerator.WorkerID > 31 {
+		return fmt.Errorf("id_generator.worker_id must be in [0,31]")
+	}
+
+	if len(c.Kafka.Brokers) == 0 {
+		return fmt.Errorf("kafka.brokers must not be empty")
+	}
+	for i, broker := range c.Kafka.Brokers {
+		if strings.TrimSpace(broker) == "" {
+			return fmt.Errorf("kafka.brokers[%d] must not be empty", i)
+		}
+	}
+	if strings.TrimSpace(c.Kafka.ConsumerGroup) == "" {
+		return fmt.Errorf("kafka.consumer_group is required")
+	}
+	if strings.TrimSpace(c.Kafka.Topics.CounterEvents) == "" {
+		return fmt.Errorf("kafka.topics.counter_events is required")
+	}
+
+	if strings.TrimSpace(c.Auth.JWT.Issuer) == "" {
+		return fmt.Errorf("auth.jwt.issuer is required")
+	}
+	if strings.TrimSpace(c.Auth.JWT.KeyID) == "" {
+		return fmt.Errorf("auth.jwt.key_id is required")
+	}
+	if strings.TrimSpace(c.Auth.JWT.PrivateKeyPath) == "" {
+		return fmt.Errorf("auth.jwt.private_key_path is required")
+	}
+	if strings.TrimSpace(c.Auth.JWT.PublicKeyPath) == "" {
+		return fmt.Errorf("auth.jwt.public_key_path is required")
+	}
+	if c.Auth.JWT.AccessTokenTTL <= 0 {
+		return fmt.Errorf("auth.jwt.access_token_ttl must be > 0")
+	}
+	if c.Auth.JWT.RefreshTokenTTL <= 0 {
+		return fmt.Errorf("auth.jwt.refresh_token_ttl must be > 0")
+	}
+	if c.Auth.Verification.CodeLength <= 0 {
+		return fmt.Errorf("auth.verification.code_length must be > 0")
+	}
+	if c.Auth.Verification.TTL <= 0 {
+		return fmt.Errorf("auth.verification.ttl must be > 0")
+	}
+	if c.Auth.Verification.MaxAttempts <= 0 {
+		return fmt.Errorf("auth.verification.max_attempts must be > 0")
+	}
+	if c.Auth.Verification.SendInterval <= 0 {
+		return fmt.Errorf("auth.verification.send_interval must be > 0")
+	}
+	if c.Auth.Verification.DailyLimit <= 0 {
+		return fmt.Errorf("auth.verification.daily_limit must be > 0")
+	}
+	if err := validateAuthLock("auth.verification.lock", c.Auth.Verification.Lock); err != nil {
+		return err
+	}
+	if err := validateAuthLock("auth.refresh.lock", c.Auth.Refresh.Lock); err != nil {
+		return err
+	}
+	if c.Auth.Password.MinLength <= 0 {
+		return fmt.Errorf("auth.password.min_length must be > 0")
+	}
+	if c.Auth.Password.BcryptCost < bcrypt.MinCost || c.Auth.Password.BcryptCost > bcrypt.MaxCost {
+		return fmt.Errorf("auth.password.bcrypt_cost must be in [%d,%d]", bcrypt.MinCost, bcrypt.MaxCost)
+	}
+
+	if c.Canal.Enabled {
+		if strings.TrimSpace(c.Canal.Host) == "" {
+			return fmt.Errorf("canal.host is required when canal.enabled=true")
+		}
+		if err := validatePort("canal.port", c.Canal.Port); err != nil {
+			return err
+		}
+	}
+	if c.Canal.BatchSize <= 0 {
+		return fmt.Errorf("canal.batch_size must be > 0")
+	}
+	if c.Canal.IntervalMs <= 0 {
+		return fmt.Errorf("canal.interval_ms must be > 0")
+	}
+
+	if c.Counter.Consumer.BatchSize <= 0 {
+		return fmt.Errorf("counter.consumer.batch_size must be > 0")
+	}
+	if c.Counter.Consumer.FlushIntervalMs <= 0 {
+		return fmt.Errorf("counter.consumer.flush_interval_ms must be > 0")
+	}
+	if c.Counter.Repair.IntervalMs <= 0 {
+		return fmt.Errorf("counter.repair.interval_ms must be > 0")
+	}
+	if c.Counter.Repair.BatchSize <= 0 {
+		return fmt.Errorf("counter.repair.batch_size must be > 0")
+	}
+	if c.Counter.Repair.CleanupIntervalMs <= 0 {
+		return fmt.Errorf("counter.repair.cleanup_interval_ms must be > 0")
+	}
+	if c.Counter.Repair.CleanupBatchSize <= 0 {
+		return fmt.Errorf("counter.repair.cleanup_batch_size must be > 0")
+	}
+	if c.Counter.Repair.DoneRetentionHours <= 0 {
+		return fmt.Errorf("counter.repair.done_retention_hours must be > 0")
+	}
+	if c.Counter.Rebuild.Lock.TTLMs <= 0 || c.Counter.Rebuild.Lock.WatchdogMs <= 0 {
+		return fmt.Errorf("counter.rebuild.lock ttl/watchdog must be > 0")
+	}
+	if c.Counter.Rebuild.Rate.Permits <= 0 || c.Counter.Rebuild.Rate.WindowSeconds <= 0 {
+		return fmt.Errorf("counter.rebuild.rate permits/window_seconds must be > 0")
+	}
+	if c.Counter.Rebuild.Backoff.BaseMs <= 0 || c.Counter.Rebuild.Backoff.MaxMs <= 0 {
+		return fmt.Errorf("counter.rebuild.backoff base_ms/max_ms must be > 0")
+	}
+	if c.Counter.Rebuild.Backoff.BaseMs > c.Counter.Rebuild.Backoff.MaxMs {
+		return fmt.Errorf("counter.rebuild.backoff.base_ms must be <= max_ms")
+	}
+
+	if c.Cache.L2.PublicCfg.TTLSeconds <= 0 || c.Cache.L2.PublicCfg.MaxSize <= 0 {
+		return fmt.Errorf("cache.l2.public_cfg ttl_seconds/max_size must be > 0")
+	}
+	if c.Cache.L2.MineCfg.TTLSeconds <= 0 || c.Cache.L2.MineCfg.MaxSize <= 0 {
+		return fmt.Errorf("cache.l2.mine_cfg ttl_seconds/max_size must be > 0")
+	}
+	if c.Cache.HotKey.BucketSizeSeconds <= 0 ||
+		c.Cache.HotKey.BucketCount <= 0 ||
+		c.Cache.HotKey.FlushIntervalSeconds <= 0 ||
+		c.Cache.HotKey.StatTTLSeconds <= 0 ||
+		c.Cache.HotKey.HotMarkTTLSeconds <= 0 {
+		return fmt.Errorf("cache.hotkey bucket/flush/ttl settings must be > 0")
+	}
+
+	return nil
+}
+
+func applyAuthLockDefaults(lock *AuthLockConfig) {
+	if lock.TTLMs <= 0 {
+		lock.TTLMs = 5000
+	}
+	if lock.WatchdogMs <= 0 {
+		lock.WatchdogMs = 15000
+	}
+	if lock.RetryIntervalMs <= 0 {
+		lock.RetryIntervalMs = 100
+	}
+}
+
+func validateAuthLock(name string, lock AuthLockConfig) error {
+	if lock.TTLMs <= 0 {
+		return fmt.Errorf("%s.ttl_ms must be > 0", name)
+	}
+	if lock.WatchdogMs <= 0 {
+		return fmt.Errorf("%s.watchdog_ms must be > 0", name)
+	}
+	if lock.RetryIntervalMs <= 0 {
+		return fmt.Errorf("%s.retry_interval_ms must be > 0", name)
+	}
+	return nil
+}
+
+func validatePort(name string, port int) error {
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("%s must be in [1,65535]", name)
+	}
+	return nil
 }
 
 // itoa 在不引入 strconv 的前提下把 int 转成字符串。

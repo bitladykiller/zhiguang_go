@@ -2,7 +2,7 @@
 // 验证码流程、刷新令牌白名单以及审计日志能力。
 //
 // 架构组成：
-//   - JwtService：负责 RSA 密钥管理、令牌签发与校验
+//   - JWTService：负责 RSA 密钥管理、令牌签发与校验
 //   - VerificationService：基于 Redis 的验证码生成与校验
 //   - AuthService：编排注册、登录、刷新令牌等业务流程
 //   - RefreshTokenStore：基于 Redis 管理刷新令牌生命周期
@@ -130,10 +130,10 @@ type TokenPair struct {
 	RefreshTokenID        string    `json:"-"`
 }
 
-// JwtClaims 在 jwt.RegisteredClaims 基础上扩展了业务字段。
+// JWTClaims 在 jwt.RegisteredClaims 基础上扩展了业务字段。
 // UID 与 TokenKind 是内部字段名；JSON tag 仍保持为 "uid" 与 "token_type"，
 // 以兼容现有 JWT 协议格式。UserID() 与 TokenType() 用于实现 middleware.TokenClaims。
-type JwtClaims struct {
+type JWTClaims struct {
 	jwt.RegisteredClaims
 	UID       uint64 `json:"uid"`
 	TokenKind string `json:"token_type"`
@@ -141,7 +141,7 @@ type JwtClaims struct {
 }
 
 // UserID 返回内嵌的用户 ID，用于实现 middleware.TokenClaims。
-func (c *JwtClaims) UserID() uint64 { return c.UID }
+func (c *JWTClaims) UserID() uint64 { return c.UID }
 
 // TokenType 返回令牌类型字符串，用于实现 middleware.TokenClaims。
-func (c *JwtClaims) TokenType() string { return c.TokenKind }
+func (c *JWTClaims) TokenType() string { return c.TokenKind }

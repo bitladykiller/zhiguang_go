@@ -87,7 +87,9 @@ func (r *CounterFailedMessageRepository) CreateBatch(ctx context.Context, messag
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	for _, message := range messages {
 		if message == nil {
@@ -115,7 +117,9 @@ func (r *CounterFailedMessageRepository) ClaimPending(ctx context.Context, limit
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	tasks := make([]CounterFailedMessage, 0, limit)
 	if err := tx.SelectContext(ctx, &tasks, `
