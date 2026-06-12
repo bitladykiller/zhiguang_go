@@ -32,7 +32,7 @@ func TestInvalidateCacheBumpsDetailVersion(t *testing.T) {
 		t.Fatalf("seed l1 detail cache: %v", err)
 	}
 
-	service.invalidateCache(postID)
+	service.invalidateCache(ctx, postID)
 
 	if _, err := service.l1Cache.Get([]byte(initialKey)); err == nil {
 		t.Fatal("expected local L1 old detail cache to be deleted")
@@ -49,5 +49,23 @@ func TestInvalidateCacheBumpsDetailVersion(t *testing.T) {
 	nextKey := detailCacheKey(postID, nextVersion)
 	if nextKey == initialKey {
 		t.Fatal("expected detail cache key to change after version bump")
+	}
+}
+
+func TestInvalidateCacheIgnoresCallerCancellation(t *testing.T) {
+	client := testutil.StartRedisServer(t)
+	service := &KnowPostService{
+		redis:   client,
+		l1Cache: freecache.NewCache(1 << 20),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	const postID uint64 = 99
+	service.invalidateCache(ctx, postID)
+
+	if got := service.currentDetailVersion(context.Background(), postID); got != 1 {
+		t.Fatalf("expected canceled caller context to still bump detail version, got %d", got)
 	}
 }

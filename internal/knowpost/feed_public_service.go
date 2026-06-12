@@ -14,8 +14,7 @@ import (
 //   - 先读 L1 整页缓存；
 //   - 再尝试用 Redis 碎片缓存拼页；
 //   - 最后在分布式锁保护下回源 MySQL。
-func (s *KnowPostFeedService) GetPublicFeed(page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
-	ctx := context.Background()
+func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
 	safeSize := clamp(size, 1, 50)
 	safePage := max(page, 1)
 	feedVersion := s.currentPublicFeedVersion(ctx)
@@ -29,7 +28,7 @@ func (s *KnowPostFeedService) GetPublicFeed(page, size int, currentUserID *uint6
 		resp, parseErr := s.parseFeedPage(val)
 		if parseErr == nil {
 			for _, item := range resp.Items {
-				s.recordItemHotKey(item.ID)
+				s.recordItemHotKey(ctx, item.ID)
 			}
 			return &FeedPageResponse{
 				Items:   s.enrichItems(ctx, resp.Items, currentUserID),
@@ -43,7 +42,7 @@ func (s *KnowPostFeedService) GetPublicFeed(page, size int, currentUserID *uint6
 	if resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, safePage, safeSize, currentUserID); resp != nil {
 		s.cacheFeedPage(localPageKey, resp, s.l1Public)
 		for _, item := range resp.Items {
-			s.recordItemHotKey(item.ID)
+			s.recordItemHotKey(ctx, item.ID)
 		}
 		return resp, nil
 	}

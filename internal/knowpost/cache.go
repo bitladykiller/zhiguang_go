@@ -3,11 +3,13 @@ package knowpost
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
 const detailVersionKeyPattern = "knowpost:detail:version:%d"
+const knowPostCacheOpTimeout = time.Second
 
 func detailVersionKey(id uint64) string {
 	return fmt.Sprintf(detailVersionKeyPattern, id)
@@ -15,6 +17,18 @@ func detailVersionKey(id uint64) string {
 
 func detailCacheKey(id uint64, version int64) string {
 	return fmt.Sprintf("knowpost:detail:%d:v%d:%d", id, detailLayoutVer, version)
+}
+
+// bestEffortCacheContext 为缓存协同创建一个脱离请求取消、但仍有超时上限的上下文。
+//
+// WHY：
+//   - 写路径提交成功后仍需要尽力完成缓存失效，否则容易留下短期脏数据；
+//   - 但这些 Redis 操作也不应该无限阻塞，所以仍要施加一个较短超时。
+func bestEffortCacheContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), knowPostCacheOpTimeout)
 }
 
 // --- [缓存协调] ---
@@ -43,12 +57,14 @@ func detailCacheKey(id uint64, version int64) string {
 //
 // 参数：
 //   - id: uint64，知文 ID。
-func (s *KnowPostService) invalidateCache(id uint64) {
-	ctx := context.Background()
-	pageKey := detailCacheKey(id, s.currentDetailVersion(ctx, id))
-	s.redis.Del(ctx, pageKey)
+func (s *KnowPostService) invalidateCache(ctx context.Context, id uint64) {
+	opCtx, cancel := bestEffortCacheContext(ctx)
+	defer cancel()
+
+	pageKey := detailCacheKey(id, s.currentDetailVersion(opCtx, id))
+	s.redis.Del(opCtx, pageKey)
 	s.l1Cache.Del([]byte(pageKey))
-	s.redis.Incr(ctx, detailVersionKey(id))
+	s.redis.Incr(opCtx, detailVersionKey(id))
 }
 
 // invalidateFeedCaches 在知文发生变更后失效对应的 Feed 缓存。
@@ -67,11 +83,15 @@ func (s *KnowPostService) invalidateCache(id uint64) {
 // 边界情况：
 //   - feedCache == nil：不做任何操作，不会 panic。
 //     这通常表示当前运行配置没有接入 Feed 缓存失效器。
-func (s *KnowPostService) invalidateFeedCaches(id, creatorID uint64) {
+func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorID uint64) {
 	if s.feedCache == nil {
 		return
 	}
-	s.feedCache.InvalidateAfterPostMutation(context.Background(), id, creatorID)
+
+	opCtx, cancel := bestEffortCacheContext(ctx)
+	defer cancel()
+
+	s.feedCache.InvalidateAfterPostMutation(opCtx, id, creatorID)
 }
 
 // recordHotKeyAndExtendTTL 记录某篇知文的热点访问，并酌情延长缓存 TTL。
@@ -112,18 +132,20 @@ func (s *KnowPostService) invalidateFeedCaches(id, creatorID uint64) {
 //	每 6 秒批量 flush 到 Redis Hash 进行跨实例聚合。当某个 key 在 60 秒窗口内的
 //	全局访问计数超过配置阈值时，被认为是一个"热点 key"。
 //	TtlForPublic 方法根据热度和基础 TTL 计算出一个延长的 TTL 值。
-func (s *KnowPostService) recordHotKeyAndExtendTTL(id uint64, pageKey string) {
+func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint64, pageKey string) {
 	hotKeyID := fmt.Sprintf("knowpost:%d", id)
 	s.hotKey.Record(hotKeyID)
 
 	baseTTL := 60
 	target := s.hotKey.TtlForPublic(baseTTL, hotKeyID)
+	opCtx, cancel := bestEffortCacheContext(ctx)
+	defer cancel()
 
 	// EXPIRE GT：只有当新 TTL 大于当前 TTL 时才更新，保证不缩短
-	extendTTL(context.Background(), s.redis, pageKey, target)
+	extendTTL(opCtx, s.redis, pageKey, target)
 
 	itemKey := fmt.Sprintf("feed:item:%d", id)
-	extendTTL(context.Background(), s.redis, itemKey, target)
+	extendTTL(opCtx, s.redis, itemKey, target)
 }
 
 // currentDetailVersion 返回指定知文详情缓存的当前版本号。

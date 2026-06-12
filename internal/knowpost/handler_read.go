@@ -18,7 +18,7 @@ func (h *KnowPostHandler) GetDetail(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.svc.GetDetail(id, optionalUserID(c))
+	resp, err := h.svc.GetDetail(c.Request.Context(), id, optionalUserID(c))
 	if err != nil {
 		response.Error(c, toAppErr(err))
 		return
@@ -39,7 +39,7 @@ func (h *KnowPostHandler) GetPublicFeed(c *gin.Context) {
 	page := queryInt(c, "page", 1)
 	size := queryInt(c, "size", 20)
 
-	resp, err := h.feedSvc.GetPublicFeed(page, size, optionalUserID(c))
+	resp, err := h.feedSvc.GetPublicFeed(c.Request.Context(), page, size, optionalUserID(c))
 	if err != nil {
 		response.Error(c, errcode.ErrInternal.WithMsg(err.Error()))
 		return
@@ -64,7 +64,7 @@ func (h *KnowPostHandler) GetMyPublished(c *gin.Context) {
 
 	page := queryInt(c, "page", 1)
 	size := queryInt(c, "size", 20)
-	resp, err := h.feedSvc.GetMyPublished(userID, page, size)
+	resp, err := h.feedSvc.GetMyPublished(c.Request.Context(), userID, page, size)
 	if err != nil {
 		response.Error(c, errcode.ErrInternal.WithMsg(err.Error()))
 		return

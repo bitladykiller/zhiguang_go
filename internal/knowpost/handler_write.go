@@ -25,7 +25,7 @@ func (h *KnowPostHandler) CreateDraft(c *gin.Context) {
 		return
 	}
 
-	id, err := h.svc.CreateDraft(userID)
+	id, err := h.svc.CreateDraft(c.Request.Context(), userID)
 	if err != nil {
 		response.Error(c, errcode.ErrInternal.WithMsg(err.Error()))
 		return
@@ -59,7 +59,7 @@ func (h *KnowPostHandler) ConfirmContent(c *gin.Context) {
 		response.Fail(c, 400, "invalid request: "+err.Error())
 		return
 	}
-	if err := h.svc.ConfirmContent(userID, id, req.ObjectKey, req.Etag, req.Sha256, req.Size); err != nil {
+	if err := h.svc.ConfirmContent(c.Request.Context(), userID, id, req.ObjectKey, req.Etag, req.Sha256, req.Size); err != nil {
 		response.Error(c, toAppErr(err))
 		return
 	}
@@ -88,7 +88,7 @@ func (h *KnowPostHandler) UpdateMetadata(c *gin.Context) {
 		response.Fail(c, 400, "invalid request: "+err.Error())
 		return
 	}
-	if err := h.svc.UpdateMetadata(userID, id, &req); err != nil {
+	if err := h.svc.UpdateMetadata(c.Request.Context(), userID, id, &req); err != nil {
 		response.Error(c, toAppErr(err))
 		return
 	}
@@ -113,7 +113,7 @@ func (h *KnowPostHandler) Publish(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.Publish(userID, id); err != nil {
+	if err := h.svc.Publish(c.Request.Context(), userID, id); err != nil {
 		response.Error(c, toAppErr(err))
 		return
 	}
@@ -141,7 +141,7 @@ func (h *KnowPostHandler) UpdateTop(c *gin.Context) {
 		response.Fail(c, 400, "invalid request: "+err.Error())
 		return
 	}
-	if err := h.svc.UpdateTop(userID, id, req.IsTop); err != nil {
+	if err := h.svc.UpdateTop(c.Request.Context(), userID, id, req.IsTop); err != nil {
 		response.Error(c, toAppErr(err))
 		return
 	}
@@ -169,7 +169,7 @@ func (h *KnowPostHandler) UpdateVisibility(c *gin.Context) {
 		response.Fail(c, 400, "invalid request: "+err.Error())
 		return
 	}
-	if err := h.svc.UpdateVisibility(userID, id, req.Visible); err != nil {
+	if err := h.svc.UpdateVisibility(c.Request.Context(), userID, id, req.Visible); err != nil {
 		response.Error(c, toAppErr(err))
 		return
 	}
@@ -194,7 +194,7 @@ func (h *KnowPostHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.Delete(userID, id); err != nil {
+	if err := h.svc.Delete(c.Request.Context(), userID, id); err != nil {
 		response.Error(c, toAppErr(err))
 		return
 	}

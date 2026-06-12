@@ -68,14 +68,17 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 // recordItemHotKey 记录热点条目，并按热度延长条目碎片 TTL。
 //
 // TTL 延长使用 Lua 脚本只增不减，避免并发请求把热点 key 的 TTL 反向缩短。
-func (s *KnowPostFeedService) recordItemHotKey(itemID string) {
+func (s *KnowPostFeedService) recordItemHotKey(ctx context.Context, itemID string) {
 	hotKeyID := "knowpost:" + itemID
 	s.hotKey.Record(hotKeyID)
 
 	baseTTL := 60
 	target := s.hotKey.TtlForPublic(baseTTL, hotKeyID)
 	itemKey := "feed:item:" + itemID
-	extendTTL(context.Background(), s.redis, itemKey, target)
+	opCtx, cancel := bestEffortCacheContext(ctx)
+	defer cancel()
+
+	extendTTL(opCtx, s.redis, itemKey, target)
 }
 
 // parseFeedPage 把缓存中的 JSON 页数据反序列化为 FeedPageResponse。

@@ -13,8 +13,7 @@ import (
 //
 // 这个读路径不使用碎片缓存，而是直接缓存整页。
 // 原因是“我的 feed”写入频率更低、数据范围更窄，整页缓存更直接。
-func (s *KnowPostFeedService) GetMyPublished(userID uint64, page, size int) (*FeedPageResponse, error) {
-	ctx := context.Background()
+func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
 	safeSize := clamp(size, 1, 50)
 	safePage := max(page, 1)
 	feedVersion := s.currentMineFeedVersion(ctx, userID)
