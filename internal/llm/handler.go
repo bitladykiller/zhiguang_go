@@ -71,7 +71,7 @@ func (h *LLMHandler) SuggestDescription(c *gin.Context) {
 		return
 	}
 
-	desc, err := h.descSvc.SuggestDescription(req.Title, req.Content)
+	desc, err := h.descSvc.SuggestDescription(c.Request.Context(), req.Title, req.Content)
 	if err != nil {
 		response.Fail(c, 500, err.Error())
 		return
@@ -144,20 +144,27 @@ func (h *LLMHandler) RagQuery(c *gin.Context) {
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.WriteHeader(200)
 
+	ctx := c.Request.Context()
 	streamChan := make(chan string, 10)
 
 	go func() {
-		if err := h.ragSvc.Query(postID, req.Question, streamChan); err != nil {
-			return
-		}
+		_ = h.ragSvc.Query(ctx, postID, req.Question, streamChan)
 	}()
 
 	flusher, _ := c.Writer.(interface{ Flush() })
 
-	for token := range streamChan {
-		fmt.Fprint(c.Writer, token)
-		if flusher != nil {
-			flusher.Flush()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case token, ok := <-streamChan:
+			if !ok {
+				return
+			}
+			fmt.Fprint(c.Writer, token)
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 	}
 }
