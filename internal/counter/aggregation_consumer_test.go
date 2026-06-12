@@ -2,6 +2,7 @@ package counter
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/segmentio/kafka-go"
@@ -54,5 +55,51 @@ func TestFlushRemainingBatchesOnShutdown(t *testing.T) {
 	}
 	if got := readInt32BE(raw, IdxLike*FieldSize); got != 1 {
 		t.Fatalf("expected like count 1 after shutdown flush, got %d", got)
+	}
+}
+
+func TestCounterBatchCntKeysSortsMembers(t *testing.T) {
+	batch := newCounterBatch(4)
+
+	if err := batch.addEvent(
+		kafka.Message{Partition: 1, Offset: 10},
+		CounterEvent{
+			EntityType: "user",
+			EntityID:   "2",
+			Metric:     "follower",
+			Index:      IdxFollower,
+			Delta:      1,
+		},
+	); err != nil {
+		t.Fatalf("add first event: %v", err)
+	}
+
+	if err := batch.addEvent(
+		kafka.Message{Partition: 1, Offset: 11},
+		CounterEvent{
+			EntityType: "knowpost",
+			EntityID:   "1",
+			Metric:     "like",
+			Index:      IdxLike,
+			Delta:      1,
+		},
+	); err != nil {
+		t.Fatalf("add second event: %v", err)
+	}
+
+	keys, indexes := batch.cntKeys()
+	wantKeys := []string{
+		SdsKey("knowpost", "1"),
+		SdsKey("user", "2"),
+	}
+	if !reflect.DeepEqual(keys, wantKeys) {
+		t.Fatalf("cntKeys() keys = %v, want %v", keys, wantKeys)
+	}
+
+	if got := indexes[CounterEntityMember("knowpost", "1")]; got != 0 {
+		t.Fatalf("knowpost index = %d, want 0", got)
+	}
+	if got := indexes[CounterEntityMember("user", "2")]; got != 1 {
+		t.Fatalf("user index = %d, want 1", got)
 	}
 }
