@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/zhiguang/app/pkg/config"
@@ -16,6 +17,7 @@ type CounterService struct {
 	producer           CounterEventPublisher
 	rebuildLockOptions redislock.Options
 	failureRecorder    CounterFailureRecorder
+	failureTasks       CounterFailureTaskStore
 	failureTopic       string
 	messageIDGenerator MessageIDGenerator
 }
@@ -26,6 +28,7 @@ type CounterServiceDeps struct {
 	Producer           CounterEventPublisher
 	Config             *config.CounterConfig
 	FailureRecorder    CounterFailureRecorder
+	FailureTasks       CounterFailureTaskStore
 	FailureTopic       string
 	MessageIDGenerator MessageIDGenerator
 }
@@ -37,6 +40,7 @@ func NewCounterService(deps CounterServiceDeps) *CounterService {
 		producer:           deps.Producer,
 		rebuildLockOptions: rebuildLockOptions(deps.Config),
 		failureRecorder:    deps.FailureRecorder,
+		failureTasks:       deps.FailureTasks,
 		failureTopic:       deps.FailureTopic,
 		messageIDGenerator: deps.MessageIDGenerator,
 	}
@@ -71,11 +75,26 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 	offset := BitOf(userID)
 	bmKey := BitmapKey(metric, entityType, entityID, chunk)
 
-	val, err := s.redis.Eval(ctx, TOGGLE_LUA, []string{bmKey}, offset, op).Int()
-	if err != nil {
-		return false, fmt.Errorf("lua toggle: %w", err)
+	var (
+		val   int64
+		epoch uint64
+		err   error
+	)
+	for {
+		val, epoch, err = s.toggleWithEpoch(ctx, bmKey, entityType, entityID, offset, op)
+		if err != nil {
+			return false, err
+		}
+		if val != 2 {
+			break
+		}
+		if !sleepCounterConsumer(ctx, 10*time.Millisecond) {
+			return false, ctx.Err()
+		}
 	}
-
+	if val == 2 {
+		return false, fmt.Errorf("counter toggle blocked by rebuild lock")
+	}
 	if val == 1 {
 		delta := 1
 		if op == "remove" {
@@ -86,6 +105,7 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 			EntityType: entityType,
 			EntityID:   entityID,
 			Metric:     metric,
+			Epoch:      epoch,
 			Index:      NameToIdx[metric],
 			UserID:     userID,
 			Delta:      delta,
@@ -96,6 +116,60 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 		return true, nil
 	}
 	return false, nil
+}
+
+func (s *CounterService) toggleWithEpoch(ctx context.Context, bmKey, entityType, entityID string, offset uint64, op string) (int64, uint64, error) {
+	if s == nil || s.redis == nil {
+		return 0, 0, fmt.Errorf("counter redis is nil")
+	}
+
+	vals, err := s.redis.Eval(ctx, TOGGLE_LUA, []string{bmKey, ActiveEpochKey(entityType, entityID), RebuildLockKey(entityType, entityID)}, offset, op).Slice()
+	if err != nil {
+		return 0, 0, fmt.Errorf("lua toggle: %w", err)
+	}
+	if len(vals) != 2 {
+		return 0, 0, fmt.Errorf("lua toggle returned invalid payload")
+	}
+
+	status, err := toInt64(vals[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("lua toggle status: %w", err)
+	}
+	epoch, err := toUint64(vals[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("lua toggle epoch: %w", err)
+	}
+	return status, epoch, nil
+}
+
+func toInt64(v any) (int64, error) {
+	switch n := v.(type) {
+	case int64:
+		return n, nil
+	case uint64:
+		return int64(n), nil
+	case float64:
+		return int64(n), nil
+	case string:
+		return strconv.ParseInt(n, 10, 64)
+	default:
+		return 0, fmt.Errorf("unexpected lua integer type %T", v)
+	}
+}
+
+func toUint64(v any) (uint64, error) {
+	switch n := v.(type) {
+	case int64:
+		return uint64(n), nil
+	case uint64:
+		return n, nil
+	case float64:
+		return uint64(n), nil
+	case string:
+		return strconv.ParseUint(n, 10, 64)
+	default:
+		return 0, fmt.Errorf("unexpected lua integer type %T", v)
+	}
 }
 
 func (s *CounterService) incrementUserMetric(ctx context.Context, userID uint64, metric string, delta int) error {

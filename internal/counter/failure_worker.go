@@ -149,6 +149,11 @@ func (w *CounterFailureWorker) handleTask(ctx context.Context, task *CounterFail
 	if task == nil {
 		return terminalCounterFailureTaskError("nil counter failure task")
 	}
+	if stale, err := w.isTaskStaleByEpoch(ctx, task); err != nil {
+		return err
+	} else if stale {
+		return terminalCounterFailureTaskError("counter failure task fenced by epoch")
+	}
 
 	switch task.Stage {
 	case counterFailureStagePublish:
@@ -161,7 +166,7 @@ func (w *CounterFailureWorker) handleTask(ctx context.Context, task *CounterFail
 }
 
 func (w *CounterFailureWorker) republishEvent(ctx context.Context, task *CounterFailedMessage) error {
-	if w.service == nil || w.service.producer == nil {
+	if w == nil || w.service == nil || w.service.producer == nil {
 		return fmt.Errorf("counter producer is nil")
 	}
 
@@ -177,8 +182,11 @@ func (w *CounterFailureWorker) republishEvent(ctx context.Context, task *Counter
 }
 
 func (w *CounterFailureWorker) repairMetric(ctx context.Context, task *CounterFailedMessage) error {
+	if w == nil || w.service == nil || w.service.redis == nil {
+		return fmt.Errorf("counter service redis is nil")
+	}
 	if task.EntityType == "" || task.EntityID == "" || task.Metric == "" {
-		return terminalCounterFailureTaskError("apply task missing entity or metric")
+		return terminalCounterFailureTaskError("repair task missing entity or metric")
 	}
 
 	lockKey := fmt.Sprintf("lock:sds-repair:%s:%s:%s", task.EntityType, task.EntityID, task.Metric)
@@ -196,6 +204,21 @@ func (w *CounterFailureWorker) repairMetric(ctx context.Context, task *CounterFa
 	}
 	w.service.resetBackoff(ctx, task.EntityType, task.EntityID)
 	return nil
+}
+
+func (w *CounterFailureWorker) isTaskStaleByEpoch(ctx context.Context, task *CounterFailedMessage) (bool, error) {
+	if task == nil || !metricUsesEpochFence(task.Metric) {
+		return false, nil
+	}
+	if w == nil || w.service == nil {
+		return false, fmt.Errorf("counter service is nil")
+	}
+
+	currentEpoch, err := w.service.currentEntityEpoch(ctx, task.EntityType, task.EntityID)
+	if err != nil {
+		return false, err
+	}
+	return task.Epoch != currentEpoch, nil
 }
 
 func (w *CounterFailureWorker) logWarn(msg string, err error) {

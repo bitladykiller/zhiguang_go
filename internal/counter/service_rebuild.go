@@ -22,7 +22,7 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 		return nil, fmt.Errorf("rate limited")
 	}
 
-	lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
+	lockKey := RebuildLockKey(entityType, entityID)
 	lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval)
 	if err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
@@ -36,6 +36,12 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 		return raw, nil
 	}
 
+	oldEpoch, err := s.bumpEntityEpoch(ctx, entityType, entityID)
+	if err != nil {
+		s.escalateBackoff(ctx, entityType, entityID)
+		return nil, fmt.Errorf("bump counter epoch: %w", err)
+	}
+
 	raw, err = s.buildSnapshotFromBitmap(ctx, entityType, entityID)
 	if err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
@@ -46,6 +52,10 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, err
 	}
+
+	// rebuild 已经把当前实体的 SDS 拉回到 bitmap 真值，这里把重建开始前的旧失败任务
+	// 批量标记 done，避免后台继续反复扫描这些已过期的修复项。
+	s.markEntityFailureTasksDoneBestEffort(ctx, entityType, entityID, oldEpoch)
 
 	s.resetBackoff(ctx, entityType, entityID)
 	return raw, nil
@@ -116,6 +126,7 @@ func (s *CounterService) recordFailedEvent(ctx context.Context, stage string, ev
 		EntityType:   event.EntityType,
 		EntityID:     event.EntityID,
 		Metric:       event.Metric,
+		Epoch:        event.Epoch,
 		Delta:        event.Delta,
 		Payload:      string(payload),
 		ErrorMessage: failureErrorMessage(cause),
@@ -140,7 +151,7 @@ func (s *CounterService) recordFailedKafkaMessages(ctx context.Context, stage st
 		}
 
 		if stage == counterFailureStageApply || stage == counterFailureStageFlush {
-			recordKey := CounterEntityMember(event.EntityType, event.EntityID) + ":" + event.Metric
+			recordKey := CounterEntityMember(event.EntityType, event.EntityID) + ":" + event.Metric + ":" + fmt.Sprintf("%d", event.Epoch)
 			if record := recordsByKey[recordKey]; record != nil {
 				record.Delta += event.Delta
 				continue
@@ -154,6 +165,7 @@ func (s *CounterService) recordFailedKafkaMessages(ctx context.Context, stage st
 			EntityType:   event.EntityType,
 			EntityID:     event.EntityID,
 			Metric:       event.Metric,
+			Epoch:        event.Epoch,
 			Delta:        event.Delta,
 			Payload:      string(message.Value),
 			ErrorMessage: failureErrorMessage(cause),
@@ -163,7 +175,7 @@ func (s *CounterService) recordFailedKafkaMessages(ctx context.Context, stage st
 		}
 		records = append(records, record)
 		if stage == counterFailureStageApply || stage == counterFailureStageFlush {
-			recordKey := CounterEntityMember(event.EntityType, event.EntityID) + ":" + event.Metric
+			recordKey := CounterEntityMember(event.EntityType, event.EntityID) + ":" + event.Metric + ":" + fmt.Sprintf("%d", event.Epoch)
 			recordsByKey[recordKey] = record
 		}
 	}
@@ -187,6 +199,41 @@ func (s *CounterService) nextMessageID() uint64 {
 		return 0
 	}
 	return s.messageIDGenerator.NextID()
+}
+
+func (s *CounterService) currentEntityEpoch(ctx context.Context, entityType, entityID string) (uint64, error) {
+	if s == nil || s.redis == nil {
+		return 0, fmt.Errorf("counter redis is nil")
+	}
+	value, err := s.redis.Get(ctx, ActiveEpochKey(entityType, entityID)).Uint64()
+	if err == nil {
+		return value, nil
+	}
+	if err == redis.Nil {
+		return 0, nil
+	}
+	return 0, err
+}
+
+func (s *CounterService) bumpEntityEpoch(ctx context.Context, entityType, entityID string) (uint64, error) {
+	if s == nil || s.redis == nil {
+		return 0, fmt.Errorf("counter redis is nil")
+	}
+
+	epochKey := ActiveEpochKey(entityType, entityID)
+	// 使用 Lua 脚本原子递增 epoch，消除 GET + SET 之间的竞态窗口
+	oldEpoch, err := bumpEpochScript.Run(ctx, s.redis, []string{epochKey}, 1).Uint64()
+	if err != nil {
+		return 0, fmt.Errorf("bump epoch lua: %w", err)
+	}
+	return oldEpoch, nil
+}
+
+func (s *CounterService) markEntityFailureTasksDoneBestEffort(ctx context.Context, entityType, entityID string, maxEpoch uint64) {
+	if s == nil || s.failureTasks == nil {
+		return
+	}
+	_, _ = s.failureTasks.MarkEntityTasksDoneThroughEpoch(ctx, entityType, entityID, maxEpoch)
 }
 
 func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType, entityID string) (int64, error) {

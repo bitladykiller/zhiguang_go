@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -111,11 +112,31 @@ func (c *OutboxConsumer) handleMessage(ctx context.Context, value []byte) error 
 		if row.Payload == "" {
 			continue
 		}
+		if !isSearchOutboxRow(row) {
+			continue
+		}
 		if err := c.projector.ProjectPayload(ctx, []byte(row.Payload)); err != nil {
+			if isMalformedSearchProjectPayload(err) {
+				return malformedSearchOutboxMessage(err)
+			}
 			return fmt.Errorf("project search outbox payload: %w", err)
 		}
 	}
 	return nil
+}
+
+func isSearchOutboxRow(row outbox.CanalRow) bool {
+	return row.AggregateType == "knowpost"
+}
+
+func isMalformedSearchProjectPayload(err error) bool {
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return true
+	}
+
+	var typeErr *json.UnmarshalTypeError
+	return errors.As(err, &typeErr)
 }
 
 func (c *OutboxConsumer) isMessageApplied(ctx context.Context, partition int, offset int64) (bool, error) {

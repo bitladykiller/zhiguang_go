@@ -34,6 +34,7 @@ type CounterEvent struct {
 	EntityType string `json:"entity_type"`
 	EntityID   string `json:"entity_id"`
 	Metric     string `json:"metric"`
+	Epoch      uint64 `json:"epoch"`
 	Index      int    `json:"index"` // SDS schema index（IdxLike / IdxFav ...）
 	UserID     uint64 `json:"user_id"`
 	Delta      int    `json:"delta"` // +1 表示增加，-1 表示减少
@@ -81,6 +82,12 @@ func BitmapKey(metric, entityType, entityID string, chunk uint64) string {
 func SdsKey(entityType, entityID string) string {
 	return fmt.Sprintf("cnt:%s:%s", entityType, entityID)
 }
+func ActiveEpochKey(entityType, entityID string) string {
+	return fmt.Sprintf("counter:active-epoch:%s:%s", entityType, entityID)
+}
+func RebuildLockKey(entityType, entityID string) string {
+	return fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
+}
 
 // CounterEntityMember 把实体类型和实体 ID 拼成批量消费阶段使用的稳定键。
 func CounterEntityMember(entityType, entityID string) string {
@@ -94,4 +101,8 @@ func ParseCounterEntityMember(member string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid counter entity member: %s", member)
 	}
 	return parts[0], parts[1], nil
+}
+
+func metricUsesEpochFence(metric string) bool {
+	return metric == "like" || metric == "fav"
 }

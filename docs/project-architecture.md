@@ -154,6 +154,17 @@
 
 这意味着计数链路当前采用的是“性能优先，允许异步补偿”的策略，而不是强一致事务消息。
 
+### 5.5 epoch fence
+
+`like/fav` 这条链路现在额外加了一层实体级 `epoch` fence：
+
+1. `toggle` 在 Lua 中会检查实体的 rebuild 锁；如果正在 rebuild，会短暂等待后重试
+2. 每条 `CounterEvent` 和失败任务都会携带实体当前 `epoch`
+3. `rebuild` 在持有实体锁时会先 bump `active_epoch`，再基于 bitmap 真值重建 SDS
+4. consumer 和 failure worker 只处理当前 `epoch` 的 `like/fav` 事件/任务，旧 `epoch` 直接丢弃或标记完成
+
+这样可以保留 `publish=补发原始 delta` 的语义，同时避免 `rebuild` 后旧 delta 晚到再次污染快照。
+
 ## 6. Outbox + Canal + Kafka 链路
 
 当前异步同步链路采用：

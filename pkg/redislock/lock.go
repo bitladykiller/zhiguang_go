@@ -33,6 +33,16 @@ type Options struct {
 
 	// OpTimeout 控制续约、释放等单次 Redis 操作的超时。
 	OpTimeout time.Duration
+
+	// OnRenewFailed 是看门狗续约失败时的回调函数。
+	// 可用于记录日志、发送告警或主动放弃操作。
+	// 注意：这是"通知"机制，不是"解决"锁过期。业务操作仍需在 TTL 内完成或幂等。
+	OnRenewFailed func(err error)
+
+	// MaxRenewErrors 是连续续约失败多少次后停止看门狗。
+	// 0 表示不限制（一直重试直到锁释放）。
+	// 设置为 N 表示连续失败 N 次后看门狗退出，锁会自然过期。
+	MaxRenewErrors int
 }
 
 // normalized 返回补齐默认值后的配置。
@@ -55,13 +65,14 @@ func (o Options) normalized() Options {
 //   - 续约 goroutine、停止信号、归属 token 和 Redis 客户端需要一起管理。
 //   - 把这些生命周期状态收敛到一个对象里，调用方只需要 `Release()` 即可。
 type Lock struct {
-	client   *redis.Client
-	lockKey  string
-	token    string
-	options  Options
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	stopOnce sync.Once
+	client        *redis.Client
+	lockKey       string
+	token         string
+	options       Options
+	stopCh        chan struct{}
+	doneCh        chan struct{}
+	stopOnce      sync.Once
+	renewErrCount int // 连续续约失败计数
 }
 
 var releaseScript = redis.NewScript(`
@@ -171,9 +182,21 @@ func (l *Lock) watchdog() {
 		case <-ticker.C:
 			renewed, err := l.renew()
 			if err != nil {
+				// 连续续约失败计数
+				l.renewErrCount++
+				// 调用回调通知业务层
+				if l.options.OnRenewFailed != nil {
+					l.options.OnRenewFailed(err)
+				}
+				// 如果设置了最大失败次数且达到阈值，停止看门狗
+				if l.options.MaxRenewErrors > 0 && l.renewErrCount >= l.options.MaxRenewErrors {
+					return
+				}
 				// Redis 短暂抖动时继续下一轮续约，避免瞬时失败直接放弃租期。
 				continue
 			}
+			// 续约成功，重置失败计数
+			l.renewErrCount = 0
 			if !renewed {
 				// token 已不匹配，说明锁已过期或已被其他实例获取。
 				return

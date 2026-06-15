@@ -25,6 +25,7 @@ type CounterFailedMessage struct {
 	EntityType   string    `db:"entity_type"`
 	EntityID     string    `db:"entity_id"`
 	Metric       string    `db:"metric"`
+	Epoch        uint64    `db:"epoch"`
 	Delta        int       `db:"delta"`
 	Payload      string    `db:"payload"`
 	ErrorMessage string    `db:"error_message"`
@@ -44,13 +45,15 @@ type CounterFailureRecorder interface {
 // CounterFailureTaskStore 提供失败任务扫描与状态更新能力。
 //
 // 当前设计中：
-//   - publish 失败任务：后台补发 Kafka
-//   - apply 失败任务：后台按 entity + metric 从 bitmap 做定点修复
+//   - publish 失败任务：后台补发原始 delta 事件
+//   - apply/flush 失败任务：后台按 entity + metric 从 bitmap 做定点修复
+//   - rebuild 成功后：按 entity + epoch 批量作废旧 like/fav 失败任务
 type CounterFailureTaskStore interface {
 	ClaimPending(ctx context.Context, limit int) ([]*CounterFailedMessage, error)
 	MarkDone(ctx context.Context, id uint64) error
 	MarkRetry(ctx context.Context, id uint64, retryCount int, nextRetryAt time.Time, errorMessage string) error
 	DeleteDoneBefore(ctx context.Context, before time.Time, limit int) (int64, error)
+	MarkEntityTasksDoneThroughEpoch(ctx context.Context, entityType, entityID string, maxEpoch uint64) (int64, error)
 }
 
 // CounterFailedMessageRepository 将 counter 失败消息写入 MySQL。
@@ -71,9 +74,9 @@ func (r *CounterFailedMessageRepository) Create(ctx context.Context, message *Co
 	}
 	_, err := sqlx.NamedExecContext(ctx, r.db, `
 INSERT INTO counter_failed_messages (
-    stage, topic, message_key, entity_type, entity_id, metric, delta, payload, error_message, retry_count, status, next_retry_at
+    stage, topic, message_key, entity_type, entity_id, metric, epoch, delta, payload, error_message, retry_count, status, next_retry_at
 ) VALUES (
-    :stage, :topic, :message_key, :entity_type, :entity_id, :metric, :delta, :payload, :error_message, :retry_count, :status, :next_retry_at
+    :stage, :topic, :message_key, :entity_type, :entity_id, :metric, :epoch, :delta, :payload, :error_message, :retry_count, :status, :next_retry_at
 )`, message)
 	return err
 }
@@ -97,9 +100,9 @@ func (r *CounterFailedMessageRepository) CreateBatch(ctx context.Context, messag
 		}
 		if _, err := sqlx.NamedExecContext(ctx, tx, `
 INSERT INTO counter_failed_messages (
-    stage, topic, message_key, entity_type, entity_id, metric, delta, payload, error_message, retry_count, status, next_retry_at
+    stage, topic, message_key, entity_type, entity_id, metric, epoch, delta, payload, error_message, retry_count, status, next_retry_at
 ) VALUES (
-    :stage, :topic, :message_key, :entity_type, :entity_id, :metric, :delta, :payload, :error_message, :retry_count, :status, :next_retry_at
+    :stage, :topic, :message_key, :entity_type, :entity_id, :metric, :epoch, :delta, :payload, :error_message, :retry_count, :status, :next_retry_at
 )`, message); err != nil {
 			return err
 		}
@@ -123,7 +126,7 @@ func (r *CounterFailedMessageRepository) ClaimPending(ctx context.Context, limit
 
 	tasks := make([]CounterFailedMessage, 0, limit)
 	if err := tx.SelectContext(ctx, &tasks, `
-SELECT id, stage, topic, message_key, entity_type, entity_id, metric, delta, payload, error_message, retry_count, status, next_retry_at, created_at, updated_at
+SELECT id, stage, topic, message_key, entity_type, entity_id, metric, epoch, delta, payload, error_message, retry_count, status, next_retry_at, created_at, updated_at
 FROM counter_failed_messages
 WHERE status = ? AND next_retry_at <= CURRENT_TIMESTAMP(3)
 ORDER BY id ASC
@@ -179,8 +182,8 @@ func (r *CounterFailedMessageRepository) MarkRetry(ctx context.Context, id uint6
 	_, err := r.db.ExecContext(ctx, `
 UPDATE counter_failed_messages
 SET retry_count = ?, next_retry_at = ?, error_message = ?, status = ?, updated_at = CURRENT_TIMESTAMP(3)
-WHERE id = ?
-`, retryCount, nextRetryAt, errorMessage, counterFailureStatusPending, id)
+WHERE id = ? AND status = ?
+	`, retryCount, nextRetryAt, errorMessage, counterFailureStatusPending, id, counterFailureStatusWorking)
 	return err
 }
 
@@ -195,6 +198,27 @@ WHERE status = ? AND updated_at < ?
 ORDER BY id
 LIMIT ?
 `, counterFailureStatusDone, before, limit)
+	if err != nil {
+		return 0, err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
+func (r *CounterFailedMessageRepository) MarkEntityTasksDoneThroughEpoch(ctx context.Context, entityType, entityID string, maxEpoch uint64) (int64, error) {
+	if r == nil || r.db == nil || entityType == "" || entityID == "" {
+		return 0, nil
+	}
+
+	result, err := r.db.ExecContext(ctx, `
+UPDATE counter_failed_messages
+SET status = ?, updated_at = CURRENT_TIMESTAMP(3)
+WHERE entity_type = ? AND entity_id = ? AND metric IN (?, ?) AND epoch <= ? AND status IN (?, ?)
+`, counterFailureStatusDone, entityType, entityID, "like", "fav", maxEpoch, counterFailureStatusPending, counterFailureStatusWorking)
 	if err != nil {
 		return 0, err
 	}

@@ -19,3 +19,4 @@ coverage.out
 .golangci-cache/
 frontend/.git.embedded-backup/
 /server
+docs/modules/

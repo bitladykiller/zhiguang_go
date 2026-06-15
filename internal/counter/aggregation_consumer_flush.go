@@ -95,12 +95,14 @@ func (c *AggregationConsumer) applyBatch(ctx context.Context, batch *counterBatc
 		return err
 	}
 
-	cntKeys, keyIndexes := batch.cntKeys()
-	keys := make([]string, 0, len(cntKeys)+1)
+	cntKeys, epochKeys, keyIndexes := batch.entityKeys()
+	keys := make([]string, 0, len(cntKeys)*2+1)
 	keys = append(keys, appliedKey)
-	keys = append(keys, cntKeys...)
+	for i := range cntKeys {
+		keys = append(keys, cntKeys[i], epochKeys[i])
+	}
 
-	args := make([]any, 0, 3+len(batch.events)*4)
+	args := make([]any, 0, 3+len(batch.events)*6)
 	args = append(args, SchemaLen, FieldSize, len(batch.events))
 	for _, event := range batch.events {
 		args = append(args,
@@ -108,6 +110,8 @@ func (c *AggregationConsumer) applyBatch(ctx context.Context, batch *counterBatc
 			keyIndexes[CounterEntityMember(event.entityType, event.entityID)],
 			event.index,
 			event.delta,
+			event.epoch,
+			boolToLuaInt(event.usesEpoch),
 		)
 	}
 
@@ -139,8 +143,27 @@ func (c *AggregationConsumer) advanceAppliedOffset(ctx context.Context, partitio
 	return advanceAppliedOffsetScript.Run(ctx, c.service.redis, []string{appliedKey}, offset).Err()
 }
 
+// forceAdvanceAppliedOffset 强制推进水位线，跳过空洞。
+//
+// 用途：当遇到无法处理的坏消息时，强制跳过并推进水位线，
+// 避免单个坏消息阻塞整个分区。
+func (c *AggregationConsumer) forceAdvanceAppliedOffset(ctx context.Context, partition int, offset int64) error {
+	appliedKey, err := c.appliedOffsetKey(partition)
+	if err != nil {
+		return err
+	}
+	return forceAdvanceOffsetScript.Run(ctx, c.service.redis, []string{appliedKey}, offset).Err()
+}
+
 func isCounterCommitError(err error) bool {
 	return errors.Is(err, errCounterBatchCommit)
+}
+
+func boolToLuaInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func (c *AggregationConsumer) maxFlushAttempts() int {

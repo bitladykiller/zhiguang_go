@@ -112,7 +112,7 @@ func (c *OutboxConsumer) handleMessage(ctx context.Context, value []byte) error 
 		if row.Payload == "" {
 			continue
 		}
-		if row.AggregateType != "following" && row.Type != "FollowCreated" && row.Type != "FollowCanceled" {
+		if !isRelationOutboxRow(row) {
 			continue
 		}
 
@@ -126,6 +126,13 @@ func (c *OutboxConsumer) handleMessage(ctx context.Context, value []byte) error 
 	}
 
 	return nil
+}
+
+func isRelationOutboxRow(row outbox.CanalRow) bool {
+	if row.AggregateType != "following" {
+		return false
+	}
+	return row.Type == "FollowCreated" || row.Type == "FollowCanceled"
 }
 
 func (c *OutboxConsumer) isMessageApplied(ctx context.Context, partition int, offset int64) (bool, error) {

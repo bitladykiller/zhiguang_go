@@ -21,8 +21,8 @@ import (
 //   - ARGV[1]：schemaLen
 //   - ARGV[2]：fieldSize
 //   - ARGV[3]：eventCount
-//   - 随后每 4 个参数为一个事件：
-//   - offset, keyIndex, idx, delta
+//   - 随后每 6 个参数为一个事件：
+//   - offset, entityIndex, idx, delta, epoch, usesEpoch
 //
 // 返回值：
 //   - 返回应用后的最新水位线（即 max applied offset）。
@@ -51,12 +51,15 @@ end
 local current = tonumber(redis.call('GET', appliedKey) or '-1')
 local lastApplied = current
 local pos = 4
+local epochCache = {}
 
 for i = 1, eventCount do
   local offset = tonumber(ARGV[pos]); pos = pos + 1
-  local keyIndex = tonumber(ARGV[pos]); pos = pos + 1
+  local entityIndex = tonumber(ARGV[pos]); pos = pos + 1
   local idx = tonumber(ARGV[pos]); pos = pos + 1
   local delta = tonumber(ARGV[pos]); pos = pos + 1
+  local epoch = tonumber(ARGV[pos]); pos = pos + 1
+  local usesEpoch = tonumber(ARGV[pos]); pos = pos + 1
 
   if offset <= current then
     -- 这条消息已经在之前的 flush 中成功落过 Redis，直接跳过。
@@ -65,18 +68,32 @@ for i = 1, eventCount do
       return redis.error_reply('counter offset gap')
     end
 
-    local cntKey = KEYS[keyIndex + 2]
-    local cnt = redis.call('GET', cntKey)
-    if not cnt then
-      cnt = string.rep(string.char(0), schemaLen * fieldSize)
+    local shouldApply = 1
+    if usesEpoch == 1 then
+      local cachedEpoch = epochCache[entityIndex]
+      if cachedEpoch == nil then
+        cachedEpoch = tonumber(redis.call('GET', KEYS[entityIndex * 2 + 3]) or '0')
+        epochCache[entityIndex] = cachedEpoch
+      end
+      if cachedEpoch ~= epoch then
+        shouldApply = 0
+      end
     end
 
-    local off = idx * fieldSize
-    local v = read32be(cnt, off) + delta
-    if v < 0 then v = 0 end
-    local seg = write32be(v)
-    cnt = string.sub(cnt, 1, off) .. seg .. string.sub(cnt, off + fieldSize + 1)
-    redis.call('SET', cntKey, cnt)
+    if shouldApply == 1 then
+      local cntKey = KEYS[entityIndex * 2 + 2]
+      local cnt = redis.call('GET', cntKey)
+      if not cnt then
+        cnt = string.rep(string.char(0), schemaLen * fieldSize)
+      end
+
+      local off = idx * fieldSize
+      local v = read32be(cnt, off) + delta
+      if v < 0 then v = 0 end
+      local seg = write32be(v)
+      cnt = string.sub(cnt, 1, off) .. seg .. string.sub(cnt, off + fieldSize + 1)
+      redis.call('SET', cntKey, cnt)
+    end
 
     lastApplied = offset
   end
@@ -92,7 +109,7 @@ return lastApplied
 // ADVANCE_APPLIED_OFFSET_LUA 在不修改 cnt:* 的前提下推进共享水位线。
 //
 // 用途：
-//   - 对于无法解析、字段非法等“明确要丢弃”的消息，也要推进 partition 水位线，
+//   - 对于无法解析、字段非法等”明确要丢弃”的消息，也要推进 partition 水位线，
 //     否则后续合法消息会因为 offset 空洞永远无法应用。
 //
 // KEYS[1]：applied_offset key
@@ -114,9 +131,51 @@ redis.call('SET', appliedKey, target)
 return target
 `
 
+// FORCE_ADVANCE_OFFSET_LUA 强制推进水位线，跳过空洞。
+//
+// 用途：
+//   - 对于无法处理的坏消息（解析失败、字段非法等），强制跳过并推进水位线，
+//     避免单个坏消息阻塞整个分区。
+//   - 与 ADVANCE_APPLIED_OFFSET_LUA 不同，此脚本不要求 offset 连续，
+//     允许从当前值直接跳跃到目标值。
+//
+// KEYS[1]：applied_offset key
+// ARGV[1]：目标 offset
+const FORCE_ADVANCE_OFFSET_LUA = `
+local appliedKey = KEYS[1]
+local target = tonumber(ARGV[1])
+local current = tonumber(redis.call('GET', appliedKey) or '-1')
+
+if target <= current then
+  return current
+end
+
+redis.call('SET', appliedKey, target)
+return target
+`
+
+// BUMP_EPOCH_LUA 原子递增实体的 epoch 值并返回旧值。
+//
+// 用途：
+//   - 在 rebuild 期间原子递增 epoch，消除 GET + SET 之间的竞态窗口。
+//   - 返回旧值供调用方判断是否需要清理旧任务。
+//
+// KEYS[1]：epoch key
+// ARGV[1]：递增量（默认为 1）
+const BUMP_EPOCH_LUA = `
+local epochKey = KEYS[1]
+local delta = tonumber(ARGV[1]) or 1
+local oldEpoch = tonumber(redis.call('GET', epochKey) or '0')
+local newEpoch = oldEpoch + delta
+redis.call('SET', epochKey, newEpoch)
+return oldEpoch
+`
+
 var (
 	applyPartitionBatchScript  = redis.NewScript(APPLY_PARTITION_BATCH_LUA)
 	advanceAppliedOffsetScript = redis.NewScript(ADVANCE_APPLIED_OFFSET_LUA)
+	forceAdvanceOffsetScript   = redis.NewScript(FORCE_ADVANCE_OFFSET_LUA)
+	bumpEpochScript            = redis.NewScript(BUMP_EPOCH_LUA)
 )
 
 func AppliedOffsetKey(groupID, topic string, partition int) string {

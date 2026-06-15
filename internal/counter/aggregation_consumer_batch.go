@@ -25,6 +25,8 @@ type counterBatchEvent struct {
 	entityID   string
 	index      int
 	delta      int
+	epoch      uint64
+	usesEpoch  bool
 }
 
 func newCounterBatch(capacity int) *counterBatch {
@@ -72,6 +74,8 @@ func (b *counterBatch) addEvent(msg kafka.Message, evt CounterEvent) error {
 		entityID:   evt.EntityID,
 		index:      evt.Index,
 		delta:      evt.Delta,
+		epoch:      evt.Epoch,
+		usesEpoch:  metricUsesEpochFence(evt.Metric),
 	})
 	b.entities[CounterEntityMember(evt.EntityType, evt.EntityID)] = struct{}{}
 	return nil
@@ -92,11 +96,12 @@ func (b *counterBatch) collectEntityMembers() []string {
 	return members
 }
 
-func (b *counterBatch) cntKeys() ([]string, map[string]int) {
+func (b *counterBatch) entityKeys() ([]string, []string, map[string]int) {
 	members := b.collectEntityMembers()
 	sort.Strings(members)
 
 	keys := make([]string, 0, len(members))
+	epochKeys := make([]string, 0, len(members))
 	indexes := make(map[string]int, len(members))
 	for i, member := range members {
 		entityType, entityID, err := ParseCounterEntityMember(member)
@@ -104,9 +109,10 @@ func (b *counterBatch) cntKeys() ([]string, map[string]int) {
 			continue
 		}
 		keys = append(keys, SdsKey(entityType, entityID))
+		epochKeys = append(epochKeys, ActiveEpochKey(entityType, entityID))
 		indexes[member] = i
 	}
-	return keys, indexes
+	return keys, epochKeys, indexes
 }
 
 func (b *counterBatch) reset() {

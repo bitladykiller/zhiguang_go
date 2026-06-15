@@ -2,22 +2,30 @@ package counter
 
 import "github.com/redis/go-redis/v9"
 
-// TOGGLE_LUA 以原子方式切换位图中的单个位，并返回状态是否发生变化。
+// TOGGLE_LUA 以原子方式切换位图中的单个位，并返回状态是否发生变化以及当前 epoch。
 const TOGGLE_LUA = `
 local bmKey = KEYS[1]
+local epochKey = KEYS[2]
+local rebuildLockKey = KEYS[3]
 local offset = tonumber(ARGV[1])
 local op = ARGV[2]
+local epoch = tonumber(redis.call('GET', epochKey) or '0')
+
+if redis.call('EXISTS', rebuildLockKey) == 1 then
+  return {2, epoch}
+end
+
 local prev = redis.call('GETBIT', bmKey, offset)
 if op == 'add' then
-  if prev == 1 then return 0 end
+  if prev == 1 then return {0, epoch} end
   redis.call('SETBIT', bmKey, offset, 1)
-  return 1
+  return {1, epoch}
 elseif op == 'remove' then
-  if prev == 0 then return 0 end
+  if prev == 0 then return {0, epoch} end
   redis.call('SETBIT', bmKey, offset, 0)
-  return 1
+  return {1, epoch}
 end
-return -1
+return {-1, epoch}
 `
 
 // INCR_SDS_FIELD_LUA 原子递增指定 SDS 槽位。

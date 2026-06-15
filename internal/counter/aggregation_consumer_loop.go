@@ -153,8 +153,25 @@ func nextBatchDeadline(batches map[int]*counterBatch, flushInterval time.Duratio
 
 func (c *AggregationConsumer) skipMalformedMessage(ctx context.Context, msg kafka.Message, cause error) {
 	c.logWarn("skip malformed counter kafka message", cause)
-	if err := c.advanceAppliedOffset(ctx, msg.Partition, msg.Offset); err != nil {
-		c.logWarn("advance malformed counter kafka message offset failed", err)
+
+	// 尝试解析并记录失败任务，以便后台 worker 修复
+	var events []CounterEvent
+	if evt, err := parseCounterEvent(msg.Value); err == nil {
+		events = append(events, evt)
+	}
+
+	// 如果能解析出事件，记录失败任务到 MySQL
+	if len(events) > 0 {
+		recordCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		if recordErr := c.service.recordFailedKafkaMessages(recordCtx, counterFailureStageApply, []kafka.Message{msg}, cause); recordErr != nil {
+			c.logWarn("persist malformed counter kafka message as failure task failed", recordErr)
+		}
+		cancel()
+	}
+
+	// 强制推进水位线（跳过空洞）
+	if err := c.forceAdvanceAppliedOffset(ctx, msg.Partition, msg.Offset); err != nil {
+		c.logWarn("force advance malformed counter kafka message offset failed", err)
 		return
 	}
 	if err := c.commitMessages(ctx, msg); err != nil {

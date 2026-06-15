@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS counter_failed_messages (
     entity_type VARCHAR(64) NOT NULL,
     entity_id VARCHAR(64) NOT NULL,
     metric VARCHAR(32) NOT NULL,
+    epoch BIGINT UNSIGNED NOT NULL DEFAULT 0,
     delta INT NOT NULL,
     payload JSON NOT NULL,
     error_message TEXT NOT NULL,
@@ -95,7 +96,8 @@ CREATE TABLE IF NOT EXISTS counter_failed_messages (
     updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
     KEY ix_counter_failed_status_retry_ct (status, next_retry_at, created_at),
-    KEY ix_counter_failed_entity (entity_type, entity_id, metric)
+    KEY ix_counter_failed_entity (entity_type, entity_id, metric),
+    KEY ix_counter_failed_entity_epoch (entity_type, entity_id, epoch, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS following (

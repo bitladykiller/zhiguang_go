@@ -44,6 +44,7 @@ func BuildCounterModule(infra *InfraDeps) CounterModule {
 		Producer:           counterProducer,
 		Config:             &infra.Config.Counter,
 		FailureRecorder:    counterFailureStore,
+		FailureTasks:       counterFailureStore,
 		FailureTopic:       infra.Config.Kafka.Topics.CounterEvents,
 		MessageIDGenerator: infra.IDGen,
 	})
