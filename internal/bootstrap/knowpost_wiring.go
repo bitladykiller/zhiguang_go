@@ -17,6 +17,7 @@ func BuildKnowPostHandler(infra *InfraDeps, counterClient knowpost.CounterClient
 		L1Mine:   infra.FeedMineCache,
 		HotKey:   infra.HotKeyDetector,
 		Counter:  counterClient,
+		Logger:   infra.Logger,
 	})
 	kpSvc := knowpost.NewKnowPostService(knowpost.KnowPostServiceDeps{
 		DB:        infra.DB,
@@ -27,6 +28,7 @@ func BuildKnowPostHandler(infra *InfraDeps, counterClient knowpost.CounterClient
 		OSSConfig: &infra.Config.OSS,
 		Counter:   counterClient,
 		FeedCache: feedSvc,
+		Logger:    infra.Logger,
 	})
 
 	return knowpost.NewKnowPostHandler(kpSvc, feedSvc)

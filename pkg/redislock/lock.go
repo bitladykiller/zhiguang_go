@@ -43,6 +43,15 @@ type Options struct {
 	// 0 表示不限制（一直重试直到锁释放）。
 	// 设置为 N 表示连续失败 N 次后看门狗退出，锁会自然过期。
 	MaxRenewErrors int
+
+	// ActiveReleaseOnFailure 控制续约失败达到 MaxRenewErrors 阈值时是否主动尝试释放锁。
+	// true：看门狗退出前尽力释放锁，减少其他实例的等待时间。
+	// false：让锁自然过期（默认行为）。
+	// WHY 主动释放：
+	//   - Redis 持续抖动导致续约失败后，锁仍可能存在（未过期）。
+	//   - 主动释放可以更快让其他实例抢占，避免长时间阻塞。
+	//   - 释放操作使用 Lua 脚本保证 token 匹配时才删除，不会误删他人的锁。
+	ActiveReleaseOnFailure bool
 }
 
 // normalized 返回补齐默认值后的配置。
@@ -72,7 +81,9 @@ type Lock struct {
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	stopOnce      sync.Once
-	renewErrCount int // 连续续约失败计数
+	renewErrCount int
+	lost          bool
+	lostMu        sync.RWMutex
 }
 
 var releaseScript = redis.NewScript(`
@@ -182,23 +193,22 @@ func (l *Lock) watchdog() {
 		case <-ticker.C:
 			renewed, err := l.renew()
 			if err != nil {
-				// 连续续约失败计数
 				l.renewErrCount++
-				// 调用回调通知业务层
 				if l.options.OnRenewFailed != nil {
 					l.options.OnRenewFailed(err)
 				}
-				// 如果设置了最大失败次数且达到阈值，停止看门狗
 				if l.options.MaxRenewErrors > 0 && l.renewErrCount >= l.options.MaxRenewErrors {
+					l.markLost()
+					if l.options.ActiveReleaseOnFailure {
+						l.tryRelease()
+					}
 					return
 				}
-				// Redis 短暂抖动时继续下一轮续约，避免瞬时失败直接放弃租期。
 				continue
 			}
-			// 续约成功，重置失败计数
 			l.renewErrCount = 0
 			if !renewed {
-				// token 已不匹配，说明锁已过期或已被其他实例获取。
+				l.markLost()
 				return
 			}
 		}
@@ -230,6 +240,29 @@ func (l *Lock) stopWatchdog() {
 		close(l.stopCh)
 		<-l.doneCh
 	})
+}
+
+// markLost 标记锁已丢失。
+func (l *Lock) markLost() {
+	l.lostMu.Lock()
+	l.lost = true
+	l.lostMu.Unlock()
+}
+
+// IsStillValid 检查锁是否仍然有效。
+// 返回 false 表示锁已丢失（续约失败或 token 不匹配），业务层应主动中止操作。
+func (l *Lock) IsStillValid() bool {
+	l.lostMu.RLock()
+	defer l.lostMu.RUnlock()
+	return !l.lost
+}
+
+// tryRelease 尽力释放锁，不保证成功。
+// 用于续约失败达到阈值时主动释放，减少其他实例等待时间。
+func (l *Lock) tryRelease() {
+	ctx, cancel := context.WithTimeout(context.Background(), l.options.OpTimeout)
+	defer cancel()
+	_, _ = releaseScript.Run(ctx, l.client, []string{l.lockKey}, l.token).Result()
 }
 
 func sleepRetry(ctx context.Context, retryInterval time.Duration) bool {

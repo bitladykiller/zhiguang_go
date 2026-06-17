@@ -5,6 +5,7 @@ import (
 
 	"github.com/coocood/freecache"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/cache"
 )
@@ -34,6 +35,7 @@ type KnowPostFeedService struct {
 	l1Mine   *freecache.Cache
 	hotKey   *cache.HotKeyDetector
 	counter  CounterClient
+	logger   *zap.Logger
 }
 
 // KnowPostFeedServiceDeps 描述 Feed 读取服务的装配参数。
@@ -44,6 +46,7 @@ type KnowPostFeedServiceDeps struct {
 	L1Mine   *freecache.Cache
 	HotKey   *cache.HotKeyDetector
 	Counter  CounterClient
+	Logger   *zap.Logger
 }
 
 // FeedCacheInvalidator 暴露知文写操作所需的 feed 缓存失效能力。
@@ -53,6 +56,10 @@ type FeedCacheInvalidator interface {
 
 // NewKnowPostFeedService 创建 Feed 读取服务。
 func NewKnowPostFeedService(deps KnowPostFeedServiceDeps) *KnowPostFeedService {
+	logger := deps.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &KnowPostFeedService{
 		repo:     deps.Repo,
 		redis:    deps.Redis,
@@ -60,5 +67,6 @@ func NewKnowPostFeedService(deps KnowPostFeedServiceDeps) *KnowPostFeedService {
 		l1Mine:   deps.L1Mine,
 		hotKey:   deps.HotKey,
 		counter:  deps.Counter,
+		logger:   logger,
 	}
 }

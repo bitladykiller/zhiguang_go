@@ -9,6 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/redislock"
+	"go.uber.org/zap"
 )
 
 // CounterService 提供原子化的计数开关操作。
@@ -31,14 +32,19 @@ type CounterServiceDeps struct {
 	FailureTasks       CounterFailureTaskStore
 	FailureTopic       string
 	MessageIDGenerator MessageIDGenerator
+	Logger             *zap.Logger
 }
 
 // NewCounterService 创建计数器服务实例。
 func NewCounterService(deps CounterServiceDeps) *CounterService {
+	logger := deps.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &CounterService{
 		redis:              deps.Redis,
 		producer:           deps.Producer,
-		rebuildLockOptions: rebuildLockOptions(deps.Config),
+		rebuildLockOptions: rebuildLockOptions(deps.Config, logger),
 		failureRecorder:    deps.FailureRecorder,
 		failureTasks:       deps.FailureTasks,
 		failureTopic:       deps.FailureTopic,
@@ -111,7 +117,9 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 			Delta:      delta,
 		}
 		if s.producer != nil {
-			go s.publishCounterEvent(event)
+			if err := s.publishCounterEvent(event); err != nil {
+				return false, err
+			}
 		}
 		return true, nil
 	}

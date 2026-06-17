@@ -6,6 +6,7 @@ import (
 	"github.com/coocood/freecache"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/cache"
 	"github.com/zhiguang/app/pkg/config"
@@ -40,6 +41,7 @@ type KnowPostService struct {
 	ossCfg    *config.OSSConfig
 	counter   CounterClient
 	feedCache FeedCacheInvalidator
+	logger    *zap.Logger
 }
 
 // KnowPostServiceDeps 描述知文写路径服务在构造期需要的全部依赖。
@@ -57,6 +59,7 @@ type KnowPostServiceDeps struct {
 	OSSConfig *config.OSSConfig
 	Counter   CounterClient
 	FeedCache FeedCacheInvalidator
+	Logger    *zap.Logger
 }
 
 const (
@@ -72,6 +75,10 @@ const (
 // 与早期版本不同，当前构造函数要求跨领域依赖也在创建时显式给出。
 // 这样 bootstrap 不再需要先创建半成品对象再调用多个 Setter，能够减少装配顺序耦合。
 func NewKnowPostService(deps KnowPostServiceDeps) *KnowPostService {
+	logger := deps.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &KnowPostService{
 		db:        deps.DB,
 		repo:      NewKnowPostRepository(deps.DB),
@@ -82,6 +89,7 @@ func NewKnowPostService(deps KnowPostServiceDeps) *KnowPostService {
 		ossCfg:    deps.OSSConfig,
 		counter:   deps.Counter,
 		feedCache: deps.FeedCache,
+		logger:    logger,
 	}
 }
 

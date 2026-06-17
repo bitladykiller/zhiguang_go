@@ -192,3 +192,81 @@ func setCounterBitmapBit(t *testing.T, client *redis.Client, metric, entityType,
 		t.Fatalf("set bitmap bit: %v", err)
 	}
 }
+
+func TestRebuildSds_UsesDistributedLock(t *testing.T) {
+	client := testutil.StartRedisServer(t)
+	store := &stubCounterFailureTaskStore{}
+	service := NewCounterService(CounterServiceDeps{
+		Redis:        client,
+		FailureTasks: store,
+	})
+
+	setCounterBitmapBit(t, client, "like", "knowpost", "4001", 1)
+
+	raw, err := service.rebuildSds(context.Background(), "knowpost", "4001")
+	if err != nil {
+		t.Fatalf("rebuildSds() error = %v", err)
+	}
+	if got := readInt32BE(raw, IdxLike*FieldSize); got != 1 {
+		t.Fatalf("like count = %d, want 1", got)
+	}
+
+	lockKey := RebuildLockKey("knowpost", "4001")
+	exists, err := client.Exists(context.Background(), lockKey).Result()
+	if err != nil {
+		t.Fatalf("check lock exists: %v", err)
+	}
+	if exists != 0 {
+		t.Fatal("expected rebuild lock to be released after rebuild")
+	}
+}
+
+func TestRebuildSds_LockPreventsConcurrentRebuild(t *testing.T) {
+	client := testutil.StartRedisServer(t)
+	store := &stubCounterFailureTaskStore{}
+	service := NewCounterService(CounterServiceDeps{
+		Redis:        client,
+		FailureTasks: store,
+	})
+
+	setCounterBitmapBit(t, client, "like", "knowpost", "5001", 1)
+	setCounterBitmapBit(t, client, "like", "knowpost", "5001", 2)
+
+	startCh := make(chan struct{})
+	firstDone := make(chan struct{})
+	secondDone := make(chan struct{})
+
+	go func() {
+		<-startCh
+		defer close(firstDone)
+		_, _ = service.rebuildSds(context.Background(), "knowpost", "5001")
+	}()
+
+	go func() {
+		<-startCh
+		defer close(secondDone)
+		_, _ = service.rebuildSds(context.Background(), "knowpost", "5001")
+	}()
+
+	close(startCh)
+
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first rebuild timeout")
+	}
+
+	select {
+	case <-secondDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second rebuild timeout")
+	}
+
+	raw, err := client.Get(context.Background(), SdsKey("knowpost", "5001")).Bytes()
+	if err != nil {
+		t.Fatalf("read sds: %v", err)
+	}
+	if got := readInt32BE(raw, IdxLike*FieldSize); got != 2 {
+		t.Fatalf("like count = %d, want 2", got)
+	}
+}

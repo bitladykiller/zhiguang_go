@@ -36,10 +36,20 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 		return raw, nil
 	}
 
+	if !lock.IsStillValid() {
+		s.escalateBackoff(ctx, entityType, entityID)
+		return nil, fmt.Errorf("lock lost before epoch bump")
+	}
+
 	oldEpoch, err := s.bumpEntityEpoch(ctx, entityType, entityID)
 	if err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, fmt.Errorf("bump counter epoch: %w", err)
+	}
+
+	if !lock.IsStillValid() {
+		s.escalateBackoff(ctx, entityType, entityID)
+		return nil, fmt.Errorf("lock lost during rebuild")
 	}
 
 	raw, err = s.buildSnapshotFromBitmap(ctx, entityType, entityID)
@@ -48,28 +58,35 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 		return nil, err
 	}
 
+	if !lock.IsStillValid() {
+		s.escalateBackoff(ctx, entityType, entityID)
+		return nil, fmt.Errorf("lock lost before sds write")
+	}
+
 	if err := s.redis.Set(ctx, sdsKey, raw, 0).Err(); err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, err
 	}
 
-	// rebuild 已经把当前实体的 SDS 拉回到 bitmap 真值，这里把重建开始前的旧失败任务
-	// 批量标记 done，避免后台继续反复扫描这些已过期的修复项。
 	s.markEntityFailureTasksDoneBestEffort(ctx, entityType, entityID, oldEpoch)
 
 	s.resetBackoff(ctx, entityType, entityID)
 	return raw, nil
 }
 
-func (s *CounterService) publishCounterEvent(event *CounterEvent) {
+func (s *CounterService) publishCounterEvent(event *CounterEvent) error {
 	if s == nil || s.producer == nil || event == nil {
-		return
+		return nil
 	}
 	if err := s.producer.Publish(event); err != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_ = s.recordFailedEvent(ctx, counterFailureStagePublish, event, err)
+		if recordErr := s.recordFailedEvent(ctx, counterFailureStagePublish, event, err); recordErr != nil {
+			return fmt.Errorf("publish event failed: %w (also failed to record: %v)", err, recordErr)
+		}
+		return fmt.Errorf("publish event failed (recorded for retry): %w", err)
 	}
+	return nil
 }
 
 func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType, entityID string) ([]byte, error) {
