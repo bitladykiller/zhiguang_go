@@ -1,20 +1,30 @@
 package counter
 
 import (
+	"context"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
 
 // CounterHandler 暴露计数器模块的 HTTP 接口。
 type CounterHandler struct {
-	svc *CounterService
+	svc CounterServiceInterface
 }
 
-func NewCounterHandler(svc *CounterService) *CounterHandler {
+// NewCounterHandler 创建 CounterHandler 实例。
+//
+// 参数:
+//   - svc: CounterServiceInterface 实现，负责计数器业务逻辑
+//
+// 返回值:
+//   - *CounterHandler: 已初始化的 Handler 实例
+func NewCounterHandler(svc CounterServiceInterface) *CounterHandler {
 	return &CounterHandler{svc: svc}
 }
 
@@ -28,6 +38,7 @@ func (h *CounterHandler) RegisterRoutes(r *gin.RouterGroup) {
 		ctr.POST("/unfav", h.Unfav)
 		ctr.GET("/counts", h.GetCounts)
 		ctr.GET("/status", h.Status)
+		ctr.GET("/likers", h.GetLikers)
 	}
 }
 
@@ -47,29 +58,9 @@ func (h *CounterHandler) RegisterRoutes(r *gin.RouterGroup) {
 //   - 400: 请求体格式错误
 //   - 500: 服务端错误（Redis 操作失败）
 //
-// 函数调用说明：
-//   - middleware.GetUserID(c): 从 Gin 上下文中提取已认证的用户 ID（由 AuthMiddleware 注入）
-//   - c.ShouldBindJSON(&req): Gin 提供的 JSON 请求体绑定，自动解析并校验字段
-//   - response.Success / response.Error / response.Fail: 统一响应格式工具函数
-//
 // 权限：要求登录（需先经过 AuthMiddleware 鉴权）
 func (h *CounterHandler) Like(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	var req ToggleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
-		return
-	}
-	changed, err := h.svc.Like(c.Request.Context(), userID, req.EntityType, req.EntityID)
-	if err != nil {
-		response.Fail(c, 500, err.Error())
-		return
-	}
-	response.Success(c, gin.H{"success": true, "changed": changed})
+	h.handleToggle(c, h.svc.Like)
 }
 
 // Unlike 处理 POST /counter/unlike 请求。
@@ -82,22 +73,7 @@ func (h *CounterHandler) Like(c *gin.Context) {
 //
 // 权限：要求登录。
 func (h *CounterHandler) Unlike(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	var req ToggleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
-		return
-	}
-	changed, err := h.svc.Unlike(c.Request.Context(), userID, req.EntityType, req.EntityID)
-	if err != nil {
-		response.Fail(c, 500, err.Error())
-		return
-	}
-	response.Success(c, gin.H{"success": true, "changed": changed})
+	h.handleToggle(c, h.svc.Unlike)
 }
 
 // Fav 处理 POST /counter/fav 请求。
@@ -110,22 +86,7 @@ func (h *CounterHandler) Unlike(c *gin.Context) {
 //
 // 权限：要求登录。
 func (h *CounterHandler) Fav(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	var req ToggleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
-		return
-	}
-	changed, err := h.svc.Fav(c.Request.Context(), userID, req.EntityType, req.EntityID)
-	if err != nil {
-		response.Fail(c, 500, err.Error())
-		return
-	}
-	response.Success(c, gin.H{"success": true, "changed": changed})
+	h.handleToggle(c, h.svc.Fav)
 }
 
 // Unfav 处理 POST /counter/unfav 请求。
@@ -138,6 +99,19 @@ func (h *CounterHandler) Fav(c *gin.Context) {
 //
 // 权限：要求登录。
 func (h *CounterHandler) Unfav(c *gin.Context) {
+	h.handleToggle(c, h.svc.Unfav)
+}
+
+// handleToggle 统一处理 Like/Unlike/Fav/Unfav 四个 toggle 接口的通用逻辑。
+//
+// 抽取原因：
+//   四个接口的鉴权、参数绑定、错误处理和响应格式完全相同，
+//   唯一不同的是调用的 service 方法。抽取后消除重复代码，
+//   同时保持每个接口的文档注释清晰。
+func (h *CounterHandler) handleToggle(
+	c *gin.Context,
+	toggleFn func(ctx context.Context, userID uint64, entityType, entityID string) (bool, error),
+) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
 		response.Error(c, errcode.ErrUnauthorized)
@@ -145,12 +119,13 @@ func (h *CounterHandler) Unfav(c *gin.Context) {
 	}
 	var req ToggleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
-	changed, err := h.svc.Unfav(c.Request.Context(), userID, req.EntityType, req.EntityID)
+	changed, err := toggleFn(c.Request.Context(), userID, req.EntityType, req.EntityID)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true, "changed": changed})
@@ -187,14 +162,15 @@ func (h *CounterHandler) GetCounts(c *gin.Context) {
 	metricsStr := c.DefaultQuery("metrics", "like,fav")
 
 	if entityType == "" || entityID == "" {
-		response.Fail(c, 400, "entity_type and entity_id are required")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("entity_type and entity_id are required"))
 		return
 	}
 
 	metrics := strings.Split(metricsStr, ",")
 	counts, err := h.svc.GetCounts(c.Request.Context(), entityType, entityID, metrics)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"data": counts})
@@ -234,11 +210,59 @@ func (h *CounterHandler) Status(c *gin.Context) {
 	entityType := c.Query("entity_type")
 	entityID := c.Query("entity_id")
 	if entityType == "" || entityID == "" {
-		response.Fail(c, 400, "entity_type and entity_id are required")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("entity_type and entity_id are required"))
 		return
 	}
 
-	liked, _ := h.svc.IsLiked(c.Request.Context(), userID, entityType, entityID)
-	faved, _ := h.svc.IsFaved(c.Request.Context(), userID, entityType, entityID)
-	response.Success(c, gin.H{"is_liked": liked, "is_faved": faved})
+	liked, likedErr := h.svc.IsLiked(c.Request.Context(), userID, entityType, entityID)
+	faved, favedErr := h.svc.IsFaved(c.Request.Context(), userID, entityType, entityID)
+
+	resp := gin.H{"is_liked": liked, "is_faved": faved}
+	if likedErr != nil || favedErr != nil {
+		resp["degraded"] = true
+	}
+	response.Success(c, resp)
+}
+
+// GetLikers 处理 GET /counter/likers 请求。
+//
+// 功能：返回指定实体的点赞/收藏用户列表（分页）。
+//
+// 查询参数：
+//   - entity_type: string, 必须 — 实体类型
+//   - entity_id:   uint64, 必须 — 实体 ID
+//   - metric:      string, "like"|"favorite"，默认 "like"
+//   - cursor:      uint64, 分页游标（上一页最后一个 user_id），默认 0
+//   - limit:       int, 每页数量，默认 20，最大 50
+//
+// 权限：要求登录
+func (h *CounterHandler) GetLikers(c *gin.Context) {
+	_, ok := middleware.GetUserID(c)
+	if !ok {
+		response.Error(c, errcode.ErrUnauthorized)
+		return
+	}
+	entityType := c.Query("entity_type")
+	entityIDStr := c.Query("entity_id")
+	metric := c.DefaultQuery("metric", "like")
+	cursor := httputil.QueryUint64(c, "cursor", 0)
+	limit := httputil.QueryInt(c, "limit", 20)
+
+	if entityType == "" || entityIDStr == "" {
+		response.Error(c, errcode.ErrBadRequest.WithMsg("entity_type and entity_id are required"))
+		return
+	}
+	entityID, err := strconv.ParseUint(entityIDStr, 10, 64)
+	if err != nil {
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid entity_id"))
+		return
+	}
+
+	resp, err := h.svc.GetLikers(c.Request.Context(), entityType, entityID, metric, cursor, limit)
+	if err != nil {
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
+		return
+	}
+	response.Success(c, resp)
 }

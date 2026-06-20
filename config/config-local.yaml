@@ -1,0 +1,162 @@
+server:
+  port: 8080
+  mode: debug
+
+database:
+  host: localhost
+  port: 3306
+  user: root
+  password: "${DB_PASSWORD:-root123}"
+  name: zhiguang
+  charset: utf8mb4
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 3600
+  dial_timeout_ms: 5000
+  read_timeout_ms: 10000
+  write_timeout_ms: 10000
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 20
+  min_idle_conns: 5
+  max_retries: 3
+  dial_timeout_ms: 5000
+  read_timeout_ms: 3000
+  write_timeout_ms: 3000
+  conn_max_lifetime: 3600
+
+id_generator:
+  machine_id: 0
+  worker_id: 1
+
+kafka:
+  brokers:
+    - localhost:9092
+    - localhost:9093
+    - localhost:9094
+  consumer_group: counter-agg
+  topics:
+    counter_events: counter-events
+  write_timeout_ms: 5000
+  read_timeout_ms: 10000
+  max_attempts: 5
+
+elasticsearch:
+  uris:
+    - http://localhost:9200
+  index_name: zhiguang-ai-index
+  max_retries: 3
+
+auth:
+  jwt:
+    issuer: zhiguang
+    key_id: zhiguang-local
+    private_key_path: config/keys/private.pem
+    public_key_path: config/keys/public.pem
+    access_token_ttl: 15m
+    refresh_token_ttl: 168h
+  verification:
+    code_length: 6
+    ttl: 5m
+    max_attempts: 5
+    send_interval: 60s
+    daily_limit: 10
+    lock:
+      ttl_ms: 5000
+      watchdog_ms: 15000
+      retry_interval_ms: 100
+  refresh:
+    lock:
+      ttl_ms: 5000
+      watchdog_ms: 15000
+      retry_interval_ms: 100
+  password:
+    bcrypt_cost: 12
+    min_length: 8
+
+oss:
+  endpoint: ""
+  access_key_id: ""
+  access_key_secret: ""
+  bucket: ""
+  public_domain: ""
+  folder: avatars
+  presign_expiry_ms: 600000
+
+canal:
+  enabled: false
+  host: localhost
+  port: 11111
+  destination: example
+  username: canal
+  password: ""
+  filter: zhiguang\\.outbox
+  batch_size: 1000
+  interval_ms: 1000
+  socket_timeout_ms: 60000
+  idle_timeout_ms: 3600000
+
+counter:
+  consumer:
+    batch_size: 100
+    flush_interval_ms: 1000
+  repair:
+    enabled: true
+    interval_ms: 60000
+    batch_size: 100
+  rebuild:
+    enabled: false
+    lock:
+      ttl_ms: 5000
+      watchdog_ms: 30000
+    rate:
+      permits: 3
+      window_seconds: 10
+    backoff:
+      base_ms: 500
+      max_ms: 30000
+
+cache:
+  l2:
+    public_cfg:
+      ttl_seconds: 15
+      max_size: 1000
+    mine_cfg:
+      ttl_seconds: 10
+      max_size: 1000
+  hotkey:
+    bucket_size_seconds: 6
+    bucket_count: 10
+    flush_interval_seconds: 6
+    stat_ttl_seconds: 120
+    level_low: 50
+    level_medium: 200
+    level_high: 500
+    extend_low_seconds: 20
+    extend_medium_seconds: 60
+    extend_high_seconds: 120
+    hot_mark_ttl_seconds: 60
+
+llm:
+  deepseek:
+    api_key: ""
+    base_url: ""
+    model: ""
+    temperature: 0.8
+  openai:
+    base_url: ""
+    api_key: ""
+    embedding_model: ""
+    dimensions: 1536
+  timeout_ms: 30000
+
+# 全局超时配置（可选，各模块有独立配置时优先使用模块配置）
+timeouts:
+  http_client_timeout_ms: 30000
+  oss_presign_expiry_ms: 600000
+  canal_socket_timeout_ms: 60000
+  canal_idle_timeout_ms: 3600000

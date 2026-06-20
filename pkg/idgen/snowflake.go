@@ -2,7 +2,6 @@ package idgen
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/bwmarrin/snowflake"
 
@@ -27,7 +26,6 @@ type SnowflakeGenerator struct {
 	nodeID    int64
 	machineID int
 	workerID  int
-	mu        sync.Mutex
 }
 
 // NewSnowflakeGenerator 根据 machine_id 和 worker_id 创建本地雪花生成器。
@@ -58,8 +56,6 @@ func NewSnowflakeGenerator(cfg *config.IDGeneratorConfig) (*SnowflakeGenerator, 
 
 // NextID 返回一个本地生成的全局唯一且按时间有序的 64 位 ID。
 func (g *SnowflakeGenerator) NextID() uint64 {
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	return uint64(g.node.Generate())
 }
 

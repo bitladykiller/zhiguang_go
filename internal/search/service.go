@@ -24,11 +24,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/zhiguang/app/internal/knowpost"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/zhiguang/app/internal/counter"
+	"github.com/zhiguang/app/internal/model"
+	"github.com/zhiguang/app/pkg/contextutil"
+	"github.com/zhiguang/app/pkg/jsonutil"
+	"go.uber.org/zap"
 )
 
 // SearchIndexDoc 是知文内容在 ES 中的文档结构。
@@ -55,7 +62,23 @@ type SearchIndexDoc struct {
 	Suggest       *SuggestField `json:"suggest,omitempty"`
 }
 
-// SuggestField 表示 ES completion suggest 字段结构。
+// closeESBody 安全关闭 ES 响应体，记录关闭错误。
+func (s *SearchService) closeESBody(res *esapi.Response) {
+	if res != nil && res.Body != nil {
+		if err := res.Body.Close(); err != nil {
+			s.logger.Warn("close es response body failed", zap.Error(err))
+		}
+	}
+}
+
+// readESError 读取 ES 错误响应体并返回格式化错误。
+func (s *SearchService) readESError(res *esapi.Response, opName string) error {
+	body, readErr := io.ReadAll(res.Body)
+	if readErr != nil {
+		return fmt.Errorf("%s error (status=%d, failed to read body: %w)", opName, res.StatusCode, readErr)
+	}
+	return fmt.Errorf("%s failed: %s", opName, string(body))
+}
 type SuggestField struct {
 	Input  []string `json:"input"`
 	Weight int      `json:"weight,omitempty"`
@@ -63,16 +86,13 @@ type SuggestField struct {
 
 // SearchResponse 是搜索接口的响应结构，对齐 Java 版返回。
 type SearchResponse struct {
-	Items     []knowpost.FeedItemResponse `json:"items"`
-	NextAfter *string                     `json:"next_after,omitempty"`
-	HasMore   bool                        `json:"has_more"`
+	Items     []model.FeedItem `json:"items"`
+	NextAfter *string          `json:"next_after,omitempty"`
+	HasMore   bool             `json:"has_more"`
 }
 
 // SearchCounterClient 定义搜索结果需要的用户态计数读取接口。
-type SearchCounterClient interface {
-	IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
-	IsFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
-}
+type SearchCounterClient = counter.CounterServiceInterface
 
 // indexMapping 是知文搜索索引的 ES mapping 模板。
 const indexMapping = `{
@@ -113,58 +133,60 @@ const indexMapping = `{
   }
 }`
 
+// ESConfig 封装 Elasticsearch 连接配置参数。
+type ESConfig struct {
+	URIs       []string
+	IndexName  string
+	MaxRetries int
+}
+
 // SearchService 封装 Elasticsearch 客户端并提供搜索相关操作。
 type SearchService struct {
 	client    *elasticsearch.Client
 	indexName string
 	counter   SearchCounterClient
+	logger    *zap.Logger
 }
 
 // NewSearchService 使用给定 URI 地址列表创建 ES 客户端，并调用 EnsureIndex 确保索引存在。
 //
 // 参数:
-//   - cfg.URIs: Elasticsearch 集群节点地址列表，格式如 []string{"http://localhost:9200"}
-//   - cfg.IndexName: 搜索索引名称，与 Java 版 zhiguang_be 使用相同的索引名以保证兼容性
+//   - cfg.URIs: Elasticsearch 集群节点地址列表
+//   - cfg.IndexName: 搜索索引名称
+//   - counter: 用户态计数查询接口，nil 表示搜索结果不包含 liked/faved 状态
 //
 // 返回值:
-//   - *SearchService: 搜索服务实例，上层可通过该实例执行搜索、建议、文档索引等操作
+//   - *SearchService: 搜索服务实例
 //   - error: 如果创建客户端失败或索引创建/校验出错则返回非 nil 错误
-//
-// 注意:
-//   - 构造函数在启动阶段会一次性完成客户端创建和索引初始化
-//   - 如果 ES 集群尚未启动，此处会返回连接错误，调用方应处理降级逻辑
-func NewSearchService(cfg struct {
-	URIs      []string
-	IndexName string
-}) (*SearchService, error) {
+func NewSearchService(ctx context.Context, cfg ESConfig, counter SearchCounterClient, logger *zap.Logger) (*SearchService, error) {
 	client, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: cfg.URIs,
+		Addresses:     cfg.URIs,
+		MaxRetries:    cfg.MaxRetries,
+		RetryOnStatus: []int{502, 503, 504, 429},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create es client: %w", err)
 	}
 
-	svc := &SearchService{client: client, indexName: cfg.IndexName}
+	svc := &SearchService{client: client, indexName: cfg.IndexName, counter: counter, logger: logger}
 
-	// 启动时确保索引已存在
-	if err := svc.EnsureIndex(); err != nil {
-		return nil, fmt.Errorf("ensure index: %w", err)
+	// 启动时确保索引已存在，失败重试 3 次
+	var ensureErr error
+	for attempt := 1; attempt <= defaultEnsureRetries; attempt++ {
+		ensureErr = svc.EnsureIndex()
+		if ensureErr == nil {
+			break
+		}
+		if attempt < defaultEnsureRetries {
+			logger.Warn("ensure index failed, retrying", zap.Int("attempt", attempt), zap.Error(ensureErr))
+			contextutil.Sleep(ctx, time.Duration(attempt)*time.Second)
+		}
+	}
+	if ensureErr != nil {
+		return nil, fmt.Errorf("ensure index after retries: %w", ensureErr)
 	}
 
 	return svc, nil
-}
-
-// SetCounterClient 注入搜索结果所需的用户态计数依赖。
-//
-// 参数:
-//   - counter: 实现 SearchCounterClient 接口的实例（通常为 counter.CounterService），
-//     提供 IsLiked 和 IsFaved 方法用于判断当前用户对搜索结果的点赞/收藏状态
-//
-// 说明:
-//   - 需要在 Search 接口被调用前注入，否则搜索结果中 liked/faved 字段将为 nil
-//   - 使用接口而非具体类型是为了解耦，避免 search 包依赖 counter 包
-func (s *SearchService) SetCounterClient(counter SearchCounterClient) {
-	s.counter = counter
 }
 
 // EnsureIndex 检查索引是否存在，不存在时按预定义的 indexMapping 创建索引。
@@ -185,23 +207,22 @@ func (s *SearchService) EnsureIndex() error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
-	if res.StatusCode == 200 {
-		return s.ensureCompatibleMappings() // 索引已存在时，补齐兼容字段
+	if res.StatusCode == http.StatusOK {
+		return s.ensureCompatibleMappings()
 	}
 
-	res, err = s.client.Indices.Create(s.indexName, s.client.Indices.Create.WithBody(
+	createRes, err := s.client.Indices.Create(s.indexName, s.client.Indices.Create.WithBody(
 		bytes.NewReader([]byte(indexMapping)),
 	))
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(createRes)
 
-	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
-		return fmt.Errorf("create index failed: %s", string(body))
+	if createRes.IsError() {
+		return s.readESError(createRes, "create index")
 	}
 
 	return nil
@@ -248,165 +269,214 @@ func (s *SearchService) ensureCompatibleMappings() error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
-		return fmt.Errorf("put mapping failed: %s", string(body))
+		return s.readESError(res, "put mapping")
 	}
 
 	return nil
 }
 
+const (
+	defaultSearchSize     = 20
+	defaultSuggestSize    = 10
+	defaultEnsureRetries  = 3
+)
+
 // Search 执行全文检索，使用 function_score 融合 BM25 和相关指标权重，并通过 search_after 游标分页。
-//
-// 参数:
-//   - ctx: 上下文对象，用于链路追踪和请求超时控制
-//   - keyword: 搜索关键词，使用 multi_match 在 title(权重 3) 和 body 字段同时检索
-//   - size: 每页返回结果数量，<=0 时默认回退为 20
-//   - tagsCSV: 按逗号分隔的标签筛选条件（可选），非空时追加 terms 过滤器
-//   - after: base64 编码的游标值，由上一页响应的 next_after 字段提供
-//   - currentUserID: 当前登录用户 ID（可选），非空时查询用户对每篇结果的点赞/收藏状态
-//
-// 返回值:
-//   - *SearchResponse: 包含搜索结果列表、下一页游标 next_after、是否还有更多 has_more
-//   - error: ES 搜索失败或 JSON 编解码错误时返回
-//
-// 排序策略（与 Java 版对齐）:
-//   1. _score: BM25 相关性评分（降序）
-//   2. publish_time: 发布时间（降序）
-//   3. like_count: 点赞数（降序）
-//   4. view_count: 浏览数（降序）
-//   5. id: 文档 ID（降序），确保排序的确定性
-//
-// function_score 权重:
-//   - like_count 使用 log1p 修正器乘以权重 2.0
-//   - view_count 使用 log1p 修正器乘以权重 1.0
-//   - boost_mode 设为 "sum"，即 BM25 分值与函数分值相加
-//
-// 分页机制:
-//   使用 search_after 代替传统的 from/size 深分页
-//   原因：深分页场景下 ES 需要在每个分片维持全局排序状态，
-//   导致集群内存消耗线性增长。search_after 利用上一页最后一个文档的排序值
-//   作为起点，避免了该问题，适合搜索结果翻页场景。
-//
-// 高亮:
-//   对 title 和 body 字段使用 ES 默认高亮配置（<em> 标签包裹匹配片段），
-//   如果高亮片段存在，则用它替换原 description 返回给客户端。
-//
-// 边界情况:
-//   - keyword 为空时 ES 会返回空结果而非错误
-//   - after 解码失败时视作第一页，不返回错误
-//   - 结果数为 0 时 has_more 为 false, next_after 为 nil
-//   - currentUserID 为 nil 时 liked/faved 返回 nil
 func (s *SearchService) Search(ctx context.Context, keyword string, size int, tagsCSV, after string, currentUserID *uint64) (*SearchResponse, error) {
 	if size <= 0 {
-		size = 20
+		size = defaultSearchSize
 	}
 
 	tags := parseCSV(tagsCSV)
 	afterValues := parseAfter(after)
 
-	// 与 Java 版对齐：function_score + search_after + 高亮
-	query := map[string]interface{}{
-		"query": map[string]interface{}{
-			"function_score": map[string]interface{}{
-				"query": map[string]interface{}{
-					"bool": map[string]interface{}{
-						"must": []map[string]interface{}{
-							{"multi_match": map[string]interface{}{
-								"query":  keyword,
-								"fields": []string{"title^3", "body"},
-							}},
+	body, err := s.buildSearchQuery(keyword, tags, afterValues, size)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := s.executeSearch(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+
+	items, likedMap, favedMap := s.decodeAndEnrich(ctx, raw, currentUserID)
+	nextAfter, hasMore := s.buildCursor(raw, size)
+
+	items = s.applyLikedFaved(items, likedMap, favedMap)
+
+	return &SearchResponse{
+		Items:     items,
+		NextAfter: nextAfter,
+		HasMore:   hasMore,
+	}, nil
+}
+
+// buildSearchQuery 构造 ES 搜索请求体 JSON。
+func (s *SearchService) buildSearchQuery(keyword string, tags []string, afterValues []interface{}, size int) ([]byte, error) {
+	body := &esSearchBody{
+		Size: size,
+		Track: &esTrackTotalHits{TrackTotalHits: true},
+	}
+
+	bq := &esBoolClauses{}
+
+	if keyword != "" {
+		bq.Must = append(bq.Must, &esMultiMatchQuery{
+			MultiMatch: map[string]interface{}{
+				"query":  keyword,
+				"fields": []string{"title^3", "body"},
+			},
+		})
+	}
+
+	// 过滤条件: status=published, visible=public
+	bq.Filter = append(bq.Filter, &esTermQuery{
+		Term: map[string]interface{}{"status": "published"},
+	})
+	bq.Filter = append(bq.Filter, &esTermQuery{
+		Term: map[string]interface{}{"visible": "public"},
+	})
+
+	if len(bq.Must) > 0 || len(bq.Filter) > 0 || len(bq.Should) > 0 {
+		body.Query = &esBoolQuery{Bool: bq}
+	}
+
+	// function_score 包装，融合 like_count / view_count 权重
+	fsQuery := body.Query
+	body.Query = &esBoolQuery{
+		Bool: &esBoolClauses{
+			Must: []interface{}{
+				&esFunctionScoreQuery{
+					FunctionScore: &esFunctionScore{
+						Query: fsQuery,
+						Functions: []esFunction{
+							{
+								ScriptScore: &esScriptScore{
+									Script: &esScript{
+										Source: "Math.log(1 + (doc['like_count'].value ?: 0)) * 2.0 + Math.log(1 + (doc['view_count'].value ?: 0)) * 1.0",
+									},
+								},
+							},
 						},
-						"filter": []map[string]interface{}{
-							{"term": map[string]interface{}{"status": "published"}},
-							{"term": map[string]interface{}{"visible": "public"}},
-						},
+						ScoreMode: "sum",
 					},
 				},
-				"functions": []map[string]interface{}{
-					{
-						"field_value_factor": map[string]interface{}{
-							"field":    "like_count",
-							"modifier": "log1p",
-						},
-						"weight": 2.0,
-					},
-					{
-						"field_value_factor": map[string]interface{}{
-							"field":    "view_count",
-							"modifier": "log1p",
-						},
-						"weight": 1.0,
-					},
-				},
-				"boost_mode": "sum",
 			},
 		},
-		"size": size,
-		"highlight": map[string]interface{}{
-			"fields": map[string]interface{}{
-				"title": map[string]interface{}{},
-				"body":  map[string]interface{}{},
-			},
-		},
-		"sort": []map[string]interface{}{
-			{"_score": map[string]string{"order": "desc"}},
-			{"publish_time": map[string]string{"order": "desc"}},
-			{"like_count": map[string]string{"order": "desc"}},
-			{"view_count": map[string]string{"order": "desc"}},
-			{"id": map[string]string{"order": "desc"}},
-		},
+	}
+
+	// 排序
+	body.Sort = []esSortField{
+		{Field: "_score", Order: "desc"},
+		{Field: "publish_time", Order: "desc"},
+		{Field: "like_count", Order: "desc"},
+		{Field: "view_count", Order: "desc"},
+		{Field: "id", Order: "desc"},
 	}
 
 	if len(tags) > 0 {
-		query["query"].(map[string]interface{})["function_score"].(map[string]interface{})["query"].(map[string]interface{})["bool"].(map[string]interface{})["filter"] = append(
-			query["query"].(map[string]interface{})["function_score"].(map[string]interface{})["query"].(map[string]interface{})["bool"].(map[string]interface{})["filter"].([]map[string]interface{}),
-			map[string]interface{}{"terms": map[string]interface{}{"tags": tags}},
-		)
-	}
-	if len(afterValues) > 0 {
-		query["search_after"] = afterValues
+		var err error
+		body, err = s.addTagFilter(body, tags)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(query); err != nil {
-		return nil, err
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("build search query: marshal: %w", err)
 	}
+
+	return data, nil
+}
+
+// addTagFilter 向已构建的 ES query 中添加 tags 过滤条件。
+func (s *SearchService) addTagFilter(body *esSearchBody, tags []string) (*esSearchBody, error) {
+	if len(tags) == 0 {
+		return body, nil
+	}
+
+	if body.Query != nil && body.Query.Bool != nil && len(body.Query.Bool.Must) > 0 {
+		for i, clause := range body.Query.Bool.Must {
+			if fs, ok := clause.(*esFunctionScoreQuery); ok {
+				if fs.FunctionScore != nil {
+					if bq, ok := fs.FunctionScore.Query.(*esBoolQuery); ok && bq.Bool != nil {
+						bq.Bool.Filter = append(bq.Bool.Filter, &esTermsQuery{
+							Terms: map[string]interface{}{"tags": tags},
+						})
+						_ = i
+					}
+				}
+			}
+		}
+	}
+
+	return body, nil
+}
+
+// searchHit 表示 ES 搜索结果中的单个 hit。
+type searchHit struct {
+	Source    SearchIndexDoc      `json:"_source"`
+	Score     float64             `json:"_score"`
+	Sort      []interface{}       `json:"sort"`
+	Highlight map[string][]string `json:"highlight"`
+}
+
+// executeSearch 发送 ES 搜索请求并返回原始响应。
+func (s *SearchService) executeSearch(ctx context.Context, query []byte) ([]searchHit, error) {
+	buf := bytes.NewBuffer(query)
 
 	res, err := s.client.Search(
 		s.client.Search.WithContext(ctx),
 		s.client.Search.WithIndex(s.indexName),
-		s.client.Search.WithBody(&buf),
+		s.client.Search.WithBody(buf),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("search: es request: %w", err)
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
-		return nil, fmt.Errorf("search failed: %s", string(body))
+		return nil, s.readESError(res, "search")
 	}
 
 	var result struct {
 		Hits struct {
-			Hits []struct {
-				Source    SearchIndexDoc      `json:"_source"`
-				Score     float64             `json:"_score"`
-				Sort      []interface{}       `json:"sort"`
-				Highlight map[string][]string `json:"highlight"`
-			} `json:"hits"`
+			Hits []searchHit `json:"hits"`
 		} `json:"hits"`
 	}
-
 	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("search: decode response: %w", err)
+	}
+	return result.Hits.Hits, nil
+}
+
+// decodeAndEnrich 将 ES 结果解析为 FeedItem 列表，并返回 liked/faved 状态映射。
+func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, currentUserID *uint64) ([]model.FeedItem, map[string]bool, map[string]bool) {
+	items := make([]model.FeedItem, 0, len(hits))
+
+	var likedMap, favedMap map[string]bool
+	if currentUserID != nil && s.counter != nil && len(hits) > 0 {
+		hitIDs := make([]string, len(hits))
+		for i, hit := range hits {
+			hitIDs[i] = hit.Source.ID
+		}
+		var err error
+		likedMap, err = s.counter.BatchIsLiked(ctx, *currentUserID, "knowpost", hitIDs)
+		if err != nil {
+			s.logger.Warn("failed to batch check liked status", zap.Error(err))
+		}
+		favedMap, err = s.counter.BatchIsFaved(ctx, *currentUserID, "knowpost", hitIDs)
+		if err != nil {
+			s.logger.Warn("failed to batch check faved status", zap.Error(err))
+		}
 	}
 
-	items := make([]knowpost.FeedItemResponse, 0, len(result.Hits.Hits))
-	for _, hit := range result.Hits.Hits {
+	for _, hit := range hits {
 		source := hit.Source
 		description := source.Description
 		if snippet := buildSnippet(hit.Highlight); snippet != "" {
@@ -414,14 +484,12 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 		}
 		var coverImage *string
 		if len(source.ImgURLs) > 0 {
-			first := source.ImgURLs[0]
-			coverImage = &first
+			coverImage = &source.ImgURLs[0]
 		}
-		liked, faved := s.userFlags(ctx, currentUserID, source.ID)
-		items = append(items, knowpost.FeedItemResponse{
+		items = append(items, model.FeedItem{
 			ID:             source.ID,
-			Title:          stringPtrOrNil(source.Title),
-			Description:    stringPtrOrNil(description),
+			Title:          jsonutil.StrPtr(source.Title),
+			Description:    jsonutil.StrPtr(description),
 			CoverImage:     coverImage,
 			Tags:           source.Tags,
 			AuthorAvatar:   source.AuthorAvatar,
@@ -429,27 +497,44 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 			TagJson:        source.AuthorTagJSON,
 			LikeCount:      source.LikeCount,
 			FavoriteCount:  source.FavCount,
-			Liked:          liked,
-			Faved:          faved,
 			IsTop:          boolPtr(source.IsTop),
 		})
 	}
+	return items, likedMap, favedMap
+}
 
+// applyLikedFaved 为每篇结果填充当前用户的点赞/收藏状态。
+func (s *SearchService) applyLikedFaved(items []model.FeedItem, likedMap, favedMap map[string]bool) []model.FeedItem {
+	if likedMap == nil && favedMap == nil {
+		return items
+	}
+	for i, item := range items {
+		if likedMap != nil {
+			if l, ok := likedMap[item.ID]; ok {
+				items[i].Liked = &l
+			}
+		}
+		if favedMap != nil {
+			if f, ok := favedMap[item.ID]; ok {
+				items[i].Faved = &f
+			}
+		}
+	}
+	return items
+}
+
+// buildCursor 根据 ES 结果构建翻页游标和 hasMore 标记。
+func (s *SearchService) buildCursor(hits []searchHit, size int) (*string, bool) {
+	hasMore := len(hits) >= size
 	var nextAfter *string
-	hasMore := len(items) >= size
-	if len(result.Hits.Hits) > 0 {
-		lastSort := result.Hits.Hits[len(result.Hits.Hits)-1].Sort
+	if len(hits) > 0 {
+		lastSort := hits[len(hits)-1].Sort
 		if len(lastSort) > 0 {
 			cursor := encodeAfter(lastSort)
 			nextAfter = &cursor
 		}
 	}
-
-	return &SearchResponse{
-		Items:     items,
-		NextAfter: nextAfter,
-		HasMore:   hasMore,
-	}, nil
+	return nextAfter, hasMore
 }
 
 // Suggest 根据用户输入的前缀返回自动补全建议列表。
@@ -480,7 +565,7 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 //   - 返回的建议数可能少于 size（没有足够匹配项时）
 func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([]string, error) {
 	if size <= 0 {
-		size = 10
+		size = defaultSuggestSize
 	}
 
 	query := map[string]interface{}{
@@ -497,7 +582,7 @@ func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(query); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("suggest: encode query: %w", err)
 	}
 
 	res, err := s.client.Search(
@@ -506,13 +591,12 @@ func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([
 		s.client.Search.WithBody(&buf),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("suggest: es request: %w", err)
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
-		return nil, fmt.Errorf("suggest failed: %s", string(body))
+		return nil, s.readESError(res, "suggest")
 	}
 
 	var result struct {
@@ -523,7 +607,7 @@ func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([
 		} `json:"suggest"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("suggest: decode response: %w", err)
 	}
 
 	options := result.Suggest["title-suggest"]
@@ -685,23 +769,6 @@ func buildSnippet(highlight map[string][]string) string {
 	return strings.Join(parts, " ")
 }
 
-// stringPtrOrNil 将 Go 字符串转为 *string 指针。空字符串返回 nil。
-//
-// 参数:
-//   - value: 原始字符串
-//
-// 返回值:
-//   - *string: value 非空时返回指向 value 的指针，否则返回 nil
-//
-// 设计原因: JSON 响应中空字符串字段应序列化为 null 而非 ""（与 Java 版 Jackson 行为对齐）。
-// if source.Title == "" 时使用 nil 指针可以在 JSON 中输出 null 或省略该字段。
-func stringPtrOrNil(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
-}
-
 // boolPtr 返回 bool 值的指针。
 //
 // 参数:
@@ -716,28 +783,6 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
-// userFlags 查询当前用户对指定知文是否已点赞/已收藏。
-//
-// 参数:
-//   - ctx: 上下文对象
-//   - currentUserID: 当前用户 ID 的指针，nil 表示未登录
-//   - entityID: 知文 ID 字符串
-//
-// 返回值:
-//   - liked: *bool 类型，已点赞为 true，未点赞为 false；用户未登录或 counter 未注入时返回 nil
-//   - faved: *bool 类型，语义同上
-//
-// 注意:
-//   - 本函数内部忽略 counter 调用返回的错误，在计数值查询失败时静默返回 false
-//   - 这是为了确保计数器服务的短暂故障不会影响搜索结果的主要展示
-func (s *SearchService) userFlags(ctx context.Context, currentUserID *uint64, entityID string) (*bool, *bool) {
-	if currentUserID == nil || s.counter == nil {
-		return nil, nil
-	}
-	liked, _ := s.counter.IsLiked(ctx, *currentUserID, "knowpost", entityID)
-	faved, _ := s.counter.IsFaved(ctx, *currentUserID, "knowpost", entityID)
-	return &liked, &faved
-}
 
 // IndexDocument 将搜索文档索引到 Elasticsearch 中（创建或全量替换）。
 //
@@ -759,7 +804,7 @@ func (s *SearchService) userFlags(ctx context.Context, currentUserID *uint64, en
 func (s *SearchService) IndexDocument(ctx context.Context, doc *SearchIndexDoc) error {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(doc); err != nil {
-		return err
+		return fmt.Errorf("index document: encode: %w", err)
 	}
 
 	res, err := s.client.Index(
@@ -769,13 +814,12 @@ func (s *SearchService) IndexDocument(ctx context.Context, doc *SearchIndexDoc) 
 		s.client.Index.WithDocumentID(doc.ID),
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("index document: es request: %w", err)
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
-		return fmt.Errorf("index failed: %s", string(body))
+		return s.readESError(res, "index document")
 	}
 
 	return nil
@@ -797,8 +841,8 @@ func (s *SearchService) IndexDocument(ctx context.Context, doc *SearchIndexDoc) 
 //     而不是真的从索引中移除（参见 SoftDeleteKnowPost 中的 IndexDocument 调用）
 //
 // 边界情况:
-//   - 删除不存在的 ID → 不会返回错误（ES 响应 404，函数中未检查）
-//   - s.client.Delete 调用成功但返回错误 response body → 未读取，调用方无从得知
+//   - 删除不存在的 ID → 不会返回错误（ES 响应 404，已显式检查并忽略）
+//   - s.client.Delete 调用成功但返回错误 response body → 已读取并返回给调用方
 func (s *SearchService) DeleteDocument(ctx context.Context, id string) error {
 	res, err := s.client.Delete(
 		s.indexName,
@@ -806,8 +850,109 @@ func (s *SearchService) DeleteDocument(ctx context.Context, id string) error {
 		s.client.Delete.WithContext(ctx),
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("delete document: es request: %w", err)
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
+
+	if res.StatusCode == http.StatusNotFound {
+		return nil
+	}
+
+	if res.IsError() {
+		return s.readESError(res, "delete document")
+	}
 	return nil
+}
+
+// ES 查询结构体，替代嵌套 map[string]interface{}
+type esSearchBody struct {
+	Query   *esBoolQuery         `json:"query,omitempty"`
+	Size    int                  `json:"size,omitempty"`
+	From    int                  `json:"from,omitempty"`
+	Sort    []esSortField        `json:"sort,omitempty"`
+	Suggest *esSuggest           `json:"suggest,omitempty"`
+	Track   *esTrackTotalHits    `json:"track_total_hits,omitempty"`
+}
+
+type esBoolQuery struct {
+	Bool *esBoolClauses `json:"bool,omitempty"`
+}
+
+type esBoolClauses struct {
+	Must    []interface{} `json:"must,omitempty"`
+	Filter  []interface{} `json:"filter,omitempty"`
+	Should  []interface{} `json:"should,omitempty"`
+}
+
+type esSortField struct {
+	Field string
+	Order string
+}
+
+func (s esSortField) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]interface{}{
+		s.Field: map[string]string{"order": s.Order},
+	})
+}
+
+type esSuggest struct {
+	Suggest *esSuggestConfig `json:"suggest,omitempty"`
+}
+
+type esSuggestConfig struct {
+	Prefix     string              `json:"prefix"`
+	Completion *esCompletionField  `json:"completion"`
+}
+
+type esCompletionField struct {
+	Field string `json:"field"`
+	Size  int    `json:"size"`
+}
+
+type esTrackTotalHits struct {
+	TrackTotalHits interface{} `json:"track_total_hits"`
+}
+
+type esTermQuery struct {
+	Term map[string]interface{} `json:"term"`
+}
+
+type esTermsQuery struct {
+	Terms map[string]interface{} `json:"terms"`
+}
+
+type esMatchQuery struct {
+	Match map[string]interface{} `json:"match"`
+}
+
+type esMultiMatchQuery struct {
+	MultiMatch map[string]interface{} `json:"multi_match"`
+}
+
+type esRangeQuery struct {
+	Range map[string]interface{} `json:"range"`
+}
+
+type esFunctionScoreQuery struct {
+	FunctionScore *esFunctionScore `json:"function_score"`
+}
+
+type esFunctionScore struct {
+	Query     interface{}   `json:"query"`
+	Functions []esFunction `json:"functions,omitempty"`
+	ScoreMode string       `json:"score_mode"`
+}
+
+type esFunction struct {
+	Filter      interface{}   `json:"filter,omitempty"`
+	Weight      *int          `json:"weight,omitempty"`
+	ScriptScore *esScriptScore `json:"script_score,omitempty"`
+}
+
+type esScriptScore struct {
+	Script *esScript `json:"script"`
+}
+
+type esScript struct {
+	Source string `json:"source"`
 }

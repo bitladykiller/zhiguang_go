@@ -1,17 +1,14 @@
 package counter
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
-	"os/exec"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
@@ -22,9 +19,8 @@ func TestTogglePublishFailureMarksDirty(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")}, nil)
 	recorder := &stubCounterFailureRecorder{}
-	svc.SetFailureRecorder(recorder, "counter-events")
+	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")}, nil, recorder, "counter-events", nil, nil)
 	ctx := context.Background()
 	entityType := "knowpost"
 	entityID := "42"
@@ -64,8 +60,7 @@ func TestTogglePublishesSnowflakeMessageID(t *testing.T) {
 	defer shutdown()
 
 	publisher := &stubCapturingCounterPublisher{published: make(chan *CounterEvent, 1)}
-	svc := NewCounterService(rdb, publisher, nil)
-	svc.SetMessageIDGenerator(stubMessageIDGenerator{next: 987654321})
+	svc := NewCounterService(rdb, publisher, nil, nil, "", stubMessageIDGenerator{next: 987654321}, nil)
 
 	changed, err := svc.Like(context.Background(), 1001, "knowpost", "66")
 	if err != nil {
@@ -96,14 +91,11 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 	entityID := "99"
 	cntKey := SdsKey(entityType, entityID)
 
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 5)
-	writeInt32BE(raw, IdxFav*FieldSize, 1)
-	if err := rdb.Set(ctx, cntKey, raw, 0).Err(); err != nil {
+	if err := rdb.HSet(ctx, cntKey, "like", 5, "fav", 1).Err(); err != nil {
 		t.Fatalf("seed sds: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
 	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
 	batch := newCounterBatch(2)
 	if err := batch.add(mustCounterMessageAt(t, 3, 10, CounterEvent{
@@ -128,15 +120,13 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 		t.Fatalf("apply batch: %v", err)
 	}
 
-	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
-	if err != nil {
-		t.Fatalf("get sds after apply: %v", err)
+	likeVal, _ := rdb.HGet(ctx, cntKey, "like").Int64()
+	if likeVal != 7 {
+		t.Fatalf("unexpected like count after apply: got=%d want=7", likeVal)
 	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
-		t.Fatalf("unexpected like count after apply: got=%d want=7", got)
-	}
-	if got := readInt32BE(gotRaw, IdxFav*FieldSize); got != 0 {
-		t.Fatalf("unexpected fav count after apply: got=%d want=0", got)
+	favVal, _ := rdb.HGet(ctx, cntKey, "fav").Int64()
+	if favVal != 0 {
+		t.Fatalf("unexpected fav count after apply: got=%d want=0", favVal)
 	}
 
 	offset, err := rdb.Get(ctx, AppliedOffsetKey("counter-group", "counter-events", 3)).Int64()
@@ -164,7 +154,7 @@ func TestApplyBatchSkipsAlreadyAppliedPrefix(t *testing.T) {
 		t.Fatalf("seed applied offset: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
 	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
 	batch := newCounterBatch(4)
 	for offset := int64(9); offset <= 12; offset++ {
@@ -183,12 +173,9 @@ func TestApplyBatchSkipsAlreadyAppliedPrefix(t *testing.T) {
 		t.Fatalf("apply batch with replayed prefix: %v", err)
 	}
 
-	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
-	if err != nil {
-		t.Fatalf("get sds after replayed prefix: %v", err)
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 2 {
-		t.Fatalf("unexpected like count after replayed prefix: got=%d want=2", got)
+	likeVal, _ := rdb.HGet(ctx, cntKey, "like").Int64()
+	if likeVal != 2 {
+		t.Fatalf("unexpected like count after replayed prefix: got=%d want=2", likeVal)
 	}
 
 	offset, err := rdb.Get(ctx, offsetKey).Int64()
@@ -210,7 +197,7 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 	entityType := "knowpost"
 	entityID := "77"
 
-	svc := NewCounterService(rdb, nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
 	if _, err := svc.Like(ctx, 1001, entityType, entityID); err != nil {
 		t.Fatalf("like first user: %v", err)
 	}
@@ -218,9 +205,8 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 		t.Fatalf("like second user: %v", err)
 	}
 
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 9)
-	if err := rdb.Set(ctx, SdsKey(entityType, entityID), raw, 0).Err(); err != nil {
+	// Seed wrong SDS value
+	if err := rdb.HSet(ctx, SdsKey(entityType, entityID), "like", 9).Err(); err != nil {
 		t.Fatalf("seed wrong sds: %v", err)
 	}
 	if err := svc.markDirty(ctx, entityType, entityID); err != nil {
@@ -232,12 +218,9 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 		t.Fatalf("repair dirty member: %v", err)
 	}
 
-	gotRaw, err := rdb.Get(ctx, SdsKey(entityType, entityID)).Bytes()
-	if err != nil {
-		t.Fatalf("get repaired sds: %v", err)
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 2 {
-		t.Fatalf("unexpected like count after repair: got=%d want=2", got)
+	likeVal, _ := rdb.HGet(ctx, SdsKey(entityType, entityID), "like").Int64()
+	if likeVal != 2 {
+		t.Fatalf("unexpected like count after repair: got=%d want=2", likeVal)
 	}
 
 	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
@@ -260,15 +243,12 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 	entityID := "108"
 	cntKey := SdsKey(entityType, entityID)
 
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 5)
-	if err := rdb.Set(ctx, cntKey, raw, 0).Err(); err != nil {
+	if err := rdb.HSet(ctx, cntKey, "like", 5).Err(); err != nil {
 		t.Fatalf("seed sds: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil)
 	recorder := &stubCounterFailureRecorder{}
-	svc.SetFailureRecorder(recorder, "counter-events")
+	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil)
 	commitCalls := 0
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -305,12 +285,9 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 		t.Fatalf("expected batch to be reset after flush attempts")
 	}
 
-	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
-	if err != nil {
-		t.Fatalf("get sds after retries: %v", err)
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
-		t.Fatalf("unexpected like count after retries: got=%d want=7", got)
+	likeVal, _ := rdb.HGet(ctx, cntKey, "like").Int64()
+	if likeVal != 7 {
+		t.Fatalf("unexpected like count after retries: got=%d want=7", likeVal)
 	}
 
 	offset, err := rdb.Get(ctx, AppliedOffsetKey("counter-group", "counter-events", 1)).Int64()
@@ -336,15 +313,12 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 	entityID := "109"
 	cntKey := SdsKey(entityType, entityID)
 
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 5)
-	if err := rdb.Set(ctx, cntKey, raw, 0).Err(); err != nil {
+	if err := rdb.HSet(ctx, cntKey, "like", 5).Err(); err != nil {
 		t.Fatalf("seed sds: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil)
 	recorder := &stubCounterFailureRecorder{}
-	svc.SetFailureRecorder(recorder, "counter-events")
+	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil)
 
 	commitCalls := 0
 	consumer := &AggregationConsumer{
@@ -376,12 +350,9 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 		t.Fatalf("unexpected commit attempts: got=%d want=3", commitCalls)
 	}
 
-	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
-	if err != nil {
-		t.Fatalf("get sds after failed retries: %v", err)
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
-		t.Fatalf("unexpected like count after failed retries: got=%d want=7", got)
+	likeVal, _ := rdb.HGet(ctx, cntKey, "like").Int64()
+	if likeVal != 7 {
+		t.Fatalf("unexpected like count after failed retries: got=%d want=7", likeVal)
 	}
 
 	offset, err := rdb.Get(ctx, AppliedOffsetKey("counter-group", "counter-events", 4)).Int64()
@@ -419,7 +390,7 @@ type stubCounterPublisher struct {
 	err error
 }
 
-func (p *stubCounterPublisher) Publish(event *CounterEvent) error {
+func (p *stubCounterPublisher) Publish(ctx context.Context, event *CounterEvent) error {
 	return p.err
 }
 
@@ -427,7 +398,7 @@ type stubCapturingCounterPublisher struct {
 	published chan *CounterEvent
 }
 
-func (p *stubCapturingCounterPublisher) Publish(event *CounterEvent) error {
+func (p *stubCapturingCounterPublisher) Publish(ctx context.Context, event *CounterEvent) error {
 	if p != nil && p.published != nil {
 		p.published <- cloneCounterEvent(event)
 	}
@@ -460,6 +431,14 @@ func (r *stubCounterFailureRecorder) CreateBatch(ctx context.Context, messages [
 	for _, message := range messages {
 		r.records = append(r.records, cloneCounterFailedMessage(message))
 	}
+	return nil
+}
+
+func (r *stubCounterFailureRecorder) ListPending(ctx context.Context, limit, offset int) ([]*CounterFailedMessage, error) {
+	return nil, nil
+}
+
+func (r *stubCounterFailureRecorder) UpdateStatus(ctx context.Context, id uint64, status, errorMessage string) error {
 	return nil
 }
 
@@ -527,63 +506,73 @@ func waitForCondition(t *testing.T, timeout time.Duration, fn func() bool) {
 func startTestRedis(t *testing.T) (*redis.Client, func()) {
 	t.Helper()
 
-	port := reservePort(t)
-	dataDir := t.TempDir()
-	cmd := exec.Command(
-		"redis-server",
-		"--save", "",
-		"--appendonly", "no",
-		"--bind", "127.0.0.1",
-		"--port", strconv.Itoa(port),
-		"--dir", dataDir,
-	)
-
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start redis-server: %v", err)
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
 	}
 
-	addr := "127.0.0.1:" + strconv.Itoa(port)
-	client := redis.NewClient(&redis.Options{Addr: addr})
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if err := client.Ping(context.Background()).Err(); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			_ = client.Close()
-			t.Fatalf("redis-server did not become ready: %s", output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 
 	return client, func() {
-		_ = client.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
+		client.Close()
+		mr.Close()
 	}
 }
 
-func reservePort(t *testing.T) int {
-	t.Helper()
+func TestGetCounts(t *testing.T) {
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	svc := NewCounterService(rdb, &stubCounterPublisher{}, nil, nil, "", nil, nil)
+	ctx := context.Background()
+
+	_, err := svc.Like(ctx, 1001, "knowpost", "42")
 	if err != nil {
-		t.Fatalf("reserve tcp port: %v", err)
+		t.Fatalf("like: %v", err)
 	}
-	defer ln.Close()
 
-	addr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("unexpected addr type: %T", ln.Addr())
+	counts, err := svc.GetCounts(ctx, "knowpost", "42", []string{"like", "fav"})
+	if err != nil {
+		t.Fatalf("get counts: %v", err)
 	}
-	return addr.Port
+	if counts["like"] != 1 {
+		t.Fatalf("expected like=1, got %d", counts["like"])
+	}
+	if counts["fav"] != 0 {
+		t.Fatalf("expected fav=0, got %d", counts["fav"])
+	}
+
+	emptyCounts, err := svc.GetCounts(ctx, "knowpost", "999", []string{"like"})
+	if err != nil {
+		t.Fatalf("get counts for non-existent: %v", err)
+	}
+	if emptyCounts["like"] != 0 {
+		t.Fatalf("expected like=0 for non-existent, got %d", emptyCounts["like"])
+	}
+}
+
+func TestBatchIsLiked(t *testing.T) {
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	svc := NewCounterService(rdb, &stubCounterPublisher{}, nil, nil, "", nil, nil)
+	ctx := context.Background()
+
+	svc.Like(ctx, 1001, "knowpost", "42")
+	svc.Like(ctx, 1001, "knowpost", "43")
+	svc.Like(ctx, 1002, "knowpost", "42")
+
+	liked, err := svc.BatchIsLiked(ctx, 1001, "knowpost", []string{"42", "43", "44"})
+	if err != nil {
+		t.Fatalf("batch is liked: %v", err)
+	}
+	if !liked["42"] {
+		t.Fatalf("expected 42 to be liked")
+	}
+	if !liked["43"] {
+		t.Fatalf("expected 43 to be liked")
+	}
+	if liked["44"] {
+		t.Fatalf("expected 44 not to be liked")
+	}
 }

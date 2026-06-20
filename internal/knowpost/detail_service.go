@@ -3,16 +3,52 @@ package knowpost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strconv"
 	"time"
 
 	"github.com/zhiguang/app/pkg/errcode"
-	"github.com/zhiguang/app/pkg/redislock"
+	"github.com/zhiguang/app/pkg/jsonutil"
+	"go.uber.org/zap"
+)
+
+const (
+	l1DetailCacheTTL    = 60
+	nullCacheTTLBase    = 30
+	nullCacheJitter     = 31
+	l2DetailTTLBase     = 60
+	l2DetailJitter      = 31
+	ttlLow              = 30
+	ttlMedium           = 60
+	ttlHigh             = 300
 )
 
 // --- [详情读取链路] --- //
+
+// detailCacheKey 构造知文详情页的缓存键，并返回当前版本号。
+//
+// 功能：缓存键格式为 "knowpost:detail:{id}:v{detailLayoutVer}:ver{postVersion}"。
+//   - detailLayoutVer 是全局布局版本号，用于整体爆破缓存。
+//   - postVersion 是每个知文独立的版本号，每次写操作递增。
+//     当多实例部署时，某实例执行写操作会 INCR 该版本号，
+//     其他实例 L1 中的旧版本键自然失效（键不匹配）。
+//
+// 参数：
+//   - ctx: context.Context，用于 Redis 操作。
+//   - id: uint64，知文 ID。
+//
+// 返回值：
+//   - string: 缓存键字符串。
+//   - int64: 当前版本号（读取时使用）。
+func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) (string, int64) {
+	version, err := s.redis.Get(ctx, fmt.Sprintf("knowpost:ver:%d", id)).Int64()
+	if err != nil {
+		version = detailLayoutVer
+	}
+	return fmt.Sprintf("knowpost:detail:%d:v%d:ver%d", id, detailLayoutVer, version), version
+}
 
 // GetDetail 返回知文详情，并补充当前用户维度的点赞/收藏状态。
 //
@@ -43,6 +79,7 @@ import (
 //   - 已删除（deleted）→ 返回 404
 //
 // 参数：
+//   - ctx: context.Context，用于传递请求上下文和控制超时。
 //   - id: uint64，知文的雪花 ID。
 //   - currentUserID: *uint64，当前正在请求的用户 ID（可选）。
 //     传 nil 表示未登录，此时无法获得点赞/收藏状态和私有内容的查看权限。
@@ -51,15 +88,16 @@ import (
 //   - *KnowPostDetailResponse: 详情响应，包含标题、描述、内容 URL、作者信息、计数等。
 //   - error: 错误对象。可能的值包括 errcode.ErrNotFound（内容不存在/已删除）、
 //     errcode.ErrForbidden（无权限查看）。
-func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
-	ctx := context.Background()
-	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
+func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
+	pageKey, _ := s.detailCacheKey(ctx, id)
 
 	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {
-		s.recordHotKeyAndExtendTTL(id, pageKey)
+		if s.hotKey != nil {
+			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
+		}
 		resp, parseErr := s.parseDetail(val)
 		if parseErr == nil {
-			return s.enrichDetail(ctx, resp, currentUserID, true), nil
+			return s.enrichDetail(ctx, resp, currentUserID, false), nil
 		}
 	}
 
@@ -68,8 +106,10 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 		if cached == "NULL" {
 			return nil, errcode.ErrNotFound.WithMsg("content not found")
 		}
-		s.l1Cache.Set([]byte(pageKey), []byte(cached), 60)
-		s.recordHotKeyAndExtendTTL(id, pageKey)
+		s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
+		if s.hotKey != nil {
+			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
+		}
 		resp, parseErr := s.parseDetail([]byte(cached))
 		if parseErr == nil {
 			return s.enrichDetail(ctx, resp, currentUserID, true), nil
@@ -77,6 +117,36 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 	}
 
 	return s.getDetailUnderLock(ctx, id, pageKey, currentUserID)
+}
+
+func (s *KnowPostService) queryDetailFromDB(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
+	row, err := s.repo.FindDetailByID(ctx, id)
+	if err != nil || row == nil || row.Status == KnowPostStatusDeleted {
+		return nil, errcode.ErrNotFound.WithMsg("content not found")
+	}
+
+	isPublic := row.Status == KnowPostStatusPublished && row.Visible == KnowPostVisibilityPublic
+	isOwner := currentUserID != nil && *currentUserID == row.CreatorID
+	if !isPublic && !isOwner {
+		return nil, errcode.ErrForbidden.WithMsg("no permission to view")
+	}
+
+	return &KnowPostDetailResponse{
+		ID:             strconv.FormatUint(row.ID, 10),
+		Title:          row.Title,
+		Description:    row.Description,
+		ContentUrl:     row.ContentUrl,
+		Images:         jsonutil.ParseStringArray(row.ImgUrls),
+		Tags:           jsonutil.ParseStringArray(row.Tags),
+		AuthorID:       strconv.FormatUint(row.CreatorID, 10),
+		AuthorAvatar:   row.AuthorAvatar,
+		AuthorNickname: row.AuthorNickname,
+		AuthorTagJson:  row.AuthorTagJson,
+		IsTop:          row.IsTop,
+		Visible:        string(row.Visible),
+		Type:           row.Type,
+		PublishTime:    row.PublishTime,
+	}, nil
 }
 
 // getDetailUnderLock 在 Redis 看门狗分布式锁保护下从 MySQL 回源查询详情。
@@ -111,90 +181,67 @@ func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPost
 //   - error: errcode.ErrNotFound（内容不存在或已删除）或 errcode.ErrForbidden（无权限）。
 func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pageKey string, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	lockKey := "lock:" + pageKey
-	for {
-		lock, locked, err := redislock.TryAcquire(ctx, s.redis, lockKey, knowPostLockOptions())
-		if err != nil {
-			return nil, err
-		}
-
-		if !locked {
+	return cacheReadThrough(ctx, s.redis, lockKey,
+		func(ctx context.Context) (*KnowPostDetailResponse, bool, error) {
 			cached, _ := s.redis.Get(ctx, pageKey).Result()
 			if cached == "NULL" {
-				return nil, errcode.ErrNotFound.WithMsg("content not found")
+				return nil, false, errcode.ErrNotFound.WithMsg("content not found")
 			}
 			if cached != "" {
 				resp, parseErr := s.parseDetail([]byte(cached))
 				if parseErr == nil {
-					s.l1Cache.Set([]byte(pageKey), []byte(cached), 60)
-					return s.enrichDetail(ctx, resp, currentUserID, true), nil
+					s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
+					return s.enrichDetail(ctx, resp, currentUserID, true), true, nil
 				}
 			}
-			if !sleepDistributedLockRetry(ctx) {
-				return nil, ctx.Err()
+			return nil, false, nil
+		},
+		func(ctx context.Context) (*KnowPostDetailResponse, error) {
+			if s.repo == nil {
+				ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
+				s.redis.Set(ctx, pageKey, "NULL", ttl)
+				return nil, errcode.ErrNotFound.WithMsg("content not found")
 			}
-			continue
-		}
-
-		defer lock.Release()
-
-		cached, _ := s.redis.Get(ctx, pageKey).Result()
-		if cached == "NULL" {
-			return nil, errcode.ErrNotFound.WithMsg("content not found")
-		}
-		if cached != "" {
-			resp, err := s.parseDetail([]byte(cached))
-			if err == nil {
-				return s.enrichDetail(ctx, resp, currentUserID, true), nil
+			resp, err := s.queryDetailFromDB(ctx, id, currentUserID)
+			if err != nil {
+				if errors.Is(err, errcode.ErrNotFound) {
+					ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
+					s.redis.Set(ctx, pageKey, "NULL", ttl)
+				}
+				return nil, err
 			}
-		}
-
-		row, err := s.repo.FindDetailByID(ctx, id)
-		if err != nil || row == nil || row.Status == "deleted" {
-			ttl := time.Duration(30+rand.Intn(31)) * time.Second
-			s.redis.Set(ctx, pageKey, "NULL", ttl)
-			return nil, errcode.ErrNotFound.WithMsg("content not found")
-		}
-
-		isPublic := row.Status == "published" && row.Visible == "public"
-		isOwner := currentUserID != nil && *currentUserID == row.CreatorID
-		if !isPublic && !isOwner {
-			return nil, errcode.ErrForbidden.WithMsg("no permission to view")
-		}
-
-		resp := &KnowPostDetailResponse{
-			ID:             strconv.FormatUint(row.ID, 10),
-			Title:          row.Title,
-			Description:    row.Description,
-			ContentUrl:     row.ContentUrl,
-			Images:         parseStringArray(row.ImgUrls),
-			Tags:           parseStringArray(row.Tags),
-			AuthorID:       strconv.FormatUint(row.CreatorID, 10),
-			AuthorAvatar:   row.AuthorAvatar,
-			AuthorNickname: row.AuthorNickname,
-			AuthorTagJson:  row.AuthorTagJson,
-			IsTop:          row.IsTop,
-			Visible:        row.Visible,
-			Type:           row.Type,
-			PublishTime:    row.PublishTime,
-		}
 
 		if s.counter != nil {
-			counts, _ := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
-			resp.LikeCount = int64(counts["like"])
-			resp.FavoriteCount = int64(counts["fav"])
-		}
+				idStr := strconv.FormatUint(id, 10)
+				counts, err := s.counter.GetCounts(ctx, "knowpost", idStr, []string{"like", "fav"})
+				if err != nil {
+					s.logger.Warn("failed to get detail counts", zap.Uint64("knowpostID", id), zap.Error(err))
+				} else {
+					resp.LikeCount = int64(counts["like"])
+					resp.FavoriteCount = int64(counts["fav"])
+				}
+			}
 
-		jsonBytes, _ := json.Marshal(resp)
-		baseTTL := 60 + rand.Intn(31)
-		targetTTL := s.hotKey.TtlForPublic(baseTTL, pageKey)
-		if targetTTL < baseTTL {
-			targetTTL = baseTTL
-		}
-		s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
-		s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
+			jsonBytes, err := json.Marshal(resp)
+			if err != nil {
+				return s.enrichDetail(ctx, resp, currentUserID, false), nil
+			}
+			idStr := strconv.FormatUint(id, 10)
+			baseTTL := l2DetailTTLBase + rand.Intn(l2DetailJitter)
+			hotKeyID := fmt.Sprintf("knowpost:%s", idStr)
+			targetTTL := baseTTL
+			if s.hotKey != nil {
+				targetTTL = s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
+			}
+			s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
+			s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
+			if s.hotKey != nil {
+				s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
+			}
 
-		return s.enrichDetail(ctx, resp, currentUserID, false), nil
-	}
+			return s.enrichDetail(ctx, resp, currentUserID, false), nil
+		},
+	)
 }
 
 // enrichDetail 在基础详情上叠加实时计数和当前用户的点赞/收藏状态。
@@ -228,42 +275,34 @@ func (s *KnowPostService) enrichDetail(ctx context.Context, base *KnowPostDetail
 	}
 
 	if refreshCounts {
-		counts, _ := s.counter.GetCounts(ctx, "knowpost", base.ID, []string{"like", "fav"})
-		if counts != nil {
+		counts, err := s.counter.GetCounts(ctx, "knowpost", base.ID, []string{"like", "fav"})
+		if err != nil {
+			s.logger.Warn("failed to enrich detail counts", zap.String("knowpostID", base.ID), zap.Error(err))
+		} else if counts != nil {
 			base.LikeCount = int64(counts["like"])
 			base.FavoriteCount = int64(counts["fav"])
 		}
 	}
 
 	if currentUserID != nil {
-		liked, _ := s.counter.IsLiked(ctx, *currentUserID, "knowpost", base.ID)
-		faved, _ := s.counter.IsFaved(ctx, *currentUserID, "knowpost", base.ID)
-		base.Liked = &liked
-		base.Faved = &faved
+		liked, err := s.counter.IsLiked(ctx, *currentUserID, "knowpost", base.ID)
+		if err != nil {
+			s.logger.Warn("failed to check IsLiked in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
+		} else {
+			base.Liked = &liked
+		}
+		faved, err := s.counter.IsFaved(ctx, *currentUserID, "knowpost", base.ID)
+		if err != nil {
+			s.logger.Warn("failed to check IsFaved in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
+		} else {
+			base.Faved = &faved
+		}
 	}
 
 	return base
 }
 
 // parseDetail 将 JSON 字节序列反序列化为 KnowPostDetailResponse。
-//
-// 功能：从缓存字节流解析详情结构体。在 L1（freecache）和 L2（Redis）缓存中，
-// 详情数据以 JSON 字符串形式存储，此方法负责将其还原为 Go 结构体。
-//
-// 参数：
-//   - data: []byte，从缓存读出的 JSON 字节数据。
-//
-// 返回值：
-//   - *KnowPostDetailResponse: 反序列化成功后的详情对象。
-//   - error: 如果 JSON 格式错误（例如缓存数据损坏）则返回解析错误。
-//
-// 边界情况：
-//   - data 为空或格式非法：返回 nil 和 err，调用方会忽略此缓存数据，继续查下一层缓存或回源 DB。
-//   - 不 panic：即使 data 格式完全破坏，也只是返回 nil + error，不会导致服务崩溃。
 func (s *KnowPostService) parseDetail(data []byte) (*KnowPostDetailResponse, error) {
-	var resp KnowPostDetailResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
+	return parseJSON[*KnowPostDetailResponse](data)
 }

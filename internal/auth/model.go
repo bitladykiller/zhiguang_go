@@ -11,32 +11,12 @@ package auth
 import (
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/zhiguang/app/internal/model"
 )
 
-// ============================================================================
-// 数据模型
-// ============================================================================
-
-// User 映射到 users 表。
-// PasswordHash 出于安全考虑不会参与 JSON 序列化（json:"-"）。
-// 指针字段表示数据库中允许为 NULL 的列。
-type User struct {
-	ID           uint64     `db:"id" json:"id"`
-	Phone        *string    `db:"phone" json:"phone,omitempty"`
-	Email        *string    `db:"email" json:"email,omitempty"`
-	PasswordHash *string    `db:"password_hash" json:"-"`
-	Nickname     string     `db:"nickname" json:"nickname"`
-	Avatar       *string    `db:"avatar" json:"avatar,omitempty"`
-	Bio          *string    `db:"bio" json:"bio,omitempty"`
-	ZgId         *string    `db:"zg_id" json:"zg_id,omitempty"`
-	Gender       *string    `db:"gender" json:"gender,omitempty"`
-	Birthday     *time.Time `db:"birthday" json:"birthday,omitempty"`
-	School       *string    `db:"school" json:"school,omitempty"`
-	TagsJson     *string    `db:"tags_json" json:"tags_json,omitempty"`
-	CreatedAt    time.Time  `db:"created_at" json:"created_at"`
-	UpdatedAt    time.Time  `db:"updated_at" json:"updated_at"`
-}
+// User 映射到 users 表，类型别名指向共享模型。
+// PasswordHash 出于安全考虑不会参与 JSON 序列化（model.User 中已标记 json:"-"）。
+type User = model.User
 
 // LoginLog 映射到登录审计表 login_logs。
 type LoginLog struct {
@@ -129,19 +109,3 @@ type TokenPair struct {
 	RefreshTokenExpiresAt time.Time `json:"refresh_token_expires_at"`
 	RefreshTokenID        string    `json:"-"`
 }
-
-// JwtClaims 在 jwt.RegisteredClaims 基础上扩展了业务字段。
-// UID 与 TokenKind 是内部字段名；JSON tag 仍保持为 "uid" 与 "token_type"，
-// 以兼容现有 JWT 协议格式。UserID() 与 TokenType() 用于实现 middleware.TokenClaims。
-type JwtClaims struct {
-	jwt.RegisteredClaims
-	UID       uint64 `json:"uid"`
-	TokenKind string `json:"token_type"`
-	Nickname  string `json:"nickname,omitempty"`
-}
-
-// UserID 返回内嵌的用户 ID，用于实现 middleware.TokenClaims。
-func (c *JwtClaims) UserID() uint64 { return c.UID }
-
-// TokenType 返回令牌类型字符串，用于实现 middleware.TokenClaims。
-func (c *JwtClaims) TokenType() string { return c.TokenKind }

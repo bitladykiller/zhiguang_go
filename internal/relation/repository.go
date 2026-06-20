@@ -12,6 +12,13 @@ type RelationRepository struct {
 	db sqlx.ExtContext
 }
 
+// NewRelationRepository 创建 RelationRepository 实例。
+//
+// 参数:
+//   - db: sqlx.ExtContext，支持 *sqlx.DB 或 *sqlx.Tx
+//
+// 返回值:
+//   - *RelationRepository: 已初始化的仓储实例
 func NewRelationRepository(db sqlx.ExtContext) *RelationRepository {
 	return &RelationRepository{db: db}
 }
@@ -115,13 +122,4 @@ ORDER BY created_at DESC
 LIMIT ? OFFSET ?
 `, userID, limit, offset)
 	return rows, err
-}
-
-// InsertOutbox 写入 outbox 事件消息，使用 ExecContext。
-func (r *RelationRepository) InsertOutbox(ctx context.Context, id uint64, aggType string, aggID *uint64, eventType, payload string) error {
-	_, err := r.db.ExecContext(ctx,
-		"INSERT INTO outbox (id, aggregate_type, aggregate_id, type, payload) VALUES (?, ?, ?, ?, ?)",
-		id, aggType, aggID, eventType, payload,
-	)
-	return err
 }

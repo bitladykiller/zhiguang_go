@@ -2,9 +2,7 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"regexp"
 	"strings"
 	"time"
@@ -14,7 +12,13 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/redislock"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
+)
+
+var (
+	phoneRegex = regexp.MustCompile(`^1[3-9]\d{9}$`)
+	emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 )
 
 // AuthService 编排整个鉴权域的业务流程：
@@ -32,6 +36,8 @@ type AuthService struct {
 	cfg                  *config.AuthConfig
 	refreshLockOptions   redislock.Options
 	refreshLockRetryWait time.Duration
+	refreshLockTimeout   time.Duration
+	logger               *zap.Logger
 }
 
 // NewAuthService 使用完整依赖创建 AuthService。
@@ -50,7 +56,11 @@ func NewAuthService(
 	tokenStore RefreshTokenStore,
 	redisClient *redis.Client,
 	cfg *config.AuthConfig,
+	logger *zap.Logger,
 ) *AuthService {
+	if logger == nil {
+		logger = zap.L()
+	}
 	return &AuthService{
 		repo:                 repo,
 		verifSvc:             verifSvc,
@@ -60,6 +70,8 @@ func NewAuthService(
 		cfg:                  cfg,
 		refreshLockOptions:   refreshSessionLockOptions(cfg),
 		refreshLockRetryWait: refreshSessionRetryInterval(cfg),
+		refreshLockTimeout:   refreshSessionLockTimeout(cfg),
+		logger:               logger,
 	}
 }
 
@@ -171,7 +183,7 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 	}
 
 	user := &User{
-		Nickname:     generateNickname(),
+		Nickname:     generateNickname(s.logger),
 		PasswordHash: passwordHash,
 	}
 	switch req.IdentifierType {
@@ -190,7 +202,7 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
 	}
 
-	if err := s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
 	}
 	s.recordLoginLog(ctx, user.ID, normalized, "REGISTER", LoginStatusSuccess, clientInfo)
@@ -266,7 +278,7 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
 	}
 
-	if err := s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
 	}
 	s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusSuccess, clientInfo)
@@ -311,16 +323,16 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 	if !ok || jwtClaims.TokenKind != "refresh" {
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
 	}
-	lock, appErr := s.acquireRefreshSessionLock(ctx, jwtClaims.UID)
+	_, release, appErr := s.acquireRefreshSessionLock(ctx, jwtClaims.UID)
 	if appErr != nil {
 		return AuthResponse{}, appErr
 	}
-	defer lock.Release()
-	if !s.tokenStore.IsTokenValid(jwtClaims.UID, jwtClaims.ID) {
+	defer release()
+	if !s.tokenStore.IsTokenValid(ctx, jwtClaims.UID, jwtClaims.ID) {
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
 	}
 
-	if err := s.tokenStore.RevokeToken(jwtClaims.UID, jwtClaims.ID); err != nil {
+	if err := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to revoke refresh token")
 	}
 
@@ -333,7 +345,7 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 	if err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
 	}
-	if err := s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
 	}
 
@@ -350,13 +362,15 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 //
 // 参数：
 //   - req: 包含需要吊销的 refresh token 的请求
-func (s *AuthService) Logout(_ context.Context, req *TokenRefreshRequest) {
+func (s *AuthService) Logout(ctx context.Context, req *TokenRefreshRequest) {
 	claims, err := s.jwtSvc.ValidateToken(req.RefreshToken)
 	if err != nil || claims.TokenType() != "refresh" {
 		return
 	}
 	if jwtClaims, ok := claims.(*JwtClaims); ok {
-		s.tokenStore.RevokeToken(jwtClaims.UID, jwtClaims.ID)
+		if err := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); err != nil {
+			s.logger.Warn("failed to revoke refresh token during logout", zap.Uint64("userID", jwtClaims.UID), zap.String("tokenID", jwtClaims.ID), zap.Error(err))
+		}
 	}
 }
 
@@ -402,16 +416,16 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 		return errcode.ErrInternal.WithMsg("failed to hash password")
 	}
 
-	lock, appErr := s.acquireRefreshSessionLock(ctx, user.ID)
+	_, release, appErr := s.acquireRefreshSessionLock(ctx, user.ID)
 	if appErr != nil {
 		return appErr
 	}
-	defer lock.Release()
+	defer release()
 
 	if err := s.repo.UpdatePassword(ctx, user.ID, string(hash)); err != nil {
 		return errcode.ErrInternal.WithMsg("failed to update password")
 	}
-	if err := s.tokenStore.RevokeAll(user.ID); err != nil {
+	if err := s.tokenStore.RevokeAll(ctx, user.ID); err != nil {
 		return errcode.ErrInternal.WithMsg("failed to revoke refresh tokens")
 	}
 	return nil
@@ -422,25 +436,34 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 // WHY 抽成单独辅助函数：
 //   - Refresh 与 ResetPassword 需要共享同一把 user 级别锁，避免策略漂移。
 //   - 错误统一映射为内部错误，业务流程只关注“是否拿到锁”。
-func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint64) (*redislock.Lock, *errcode.AppError) {
+func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint64) (*redislock.Lock, context.CancelFunc, *errcode.AppError) {
 	if s.redis == nil {
-		return nil, errcode.ErrInternal.WithMsg("redis client is unavailable")
+		return nil, nil, errcode.ErrInternal.WithMsg("redis client is unavailable")
 	}
-	if ctx == nil {
-		ctx = context.Background()
+
+	acquireCtx := ctx
+	var cancel context.CancelFunc
+	if s.refreshLockTimeout > 0 {
+		acquireCtx, cancel = context.WithTimeout(ctx, s.refreshLockTimeout)
 	}
 
 	lock, err := redislock.AcquireWithRetry(
-		ctx,
+		acquireCtx,
 		s.redis,
 		refreshSessionLockKey(userID),
 		s.refreshLockOptions,
 		s.refreshLockRetryWait,
+		s.logger,
 	)
-	if err != nil {
-		return nil, errcode.ErrInternal.WithMsg("failed to acquire refresh session lock")
+	if cancel != nil {
+		cancel()
 	}
-	return lock, nil
+	if err != nil {
+		return nil, nil, errcode.ErrInternal.WithMsg("failed to acquire refresh session lock")
+	}
+	return lock, func() {
+		lock.Release()
+	}, nil
 }
 
 // CurrentUser 返回当前登录用户的资料。
@@ -500,21 +523,17 @@ func (s *AuthService) recordLoginLog(ctx context.Context, userID uint64, identif
 //   - 邮箱不匹配标准邮箱正则
 //
 // 函数调用说明：
-//   - regexp.MatchString(pattern, s):
-//     Go 的 regexp 包。检查字符串 s 是否匹配正则表达式 pattern。
-//     注意：该函数会编译正则，每次调用都编译。在生产热门路径上
-//     应该使用 regexp.MustCompile 预编译以提高性能。
-//     这里因为不是高频调用，所以使用了方便的 MatchString 快捷方式。
+//   - phoneRegex.MatchString(identifier):
+//     使用包级别预编译的 regexp.MustCompile 正则。
+//     预编译在包初始化时完成，避免每次调用时重新编译正则表达式。
 func validateIdentifier(idType IdentifierType, identifier string) error {
 	switch idType {
 	case IdentifierPhone:
-		matched, _ := regexp.MatchString(`^1[3-9]\d{9}$`, identifier)
-		if !matched {
+		if !phoneRegex.MatchString(identifier) {
 			return fmt.Errorf("invalid phone number format")
 		}
 	case IdentifierEmail:
-		matched, _ := regexp.MatchString(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`, identifier)
-		if !matched {
+		if !emailRegex.MatchString(identifier) {
 			return fmt.Errorf("invalid email format")
 		}
 	}
@@ -608,12 +627,16 @@ func ensureVerificationSuccess(result *VerificationCheckResult) *errcode.AppErro
 //   - charset[n.Int64()]:
 //     用生成的随机数从字符集中选出一个字符。
 //     循环 8 次，生成 8 位随机字符组成后缀。
-func generateNickname() string {
+func generateNickname(logger *zap.Logger) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	suffix := make([]byte, 8)
 	for i := range suffix {
-		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		suffix[i] = charset[n.Int64()]
+		n, err := randomInt(int64(len(charset)))
+		if err != nil {
+			logger.Warn("failed to generate secure random number for nickname", zap.Error(err))
+			n = 0
+		}
+		suffix[i] = charset[n]
 	}
 	return "知光用户" + string(suffix)
 }
@@ -628,12 +651,12 @@ func mapUserToResponse(user *User) AuthUserResponse {
 		Nickname: user.Nickname,
 		Avatar:   user.Avatar,
 		Phone:    user.Phone,
-		ZgId:     user.ZgId,
+		ZgId:     user.ZgID,
 		Birthday: user.Birthday,
 		School:   user.School,
 		Bio:      user.Bio,
 		Gender:   user.Gender,
-		TagsJson: user.TagsJson,
+		TagsJson: user.TagsJSON,
 	}
 }
 

@@ -44,5 +44,7 @@ COPY config/ ./config/
 
 EXPOSE 8080
 
+USER nobody
+
 ENTRYPOINT ["./server"]
 CMD ["-config", "config/config.yaml"]

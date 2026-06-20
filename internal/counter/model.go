@@ -51,13 +51,30 @@ const (
 	IdxPosts     = 4 // posts 槽位（文章数）
 )
 
-// NameToIdx 把指标名称映射到其在 SDS 中的槽位索引。
+// nameToIdx 把指标名称映射到其在 SDS 中的槽位索引。
 // 从 0 开始计数（IdxLike = 0、IdxFav = 1 ...），
-// Lua 脚本中会做 idx+1 转换（Lua 数组索引从 1 开始）。
-var NameToIdx = map[string]int{
+// 找不到时返回 -1。
+var nameToIdx = map[string]int{
 	"like": IdxLike, "fav": IdxFav,
 	"follower": IdxFollower, "following": IdxFollowing,
 	"posts": IdxPosts,
+}
+
+var indexToName = map[int]string{
+	IdxLike: "like", IdxFav: "fav",
+	IdxFollower: "follower", IdxFollowing: "following",
+	IdxPosts: "posts",
+}
+
+// NameToIdx 将指标名称映射到 SDS 槽位索引。
+//
+// 参数:
+//   - metric: string，指标名称（如 "like"、"fav"、"follower"、"following"、"posts"）
+//
+// 返回值:
+//   - int: 对应的 SDS 槽位索引；找不到时返回 -1
+func NameToIdx(metric string) int {
+	return nameToIdx[metric]
 }
 
 // 位图片段常量：每个分片最多容纳 65536 个用户。
@@ -78,6 +95,16 @@ func BitOf(userID uint64) uint64 { return userID % ChunkSize }
 func BitmapKey(metric, entityType, entityID string, chunk uint64) string {
 	return fmt.Sprintf("bm:%s:%s:%s:%d", metric, entityType, entityID, chunk)
 }
+// SdsKey 生成实体在 Redis 中的 SDS 正式快照键。
+//
+// 格式: "cnt:{entityType}:{entityID}"
+//
+// 参数:
+//   - entityType: string，实体类型
+//   - entityID:   string，实体 ID
+//
+// 返回值:
+//   - string: Redis 键名
 func SdsKey(entityType, entityID string) string {
 	return fmt.Sprintf("cnt:%s:%s", entityType, entityID)
 }
@@ -98,4 +125,12 @@ func ParseDirtyMember(member string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid dirty member: %s", member)
 	}
 	return parts[0], parts[1], nil
+}
+
+// RebuildMarkerKey 生成修复期间阻塞 flush 的标记键。
+//
+// 格式: "rebuilding:{entityType}:{entityID}"
+// flush 操作的 Lua 脚本会检查此键，若存在则跳过该实体的 HINCRBY。
+func RebuildMarkerKey(entityType, entityID string) string {
+	return fmt.Sprintf("rebuilding:%s:%s", entityType, entityID)
 }

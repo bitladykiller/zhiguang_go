@@ -5,6 +5,7 @@ import (
 	"database/sql"
 
 	"github.com/jmoiron/sqlx"
+	"go.uber.org/zap"
 )
 
 const authUserSelectColumns = `
@@ -21,16 +22,27 @@ const authUserSelectColumns = `
 //   - 更新密码
 //   - 记录登录审计日志
 type AuthRepository struct {
-	db sqlx.ExtContext
+	db     sqlx.ExtContext
+	logger *zap.Logger
 }
 
-func NewAuthRepository(db sqlx.ExtContext) *AuthRepository {
-	return &AuthRepository{db: db}
+// NewAuthRepository 创建 AuthRepository 实例。
+//
+// 参数:
+//   - db: sqlx.ExtContext，支持 *sqlx.DB 或 *sqlx.Tx
+//
+// 返回值:
+//   - *AuthRepository: 已初始化的仓储实例
+func NewAuthRepository(db sqlx.ExtContext, logger *zap.Logger) *AuthRepository {
+	if logger == nil {
+		logger = zap.L()
+	}
+	return &AuthRepository{db: db, logger: logger}
 }
 
 // WithDB 克隆绑定到指定 sqlx 句柄的新仓储实例，用于事务上下文。
 func (r *AuthRepository) WithDB(db sqlx.ExtContext) *AuthRepository {
-	return &AuthRepository{db: db}
+	return &AuthRepository{db: db, logger: r.logger}
 }
 
 // CreateUser 在数据库中创建新用户记录。
@@ -218,8 +230,11 @@ func (r *AuthRepository) UpdatePassword(ctx context.Context, id uint64, password
 // 边界情况:
 //   - 数据库异常时静默忽略 error（_ 丢弃），不影响调用方的登录流程
 func (r *AuthRepository) RecordLoginLog(ctx context.Context, log *LoginLog) {
-	_, _ = sqlx.NamedExecContext(ctx, r.db, `
+	_, err := sqlx.NamedExecContext(ctx, r.db, `
 INSERT INTO login_logs (user_id, identifier, channel, ip, user_agent, status)
 VALUES (:user_id, :identifier, :channel, :ip, :user_agent, :status)
 `, log)
+	if err != nil {
+		r.logger.Warn("failed to record login log", zap.Error(err))
+	}
 }

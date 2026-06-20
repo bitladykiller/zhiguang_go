@@ -10,11 +10,19 @@ import (
 // AuthHandler 负责鉴权模块的 HTTP 路由注册与请求适配。
 // 它将 HTTP 请求参数反序列化、验证后传递给 AuthService 处理，再组装响应。
 type AuthHandler struct {
-	svc    *AuthService
+	svc    AuthServiceInterface
 	jwtSvc *JwtService
 }
 
-func NewAuthHandler(svc *AuthService, jwtSvc *JwtService) *AuthHandler {
+// NewAuthHandler 创建 AuthHandler 实例。
+//
+// 参数:
+//   - svc: AuthServiceInterface 实现，负责鉴权业务逻辑
+//   - jwtSvc: JwtService 指针，用于 JWT 令牌解析路由保护规则
+//
+// 返回值:
+//   - *AuthHandler: 已初始化的 Handler 实例
+func NewAuthHandler(svc AuthServiceInterface, jwtSvc *JwtService) *AuthHandler {
 	return &AuthHandler{svc: svc, jwtSvc: jwtSvc}
 }
 
@@ -64,7 +72,7 @@ func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
 func (h *AuthHandler) SendCode(c *gin.Context) {
 	var req SendCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 
@@ -96,7 +104,7 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 
@@ -127,7 +135,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 
@@ -162,7 +170,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	var req TokenRefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 
@@ -196,7 +204,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 func (h *AuthHandler) Logout(c *gin.Context) {
 	var req TokenRefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 
@@ -227,7 +235,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	var req PasswordResetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 

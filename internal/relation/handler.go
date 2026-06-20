@@ -5,16 +5,24 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
 
 // RelationHandler 暴露关注、取关和关系列表相关 HTTP 接口。
 type RelationHandler struct {
-	svc *RelationService
+	svc RelationServiceInterface
 }
 
-func NewRelationHandler(svc *RelationService) *RelationHandler {
+// NewRelationHandler 创建 RelationHandler 实例。
+//
+// 参数:
+//   - svc: RelationServiceInterface 实现，负责关系业务逻辑
+//
+// 返回值:
+//   - *RelationHandler: 已初始化的 Handler 实例
+func NewRelationHandler(svc RelationServiceInterface) *RelationHandler {
 	return &RelationHandler{svc: svc}
 }
 
@@ -48,20 +56,21 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 	}
 	var req FollowRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 	if req.ToUserID == userID {
-		response.Fail(c, 400, "cannot follow yourself")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("cannot follow yourself"))
 		return
 	}
 	ok, err := h.svc.Follow(c.Request.Context(), userID, req.ToUserID)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	if !ok {
-		response.Fail(c, 429, "rate limited or already following")
+		response.Error(c, errcode.ErrTooManyRequests.WithMsg("rate limited or already following"))
 		return
 	}
 	response.Success(c, gin.H{"success": true})
@@ -80,12 +89,13 @@ func (h *RelationHandler) Unfollow(c *gin.Context) {
 	}
 	var req FollowRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 	ok, err := h.svc.Unfollow(c.Request.Context(), userID, req.ToUserID)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true, "changed": ok})
@@ -101,14 +111,15 @@ func (h *RelationHandler) Status(c *gin.Context) {
 		response.Error(c, errcode.ErrUnauthorized)
 		return
 	}
-	otherID, err := strconv.ParseUint(c.Query("other_id"), 10, 64)
-	if err != nil {
-		response.Fail(c, 400, "invalid other_id")
+	otherID := httputil.QueryUint64(c, "other_id", 0)
+	if otherID == 0 {
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid other_id"))
 		return
 	}
 	status, err := h.svc.RelationStatus(c.Request.Context(), userID, otherID)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"status": status})
@@ -117,14 +128,16 @@ func (h *RelationHandler) Status(c *gin.Context) {
 // Following 处理 GET /relations/following?user_id=12345&limit=20&offset=0。
 //
 // 功能：使用 offset 分页查询某用户关注的人列表。
+// 注意：此接口为公开接口，无需鉴权即可访问。
 func (h *RelationHandler) Following(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
-	limit := queryInt(c, "limit", 20)
-	offset := queryInt(c, "offset", 0)
+	limit := httputil.QueryInt(c, "limit", 20)
+	offset := httputil.QueryInt(c, "offset", 0)
 
 	data, err := h.svc.Following(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"data": data})
@@ -133,14 +146,16 @@ func (h *RelationHandler) Following(c *gin.Context) {
 // Followers 处理 GET /relations/followers?user_id=12345&limit=20&offset=0。
 //
 // 功能：使用 offset 分页查询某用户的粉丝列表。
+// 注意：此接口为公开接口，无需鉴权即可访问。
 func (h *RelationHandler) Followers(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
-	limit := queryInt(c, "limit", 20)
-	offset := queryInt(c, "offset", 0)
+	limit := httputil.QueryInt(c, "limit", 20)
+	offset := httputil.QueryInt(c, "offset", 0)
 
 	data, err := h.svc.Followers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"data": data})
@@ -149,17 +164,19 @@ func (h *RelationHandler) Followers(c *gin.Context) {
 // FollowingCursor 处理 GET /relations/following/cursor?user_id=12345&limit=20&cursor=0。
 //
 // 功能：使用游标分页查询某用户关注的人列表。
+// 注意：此接口为公开接口，无需鉴权即可访问。
 //
 // 游标基于关注时间的毫秒时间戳。cursor=0 表示从头开始（获取最新关注）。
 // 响应中包含 next_cursor 可用于后续请求。
 func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
-	limit := queryInt(c, "limit", 20)
+	limit := httputil.QueryInt(c, "limit", 20)
 	cursor := queryInt64(c, "cursor")
 
 	data, nextCursor, err := h.svc.FollowingCursor(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
@@ -168,32 +185,19 @@ func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 // FollowersCursor 处理 GET /relations/followers/cursor?user_id=12345&limit=20&cursor=0。
 //
 // 功能：使用游标分页查询某用户的粉丝列表。
+// 注意：此接口为公开接口，无需鉴权即可访问。
 func (h *RelationHandler) FollowersCursor(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
-	limit := queryInt(c, "limit", 20)
+	limit := httputil.QueryInt(c, "limit", 20)
 	cursor := queryInt64(c, "cursor")
 
 	data, nextCursor, err := h.svc.FollowersCursor(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
-}
-
-// queryInt 从查询参数中解析整数，缺失或非法时返回默认值。
-//
-// 功能：与 knowpost/handler.go 中的 queryInt 功能相同，但额外校验返回值 > 0。
-func queryInt(c *gin.Context, key string, def int) int {
-	s := c.Query(key)
-	if s == "" {
-		return def
-	}
-	v, _ := strconv.Atoi(s)
-	if v <= 0 {
-		return def
-	}
-	return v
 }
 
 // queryInt64 从查询参数中解析 int64 值，缺失或非法时返回 0。
@@ -204,7 +208,10 @@ func queryInt64(c *gin.Context, key string) int64 {
 	if s == "" {
 		return 0
 	}
-	v, _ := strconv.ParseInt(s, 10, 64)
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
 	return v
 }
 
@@ -217,6 +224,9 @@ func queryUint64(c *gin.Context, key string) uint64 {
 	if s == "" {
 		return 0
 	}
-	v, _ := strconv.ParseUint(s, 10, 64)
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0
+	}
 	return v
 }

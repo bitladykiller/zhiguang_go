@@ -4,11 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
 // CounterReader 定义搜索索引投影过程中所需的计数读取接口子集。
@@ -59,10 +64,11 @@ type KnowPostProjector struct {
 	db        sqlx.ExtContext
 	searchSvc *SearchService
 	counter   CounterReader
+	logger    *zap.Logger
 }
 
 // NewKnowPostProjector 创建搜索索引投影器实例。
-func NewKnowPostProjector(db sqlx.ExtContext, searchSvc *SearchService, counter CounterReader) *KnowPostProjector {
+func NewKnowPostProjector(db sqlx.ExtContext, searchSvc *SearchService, counter CounterReader, logger *zap.Logger) *KnowPostProjector {
 	if db == nil || searchSvc == nil {
 		return nil
 	}
@@ -70,6 +76,7 @@ func NewKnowPostProjector(db sqlx.ExtContext, searchSvc *SearchService, counter 
 		db:        db,
 		searchSvc: searchSvc,
 		counter:   counter,
+		logger:    logger,
 	}
 }
 
@@ -90,7 +97,7 @@ func (p *KnowPostProjector) ProjectPayload(ctx context.Context, raw []byte) erro
 
 	var payload payloadEnvelope
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
+		return fmt.Errorf("project payload: unmarshal: %w", err)
 	}
 	if payload.Entity != "knowpost" || payload.ID == 0 {
 		return nil
@@ -114,7 +121,7 @@ func (p *KnowPostProjector) ProjectPayload(ctx context.Context, raw []byte) erro
 func (p *KnowPostProjector) UpsertKnowPost(ctx context.Context, postID uint64) error {
 	doc, err := p.buildSearchDocument(ctx, postID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return p.SoftDeleteKnowPost(ctx, postID)
 		}
 		return err
@@ -166,13 +173,15 @@ LEFT JOIN users ON know_posts.creator_id = users.id
 WHERE know_posts.id = ?
 `, postID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build search document: db query: %w", err)
 	}
 
 	metrics := map[string]int32{}
 	if p.counter != nil {
 		counts, err := p.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(postID, 10), []string{"like", "fav"})
-		if err == nil && counts != nil {
+		if err != nil {
+			p.logger.Warn("failed to get counts for search index", zap.Error(err))
+		} else if counts != nil {
 			metrics = counts
 		}
 	}
@@ -183,12 +192,12 @@ WHERE know_posts.id = ?
 		Description:   strings.TrimSpace(strValue(row.Description)),
 		Body:          strings.TrimSpace(strValue(row.Description)),
 		TagID:         row.TagID,
-		Tags:          parseJSONTags(row.Tags),
+		Tags:          jsonutil.ParseStringArray(row.Tags),
 		AuthorID:      strconv.FormatUint(row.CreatorID, 10),
 		AuthorAvatar:  row.AuthorAvatar,
 		AuthorName:    row.AuthorNickname,
 		AuthorTagJSON: row.AuthorTagJSON,
-		ImgURLs:       parseJSONTags(row.ImgURLs),
+		ImgURLs:       jsonutil.ParseStringArray(row.ImgURLs),
 		LikeCount:     int64(metrics["like"]),
 		FavCount:      int64(metrics["fav"]),
 		ViewCount:     0,
@@ -205,24 +214,6 @@ WHERE know_posts.id = ?
 	return doc, nil
 }
 
-// parseJSONTags 解析 JSON 字符串数组为 Go []string。
-//
-// 参数：
-//   - raw: 指向 JSON 字符串的指针（可能为 nil）
-//
-// 返回空切片而非 nil，避免序列化时为 null。
-func parseJSONTags(raw *string) []string {
-	if raw == nil || strings.TrimSpace(*raw) == "" {
-		return []string{}
-	}
-
-	var tags []string
-	if err := json.Unmarshal([]byte(*raw), &tags); err != nil {
-		return []string{}
-	}
-	return tags
-}
-
 // buildSuggestField 构建 ES completion suggester 字段，包含标题和标签。
 //
 // 参数：
@@ -237,7 +228,7 @@ func buildSuggestField(title *string, tags *string) *SuggestField {
 	if text := strings.TrimSpace(strValue(title)); text != "" {
 		inputs = append(inputs, text)
 	}
-	for _, tag := range parseJSONTags(tags) {
+	for _, tag := range jsonutil.ParseStringArray(tags) {
 		tag = strings.TrimSpace(tag)
 		if tag != "" {
 			inputs = append(inputs, tag)

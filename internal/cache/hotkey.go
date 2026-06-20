@@ -21,11 +21,13 @@ package cache
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/pkg/config"
 )
@@ -51,10 +53,11 @@ const (
 // 并发安全：
 //   - buf 由 sync.Mutex 保护
 //   - levelCache 由 sync.RWMutex 保护（读多写少）
-//   - 后台 goroutine 通过 sync.Once 惰性启动
+//   - 后台 goroutine 通过 Run(ctx) 显式启动
 type HotKeyDetector struct {
 	config *config.HotKeyConfig
 	redis  *redis.Client
+	logger *zap.Logger
 
 	// 本地计数缓冲：key → 桶编号 → 桶内计数
 	mu  sync.Mutex
@@ -71,39 +74,95 @@ type HotKeyDetector struct {
 	statTTL       time.Duration // Redis Hash 的 TTL
 	markTTL       time.Duration // hotkey:active 标记 TTL
 
+	// 本地 map 最大键数限制
+	maxKeys int
+
 	// 生命周期控制
 	startOnce sync.Once
 }
 
 // NewHotKeyDetector 根据配置和 Redis 客户端创建跨实例热点键探测器。
-func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client) *HotKeyDetector {
-	return &HotKeyDetector{
+func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client, logger *zap.Logger) *HotKeyDetector {
+	d := &HotKeyDetector{
 		config:        cfg,
 		redis:         redisClient,
+		logger:        logger,
 		buf:           make(map[string]map[int64]int64),
 		levels:        make(map[string]HotKeyLevel),
 		bucketSize:    time.Duration(cfg.BucketSizeSeconds) * time.Second,
 		flushInterval: time.Duration(cfg.FlushIntervalSeconds) * time.Second,
 		statTTL:       time.Duration(cfg.StatTTLSeconds) * time.Second,
 		markTTL:       time.Duration(cfg.HotMarkTTLSeconds) * time.Second,
+		maxKeys:       100000,
 	}
+	if cfg.MaxLocalKeys > 0 {
+		d.maxKeys = cfg.MaxLocalKeys
+	}
+	if d.logger == nil {
+		d.logger = zap.L()
+	}
+	return d
+}
+
+// Run 启动后台 flush goroutine，使用给定的 ctx 控制生命周期。
+//
+// ctx 通常来自服务启动时的 root context，当 ctx 被取消时，flush goroutine 会退出。
+// 调用方应在服务初始化时调用此方法一次。
+func (d *HotKeyDetector) Run(ctx context.Context) {
+	d.startOnce.Do(func() {
+		go d.flushLoop(ctx)
+	})
 }
 
 // Record 为指定键在当前时间窗口内增加一次命中计数。
 func (d *HotKeyDetector) Record(key string) {
-	d.startOnce.Do(func() {
-		go d.flushLoop()
-	})
-
 	bucket := d.currentBucket()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.buf[key] == nil {
+		if len(d.buf) >= d.maxKeys {
+			d.evictOldestLocked()
+		}
 		d.buf[key] = make(map[int64]int64)
 	}
 	d.buf[key][bucket]++
+}
+
+// evictOldestLocked 在 buf 达到上限时淘汰最早访问的键。
+// 持有 mu 锁时调用。
+func (d *HotKeyDetector) evictOldestLocked() {
+	if len(d.buf) == 0 {
+		return
+	}
+
+	type keyBucket struct {
+		key    string
+		oldest int64
+	}
+	entries := make([]keyBucket, 0, len(d.buf))
+	for k, buckets := range d.buf {
+		oldest := int64(1<<63 - 1)
+		for b := range buckets {
+			if b < oldest {
+				oldest = b
+			}
+		}
+		entries = append(entries, keyBucket{key: k, oldest: oldest})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].oldest < entries[j].oldest
+	})
+
+	// 淘汰最旧的 10%
+	evictCount := len(entries) / 10
+	if evictCount < 1 {
+		evictCount = 1
+	}
+	for i := 0; i < evictCount && i < len(entries); i++ {
+		delete(d.buf, entries[i].key)
+	}
 }
 
 // currentBucket 返回当前时间对应的桶编号（Unix 秒 / bucketSize）。
@@ -112,29 +171,33 @@ func (d *HotKeyDetector) currentBucket() int64 {
 }
 
 // flushLoop 是后台 flush goroutine 的主循环。
-func (d *HotKeyDetector) flushLoop() {
+func (d *HotKeyDetector) flushLoop(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			go d.flushLoop()
+			d.logger.Error("hotkey flushLoop panic recovered", zap.Any("panic", r))
 		}
 	}()
 
 	ticker := time.NewTicker(d.flushInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		d.flushOnce()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.flushOnce(ctx)
+		}
 	}
 }
 
 // flushOnce 执行一轮完整的 flush 流程。
-func (d *HotKeyDetector) flushOnce() {
+func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 	snapshot := d.snapshotAndReset()
 	if len(snapshot) == 0 {
 		return
 	}
 
-	ctx := context.Background()
 	nowBucket := d.currentBucket()
 
 	pipe := d.redis.Pipeline()
@@ -143,9 +206,10 @@ func (d *HotKeyDetector) flushOnce() {
 		for bucket, count := range buckets {
 			pipe.HIncrBy(ctx, statKey, strconv.FormatInt(bucket, 10), count)
 		}
-		for i := int64(d.config.BucketCount); i < int64(d.config.BucketCount)+int64(d.config.BucketCount); i++ {
-			oldBucket := nowBucket - i
-			pipe.HDel(ctx, statKey, strconv.FormatInt(oldBucket, 10))
+		// 清理窗口外的旧桶：删除 nowBucket - BucketCount 之前的桶
+		cleanBefore := nowBucket - int64(d.config.BucketCount)
+		for bucketNum := nowBucket - 1; bucketNum >= cleanBefore; bucketNum-- {
+			pipe.HDel(ctx, statKey, strconv.FormatInt(bucketNum, 10))
 		}
 		pipe.Expire(ctx, statKey, d.statTTL)
 	}
@@ -154,21 +218,37 @@ func (d *HotKeyDetector) flushOnce() {
 	}
 
 	newLevels := make(map[string]HotKeyLevel, len(snapshot))
+	cacheKeys := make([]string, 0, len(snapshot))
 	for cacheKey := range snapshot {
-		statKey := hotwinKeyPrefix + cacheKey
+		cacheKeys = append(cacheKeys, cacheKey)
+	}
 
-		values, err := d.redis.HGetAll(ctx, statKey).Result()
-		if err != nil {
-			continue
+	if len(cacheKeys) > 0 {
+		pipeRead := d.redis.Pipeline()
+		cmds := make([]*redis.MapStringStringCmd, len(cacheKeys))
+		for i, cacheKey := range cacheKeys {
+			statKey := hotwinKeyPrefix + cacheKey
+			cmds[i] = pipeRead.HGetAll(ctx, statKey)
+		}
+		if _, err := pipeRead.Exec(ctx); err != nil {
+			d.logger.Warn("hotkey pipeRead exec failed", zap.Error(err))
 		}
 
-		total := d.sumBucketsInWindow(values, nowBucket)
-		level := d.calcLevel(total)
-
-		newLevels[cacheKey] = level
-
-		if level >= LevelLow {
-			d.redis.Set(ctx, hotkeyActivePrefix+cacheKey, "1", d.markTTL)
+		pipeMark := d.redis.Pipeline()
+		for i, cacheKey := range cacheKeys {
+			values, err := cmds[i].Result()
+			if err != nil {
+				continue
+			}
+			total := d.sumBucketsInWindow(values, nowBucket)
+			level := d.calcLevel(total)
+			newLevels[cacheKey] = level
+			if level >= LevelLow {
+				pipeMark.Set(ctx, hotkeyActivePrefix+cacheKey, "1", d.markTTL)
+			}
+		}
+		if _, err := pipeMark.Exec(ctx); err != nil {
+			d.logger.Warn("hotkey pipeMark exec failed", zap.Error(err))
 		}
 	}
 
@@ -179,6 +259,16 @@ func (d *HotKeyDetector) flushOnce() {
 		}
 		d.levelMu.Unlock()
 	}
+}
+
+// SetMaxKeys 设置本地 map 上限。
+func (d *HotKeyDetector) SetMaxKeys(n int) {
+	if n <= 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.maxKeys = n
 }
 
 // snapshotAndReset 快照并清空本地 buf，返回快照数据。
@@ -235,17 +325,16 @@ func (d *HotKeyDetector) calcLevel(total int64) HotKeyLevel {
 }
 
 // TtlForPublic 返回公共缓存键根据热度调整后的 TTL。
-func (d *HotKeyDetector) TtlForPublic(baseTTL int, key string) int {
-	return d.ttlForLevel(baseTTL, d.getLevel(key))
+func (d *HotKeyDetector) TtlForPublic(ctx context.Context, baseTTL int, key string) int {
+	return d.ttlForLevel(baseTTL, d.getLevel(ctx, key))
 }
 
 // getLevel 根据本地 levelCache 或 Redis hotkey:active 标记判断热度等级。
-func (d *HotKeyDetector) getLevel(key string) HotKeyLevel {
+func (d *HotKeyDetector) getLevel(ctx context.Context, key string) HotKeyLevel {
 	if level, ok := d.readLevelCache(key); ok {
 		return level
 	}
 
-	ctx := context.Background()
 	exists, err := d.redis.Exists(ctx, hotkeyActivePrefix+key).Result()
 	if err == nil && exists > 0 {
 		return LevelMedium

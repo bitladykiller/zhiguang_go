@@ -1,17 +1,26 @@
 package storage
 
 import (
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
 
+var allowedExtensions = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+	".mp4": true, ".mov": true, ".avi": true,
+	".pdf": true, ".doc": true, ".docx": true,
+}
+
 // StorageHandler 暴露 OSS 存储相关 HTTP 接口。
 type StorageHandler struct {
-	svc *OssStorageService
+	svc StorageServiceInterface
 }
 
 // NewStorageHandler 创建 OSS 存储处理器实例。
@@ -19,10 +28,10 @@ type StorageHandler struct {
 // 功能：将 OSS 存储服务注入 HTTP 处理器。
 //
 // 参数：
-//   - svc: *OssStorageService，OSS 存储服务实例。可能为 nil（配置不完整时）。
+//   - svc: OSS 存储服务实例。可能为 nil（配置不完整时）。
 //
 // 返回值：*StorageHandler，创建好的处理器实例。
-func NewStorageHandler(svc *OssStorageService) *StorageHandler {
+func NewStorageHandler(svc StorageServiceInterface) *StorageHandler {
 	return &StorageHandler{svc: svc}
 }
 
@@ -71,22 +80,28 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 		return
 	}
 	if h.svc == nil {
-		response.Fail(c, 503, "storage service is unavailable")
+		response.Error(c, errcode.ErrServiceUnavailable.WithMsg("storage service is unavailable"))
 		return
 	}
 
 	var req StoragePresignRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
+		return
+	}
+
+	if !isValidFileName(req.FileName) {
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid file name"))
 		return
 	}
 
 	objectKey := h.svc.GenerateObjectKey(req.Folder, req.FileName)
-	expiry := 10 * time.Minute
+	expiry := h.svc.PresignExpiry()
 
 	uploadURL, err := h.svc.GeneratePresignedPutURL(objectKey, expiry)
 	if err != nil {
-		response.Fail(c, 500, "failed to generate upload URL: "+err.Error())
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 
@@ -96,4 +111,27 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 		PublicURL: h.svc.PublicURL(objectKey),
 		ExpireAt:  time.Now().Add(expiry),
 	})
+}
+
+// isValidFileName 对上传文件名称做白名单校验，防止路径遍历和非法扩展名。
+//
+// 规则：
+//   - 不为空
+//   - 不包含路径遍历字符（../、..\、/、\）
+//   - 长度不超过 255
+//   - 扩展名在允许的白名单中
+func isValidFileName(fileName string) bool {
+	if fileName == "" {
+		return false
+	}
+	if len(fileName) > 255 {
+		return false
+	}
+	if strings.Contains(fileName, "../") || strings.Contains(fileName, "..\\") ||
+		strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") {
+		return false
+	}
+
+	ext := strings.ToLower(filepath.Ext(fileName))
+	return allowedExtensions[ext]
 }

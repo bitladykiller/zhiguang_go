@@ -53,6 +53,13 @@ func verificationSendRetryInterval(cfg *config.VerificationConfig) time.Duration
 	return durationOrDefault(cfg.Lock.RetryIntervalMs, defaultAuthLockRetryInterval)
 }
 
+func verificationOperationTimeout(cfg *config.VerificationConfig) time.Duration {
+	if cfg == nil || cfg.OperationTimeoutMs <= 0 {
+		return 0 // 不设置超时，由调用方 ctx 控制
+	}
+	return time.Duration(cfg.OperationTimeoutMs) * time.Millisecond
+}
+
 func refreshSessionLockOptions(cfg *config.AuthConfig) redislock.Options {
 	if cfg == nil {
 		return redislock.Options{
@@ -71,6 +78,13 @@ func refreshSessionRetryInterval(cfg *config.AuthConfig) time.Duration {
 		return defaultAuthLockRetryInterval
 	}
 	return durationOrDefault(cfg.Refresh.Lock.RetryIntervalMs, defaultAuthLockRetryInterval)
+}
+
+func refreshSessionLockTimeout(cfg *config.AuthConfig) time.Duration {
+	if cfg == nil || cfg.Refresh.OperationTimeoutMs <= 0 {
+		return 0 // 不设置超时，由调用方 ctx 控制
+	}
+	return time.Duration(cfg.Refresh.OperationTimeoutMs) * time.Millisecond
 }
 
 func durationOrDefault(ms int, fallback time.Duration) time.Duration {

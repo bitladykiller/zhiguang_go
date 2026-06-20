@@ -1,0 +1,752 @@
+package counter
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/segmentio/kafka-go"
+	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/contextutil"
+	"github.com/zhiguang/app/pkg/redislock"
+)
+
+var errLockNotAcquired = errors.New("repair lock not acquired")
+
+const counterRepairLeaderLockKey = "lock:counter:repair"
+
+const (
+	defaultConsumerBatchSize        = 100
+	defaultConsumerFlushInterval    = time.Second
+	defaultRepairInterval           = time.Minute
+	defaultCounterFlushMaxAttempts  = 3
+	defaultCounterFlushRetryDelay   = time.Second
+	defaultCounterFlushWorkers      = 2
+	defaultExpireExtendInterval     = 10 * time.Second
+	defaultRebuildMarkerTTL         = 30 * time.Second
+)
+
+// AggregationConsumer 消费 counter-events，并按批次把增量直接折叠到 cnt:*。
+//
+// 这里不再使用 Redis agg:* 中转桶，原因是当前方案把“批量聚合”放在 MQ 消费端：
+//   - 同一批 Kafka 消息先在进程内做内存聚合。
+//   - 到达批次大小或时间窗口后，一次性把 delta flush 到 cnt:*。
+//   - 如果 publish、flush 或 offset commit 出现失败，对应实体会进入 dirty set，
+//     再由 repair loop 用位图的绝对值覆盖 cnt:*。
+type AggregationConsumer struct {
+	reader           *kafka.Reader
+	service          *CounterService
+	logger           *zap.Logger
+	commitFn         func(ctx context.Context, msgs ...kafka.Message) error
+	groupID          string
+	topic            string
+	batchSize        int
+	flushInterval    time.Duration
+	flushRetryDelay  time.Duration
+	flushMaxAttempts int
+	repairEnabled    bool
+	repairInterval   time.Duration
+	repairBatch      int
+
+	partitionMask   uint8
+
+	flushCh chan *counterBatch
+
+	mu      sync.Mutex
+	batches map[int]*counterBatch
+	wg      sync.WaitGroup
+}
+
+// NewAggregationConsumer 创建 AggregationConsumer 实例。
+//
+// 参数:
+//   - reader: *kafka.Reader，Kafka 消息读取器
+//   - service: *CounterService，计数器服务，用于 flush 和 repair
+//   - logger: *zap.Logger，日志记录器
+//   - cfg: *config.CounterConfig，消费者配置（batchSize、flushInterval 等）
+//
+// 返回值:
+//   - *AggregationConsumer: 已初始化的聚合消费者；若 reader/service/redis 为 nil 则返回 nil
+func NewAggregationConsumer(
+	reader *kafka.Reader,
+	service *CounterService,
+	logger *zap.Logger,
+	cfg *config.CounterConfig,
+) *AggregationConsumer {
+	if reader == nil || service == nil || service.redis == nil {
+		return nil
+	}
+
+	batchSize := defaultConsumerBatchSize
+	flushInterval := defaultConsumerFlushInterval
+	repairEnabled := false
+	repairInterval := defaultRepairInterval
+	repairBatch := batchSize
+
+	if logger == nil {
+		logger = zap.L()
+	}
+
+	if cfg != nil {
+		if cfg.Consumer.BatchSize > 0 {
+			batchSize = cfg.Consumer.BatchSize
+		}
+		if cfg.Consumer.FlushIntervalMs > 0 {
+			flushInterval = time.Duration(cfg.Consumer.FlushIntervalMs) * time.Millisecond
+		}
+		repairEnabled = cfg.Repair.Enabled
+		if cfg.Repair.IntervalMs > 0 {
+			repairInterval = time.Duration(cfg.Repair.IntervalMs) * time.Millisecond
+		}
+		if cfg.Repair.BatchSize > 0 {
+			repairBatch = cfg.Repair.BatchSize
+		}
+	}
+
+	readerCfg := reader.Config()
+
+	flushCh := make(chan *counterBatch, 16)
+
+	return &AggregationConsumer{
+		reader:           reader,
+		service:          service,
+		logger:           logger,
+		commitFn:         reader.CommitMessages,
+		groupID:          readerCfg.GroupID,
+		topic:            readerCfg.Topic,
+		batchSize:        batchSize,
+		flushInterval:    flushInterval,
+		flushRetryDelay:  defaultCounterFlushRetryDelay,
+		flushMaxAttempts: defaultCounterFlushMaxAttempts,
+		repairEnabled:    repairEnabled,
+		repairInterval:   repairInterval,
+		repairBatch:      repairBatch,
+		flushCh:          flushCh,
+		batches:          make(map[int]*counterBatch),
+	}
+}
+
+func (c *AggregationConsumer) Start(ctx context.Context) {
+	if c == nil {
+		return
+	}
+	defer c.reader.Close()
+
+	flushWg := sync.WaitGroup{}
+	flushCtx, flushCancel := context.WithCancel(ctx)
+	defer flushCancel()
+	for i := 0; i < defaultCounterFlushWorkers; i++ {
+		flushWg.Add(1)
+		go func() {
+			defer flushWg.Done()
+			for batch := range c.flushCh {
+				c.flushAndReset(flushCtx, batch)
+			}
+		}()
+	}
+
+	if c.repairEnabled {
+		c.wg.Add(1)
+		go c.repairLoop(ctx)
+	}
+
+	c.consumeLoop(ctx)
+	close(c.flushCh)
+	flushWg.Wait()
+	c.wg.Wait()
+}
+
+func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Error("panic in consumeLoop", zap.Any("recover", r))
+		}
+	}()
+
+	for {
+		if batch := c.takeExpiredBatch(ctx); batch != nil {
+			c.flushCh <- batch
+			continue
+		}
+
+		c.mu.Lock()
+		deadline, ok := nextBatchDeadline(c.batches, c.flushInterval)
+		c.mu.Unlock()
+
+		var wait time.Duration
+		if ok {
+			wait = time.Until(deadline)
+			if wait <= 0 {
+				continue
+			}
+		} else {
+			wait = c.flushInterval
+		}
+
+		fetchCtx, cancel := context.WithTimeout(ctx, wait)
+		msg, err := c.reader.FetchMessage(fetchCtx)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				continue
+			}
+			c.logWarn("fetch counter kafka message failed", err)
+			if !contextutil.Sleep(ctx, time.Second) {
+				return
+			}
+			continue
+		}
+
+		if batch := c.handleMessage(ctx, msg); batch != nil {
+			c.flushCh <- batch
+		}
+	}
+}
+
+func (c *AggregationConsumer) flushAndReset(ctx context.Context, batch *counterBatch) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Error("panic in flushAndReset", zap.Any("recover", r))
+		}
+	}()
+
+	if batch.size() == 0 {
+		return
+	}
+
+	maxAttempts := c.maxFlushAttempts()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := c.flushBatch(ctx, batch); err != nil {
+			c.logWarn(fmt.Sprintf("flush counter batch failed (attempt %d/%d)", attempt, maxAttempts), err)
+			if attempt == maxAttempts {
+				recordCtx, cancel := context.WithTimeout(ctx, time.Second)
+				defer cancel()
+				if recordErr := c.service.recordFailedKafkaMessages(recordCtx, counterFailureStageFlush, batch.messages, err); recordErr != nil {
+					c.logWarn("persist counter failed messages failed", recordErr)
+				}
+				if markErr := c.service.markDirtyMembers(recordCtx, batch.collectDirtyMembers()); markErr != nil {
+					c.logWarn("mark dirty members after exhausted retries failed", markErr)
+				}
+				c.logError(
+					fmt.Sprintf("flush counter batch exhausted retries and will drop batch (attempts=%d, messages=%d)", maxAttempts, batch.size()),
+					err,
+				)
+				break
+			}
+			if !contextutil.Sleep(ctx, c.retryDelay()) {
+				return
+			}
+			continue
+		}
+		batch.reset()
+		return
+	}
+
+	batch.reset()
+}
+
+func (c *AggregationConsumer) flushBatch(ctx context.Context, batch *counterBatch) error {
+	if batch == nil || batch.size() == 0 {
+		return nil
+	}
+
+	if err := c.applyBatch(ctx, batch); err != nil {
+		return fmt.Errorf("apply counter batch: %w", err)
+	}
+
+	if err := c.commitMessages(ctx, batch.messages...); err != nil {
+		return fmt.Errorf("commit counter batch: %w", err)
+	}
+	return nil
+}
+
+func (c *AggregationConsumer) applyBatch(ctx context.Context, batch *counterBatch) error {
+	if batch == nil || batch.size() == 0 {
+		return nil
+	}
+
+	appliedKey, err := c.appliedOffsetKey(batch.partition)
+	if err != nil {
+		return err
+	}
+
+	cntKeys, keyIndexes := batch.cntKeys()
+
+	rebuildKeys := make([]string, len(cntKeys))
+	for i, k := range cntKeys {
+		meta := k[4:]
+		idx := strings.IndexByte(meta, ':')
+		if idx == -1 {
+			continue
+		}
+		rebuildKeys[i] = RebuildMarkerKey(meta[:idx], meta[idx+1:])
+	}
+
+	keys := make([]string, 0, 1+len(cntKeys)+len(rebuildKeys))
+	keys = append(keys, appliedKey)
+	keys = append(keys, cntKeys...)
+	keys = append(keys, rebuildKeys...)
+
+	args := make([]any, 0, 2+len(batch.events)*4)
+	args = append(args, len(batch.events), len(cntKeys))
+	for _, event := range batch.events {
+		metric := indexToName[event.index]
+		args = append(args,
+			event.offset,
+			keyIndexes[DirtyMember(event.entityType, event.entityID)],
+			metric,
+			event.delta,
+		)
+	}
+
+	return applyPartitionBatchScript.Run(ctx, c.service.redis, keys, args...).Err()
+}
+
+func (c *AggregationConsumer) skipMalformedMessage(ctx context.Context, msg kafka.Message, cause error) {
+	c.logWarn("skip malformed counter kafka message", cause)
+	if err := c.advanceAppliedOffset(ctx, msg.Partition, msg.Offset); err != nil {
+		c.logWarn("advance malformed counter kafka message offset failed", err)
+		return
+	}
+	if err := c.commitMessages(ctx, msg); err != nil {
+		c.logWarn("commit malformed counter kafka message failed", err)
+	}
+}
+
+func (c *AggregationConsumer) commitMessages(ctx context.Context, msgs ...kafka.Message) error {
+	if c != nil && c.commitFn != nil {
+		return c.commitFn(ctx, msgs...)
+	}
+	if c != nil && c.reader != nil {
+		return c.reader.CommitMessages(ctx, msgs...)
+	}
+	return nil
+}
+
+// takeExpiredBatch returns one expired batch (removed from map under lock), or nil.
+func (c *AggregationConsumer) takeExpiredBatch(ctx context.Context) *counterBatch {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	for partition, batch := range c.batches {
+		if batch == nil || batch.size() == 0 {
+			delete(c.batches, partition)
+			continue
+		}
+		if !now.Before(batch.openedAt.Add(c.flushInterval)) {
+			delete(c.batches, partition)
+			return batch
+		}
+	}
+	return nil
+}
+
+// handleMessage processes one Kafka message under lock. Returns a batch to flush (removed from map), or nil.
+func (c *AggregationConsumer) handleMessage(ctx context.Context, msg kafka.Message) *counterBatch {
+	evt, err := parseCounterEvent(msg.Value)
+	if err != nil {
+		// JSON 解析在锁外完成，进入锁只做数据操作
+		c.mu.Lock()
+		if batch := c.batches[msg.Partition]; batch != nil && batch.size() > 0 {
+			delete(c.batches, msg.Partition)
+			defer c.mu.Unlock()
+			c.skipMalformedMessage(ctx, msg, err)
+			return batch
+		}
+		c.mu.Unlock()
+		c.skipMalformedMessage(ctx, msg, err)
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	batch := c.batches[msg.Partition]
+
+	// Check for offset gap
+	if batch != nil && batch.size() > 0 && msg.Offset != batch.endOffset+1 {
+		delete(c.batches, msg.Partition)
+		c.addToBatch(msg, evt) // adds to a new batch in the map
+		return batch           // return old batch for flush
+	}
+
+	if batch == nil {
+		batch = newCounterBatch(c.batchSize)
+		c.batches[msg.Partition] = batch
+	}
+	if err := batch.addEvent(msg, evt); err != nil {
+		if batch.size() > 0 {
+			delete(c.batches, msg.Partition)
+			c.skipMalformedMessage(ctx, msg, err)
+			return batch
+		}
+		c.skipMalformedMessage(ctx, msg, err)
+		return nil
+	}
+
+	if batch.size() >= c.batchSize {
+		delete(c.batches, msg.Partition)
+		return batch
+	}
+	return nil
+}
+
+// addToBatch adds a message+event to batches[partition], creating batch if needed.
+// Must be called under c.mu lock.
+func (c *AggregationConsumer) addToBatch(msg kafka.Message, evt CounterEvent) {
+	batch := c.batches[msg.Partition]
+	if batch == nil {
+		batch = newCounterBatch(c.batchSize)
+		c.batches[msg.Partition] = batch
+	}
+	if addErr := batch.addEvent(msg, evt); addErr != nil {
+		c.logger.Warn("addToBatch addEvent failed", zap.Error(addErr))
+	}
+}
+
+func nextBatchDeadline(batches map[int]*counterBatch, flushInterval time.Duration) (time.Time, bool) {
+	var (
+		deadline time.Time
+		ok       bool
+	)
+	for _, batch := range batches {
+		if batch == nil || batch.size() == 0 {
+			continue
+		}
+		current := batch.openedAt.Add(flushInterval)
+		if !ok || current.Before(deadline) {
+			deadline = current
+			ok = true
+		}
+	}
+	return deadline, ok
+}
+
+func (c *AggregationConsumer) appliedOffsetKey(partition int) (string, error) {
+	if c == nil || c.groupID == "" || c.topic == "" {
+		return "", fmt.Errorf("counter consumer applied offset scope is empty")
+	}
+	return AppliedOffsetKey(c.groupID, c.topic, partition), nil
+}
+
+func (c *AggregationConsumer) advanceAppliedOffset(ctx context.Context, partition int, offset int64) error {
+	appliedKey, err := c.appliedOffsetKey(partition)
+	if err != nil {
+		return err
+	}
+	return advanceAppliedOffsetScript.Run(ctx, c.service.redis, []string{appliedKey}, offset).Err()
+}
+
+func (c *AggregationConsumer) maxFlushAttempts() int {
+	if c != nil && c.flushMaxAttempts > 0 {
+		return c.flushMaxAttempts
+	}
+	return defaultCounterFlushMaxAttempts
+}
+
+func (c *AggregationConsumer) retryDelay() time.Duration {
+	if c != nil && c.flushRetryDelay > 0 {
+		return c.flushRetryDelay
+	}
+	return defaultCounterFlushRetryDelay
+}
+
+func (c *AggregationConsumer) repairLoop(ctx context.Context) {
+	defer c.wg.Done()
+	ticker := time.NewTicker(c.repairInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := c.repairAsLeader(ctx); err != nil {
+				c.logWarn("repair dirty counters failed", err)
+			}
+		}
+	}
+}
+
+func (c *AggregationConsumer) repairAsLeader(ctx context.Context) error {
+	lock, locked, err := redislock.TryAcquire(ctx, c.service.redis, counterRepairLeaderLockKey, counterRepairLockOptions(), c.logger)
+	if err != nil {
+		return err
+	}
+	if !locked {
+		return nil
+	}
+	defer lock.Release()
+
+	return c.repairDirtyMembers(ctx)
+}
+
+func (c *AggregationConsumer) repairDirtyMembers(ctx context.Context) error {
+	members, err := c.listDirtyMembers(ctx, c.repairBatch)
+	if err != nil || len(members) == 0 {
+		return err
+	}
+
+	var firstErr error
+	for _, member := range members {
+		if err := c.repairDirtyMember(ctx, member); err != nil {
+			if !errors.Is(err, errLockNotAcquired) {
+				// 锁竞争跳过的成员已被 SPOP 移除，需加回
+				if err := c.service.redis.SAdd(ctx, DirtySetKey(), member).Err(); err != nil {
+				c.logger.Warn("repair re-add dirty member failed", zap.String("member", member), zap.Error(err))
+			}
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+func (c *AggregationConsumer) listDirtyMembers(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	members, err := c.service.redis.SPopN(ctx, DirtySetKey(), int64(limit)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("pop dirty members: %w", err)
+	}
+	return members, nil
+}
+
+func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member string) error {
+	entityType, entityID, err := ParseDirtyMember(member)
+	if err != nil {
+		if clearErr := c.service.clearDirtyMembers(ctx, []string{member}); clearErr != nil {
+			return fmt.Errorf("drop invalid dirty member: %w", clearErr)
+		}
+		return nil
+	}
+
+	lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
+	lock, locked, err := redislock.TryAcquire(ctx, c.service.redis, lockKey, c.service.rebuildLockOptions, c.logger)
+	if err != nil {
+		return fmt.Errorf("repair dirty member: acquire lock: %w", err)
+	}
+	if !locked {
+		return errLockNotAcquired
+	}
+
+	rebuildMarker := RebuildMarkerKey(entityType, entityID)
+
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		ticker := time.NewTicker(defaultExpireExtendInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-ticker.C:
+				if err := c.service.redis.Expire(watchCtx, rebuildMarker, defaultRebuildMarkerTTL).Err(); err != nil {
+				c.logger.Warn("watchdog expire rebuild marker failed", zap.Error(err))
+			}
+			}
+		}
+	}()
+	if err := c.service.redis.Set(ctx, rebuildMarker, "1", defaultRebuildMarkerTTL).Err(); err != nil {
+	c.logger.Warn("set rebuild marker failed", zap.Error(err))
+}
+	defer func() {
+		watchCancel()
+		<-watchDone
+		lock.Release()
+		if err := c.service.redis.Del(ctx, rebuildMarker).Err(); err != nil {
+		c.logger.Warn("delete rebuild marker failed", zap.Error(err))
+	}
+	}()
+
+	sdsRaw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)
+	if err != nil {
+		return fmt.Errorf("repair dirty member: build snapshot: %w", err)
+	}
+	mapHSet := make(map[string]any, len(sdsRaw))
+	for k, v := range sdsRaw {
+		mapHSet[k] = v
+	}
+	if err := c.service.redis.HSet(ctx, SdsKey(entityType, entityID), mapHSet).Err(); err != nil {
+		return fmt.Errorf("repair dirty member: set sds: %w", err)
+	}
+
+	if err := c.service.clearDirtyMembers(ctx, []string{member}); err != nil {
+		return fmt.Errorf("repair dirty member: clear dirty: %w", err)
+	}
+	c.service.resetBackoff(ctx, entityType, entityID)
+	return nil
+}
+
+func (c *AggregationConsumer) logWarn(msg string, err error) {
+	if c == nil {
+		return
+	}
+	if c.logger != nil {
+		c.logger.Warn(msg, zap.Error(err))
+	}
+}
+
+func (c *AggregationConsumer) logError(msg string, err error) {
+	if c == nil {
+		return
+	}
+	if c.logger != nil {
+		c.logger.Error(msg, zap.Error(err))
+	}
+}
+
+type counterBatch struct {
+	partition   int
+	openedAt    time.Time
+	startOffset int64
+	endOffset   int64
+	messages    []kafka.Message
+	events      []counterBatchEvent
+	entities    map[string]struct{}
+}
+
+type counterBatchEvent struct {
+	offset     int64
+	entityType string
+	entityID   string
+	index      int
+	delta      int
+}
+
+func newCounterBatch(capacity int) *counterBatch {
+	if capacity <= 0 {
+		capacity = 1
+	}
+	return &counterBatch{
+		partition: -1,
+		messages:  make([]kafka.Message, 0, capacity),
+		events:    make([]counterBatchEvent, 0, capacity),
+		entities:  make(map[string]struct{}, capacity),
+	}
+}
+
+func (b *counterBatch) add(msg kafka.Message) error {
+	evt, err := parseCounterEvent(msg.Value)
+	if err != nil {
+		return err
+	}
+	return b.addEvent(msg, evt)
+}
+
+func (b *counterBatch) addEvent(msg kafka.Message, evt CounterEvent) error {
+	if evt.EntityType == "" || evt.EntityID == "" {
+		return fmt.Errorf("counter event missing entity: %+v", evt)
+	}
+	if evt.Index < 0 || evt.Index >= SchemaLen {
+		return fmt.Errorf("counter event index out of range: %d", evt.Index)
+	}
+	if evt.Delta == 0 {
+		return fmt.Errorf("counter event delta is zero")
+	}
+
+	if b.size() == 0 {
+		b.partition = msg.Partition
+		b.openedAt = time.Now()
+		b.startOffset = msg.Offset
+		b.endOffset = msg.Offset
+	} else {
+		if msg.Partition != b.partition {
+			return fmt.Errorf("counter batch partition mismatch: got=%d want=%d", msg.Partition, b.partition)
+		}
+		if msg.Offset != b.endOffset+1 {
+			return fmt.Errorf("counter batch offset gap: partition=%d got=%d want=%d", msg.Partition, msg.Offset, b.endOffset+1)
+		}
+		b.endOffset = msg.Offset
+	}
+
+	b.messages = append(b.messages, msg)
+	b.events = append(b.events, counterBatchEvent{
+		offset:     msg.Offset,
+		entityType: evt.EntityType,
+		entityID:   evt.EntityID,
+		index:      evt.Index,
+		delta:      evt.Delta,
+	})
+	b.entities[DirtyMember(evt.EntityType, evt.EntityID)] = struct{}{}
+	return nil
+}
+
+func (b *counterBatch) size() int {
+	if b == nil {
+		return 0
+	}
+	return len(b.messages)
+}
+
+func (b *counterBatch) collectDirtyMembers() []string {
+	members := make([]string, 0, len(b.entities))
+	for member := range b.entities {
+		members = append(members, member)
+	}
+	return members
+}
+
+func (b *counterBatch) cntKeys() ([]string, map[string]int) {
+	members := b.collectDirtyMembers()
+	sort.Strings(members)
+
+	keys := make([]string, 0, len(members))
+	indexes := make(map[string]int, len(members))
+	for i, member := range members {
+		entityType, entityID, err := ParseDirtyMember(member)
+		if err != nil {
+			continue
+		}
+		keys = append(keys, SdsKey(entityType, entityID))
+		indexes[member] = i
+	}
+	return keys, indexes
+}
+
+func (b *counterBatch) reset() {
+	if b == nil {
+		return
+	}
+	b.partition = -1
+	b.openedAt = time.Time{}
+	b.startOffset = 0
+	b.endOffset = 0
+	b.messages = b.messages[:0]
+	b.events = b.events[:0]
+	clear(b.entities)
+}
+
+// parseCounterEvent 将 Kafka 消息的 Value (JSON bytes) 反序列化为 CounterEvent。
+//
+// 参数:
+//   - value: []byte，Kafka 消息 Body
+//
+// 返回值:
+//   - CounterEvent: 解析后的计数变更事件
+//   - error: JSON 解析失败时返回错误
+func parseCounterEvent(value []byte) (CounterEvent, error) {
+	var evt CounterEvent
+	if err := json.Unmarshal(value, &evt); err != nil {
+		return CounterEvent{}, err
+	}
+	return evt, nil
+}
+

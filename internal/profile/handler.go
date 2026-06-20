@@ -5,13 +5,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
 
 // ProfileHandler 负责处理资料相关接口。
 type ProfileHandler struct {
-	svc *Service
+	svc ProfileServiceInterface
 }
 
 // NewProfileHandler 创建资料 HTTP 处理器。
@@ -21,7 +22,7 @@ type ProfileHandler struct {
 //
 // 返回值:
 //   - *ProfileHandler: 处理器实例
-func NewProfileHandler(svc *Service) *ProfileHandler {
+func NewProfileHandler(svc ProfileServiceInterface) *ProfileHandler {
 	return &ProfileHandler{svc: svc}
 }
 
@@ -60,13 +61,13 @@ func (h *ProfileHandler) RegisterRoutes(r *gin.RouterGroup) {
 func (h *ProfileHandler) GetProfile(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 
-	user, appErr := h.svc.GetProfile(c.Request.Context(), id)
-	if appErr != nil {
-		response.Error(c, appErr)
+	user, err := h.svc.GetProfile(c.Request.Context(), id)
+	if err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 
@@ -111,7 +112,7 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 
@@ -122,12 +123,12 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 
 	var req ProfilePatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 
-	if appErr := h.svc.UpdateProfile(c.Request.Context(), userID, id, &req); appErr != nil {
-		response.Error(c, appErr)
+	if err := h.svc.UpdateProfile(c.Request.Context(), userID, id, &req); err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 

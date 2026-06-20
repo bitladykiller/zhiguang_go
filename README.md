@@ -262,3 +262,77 @@ docker compose build
 - 计数器写操作现在保留 `cnt:*` SDS 快照，计数 delta 通过 `counter-events -> agg:* -> cnt:*` 异步折叠；SDS 缺失或损坏时仍可从位图重建
 - 扩展业务错误码现在会映射到正确的 HTTP 状态码
 - `db/schema.sql` 的 MySQL 拼写错误已修复，可正常初始化
+
+## 核心架构说明
+
+### Canal 异步同步链路
+
+`canal.enabled=true` 时，Go 应用会启动两个消费者 goroutine：
+
+```
+MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
+                                                      -> search outbox consumer
+```
+
+- **Canal Server**：通过 `docker-compose.yml` 中的自定义 Docker 镜像运行，订阅 `zhiguang.outbox` 表，
+  监控 INSERT 事件（毫秒级精度），将行级变更序列化为 JSON 后投递到 Kafka topic `canal-outbox`
+- **relation outbox consumer**：消费 `canal-outbox` 中的 `following` 聚合类型事件，将关注关系变更广播到 follower 反向索引表，并失效多级缓存
+- **search outbox consumer**：消费 `canal-outbox` 中的 `knowpost` 聚合类型事件，将知文变更同步到 Elasticsearch 索引
+
+当 `canal.enabled=false` 时，不会启动上述两个消费者，应用仍可正常提供 API 服务（仅丢失异步同步能力）。
+
+### 计数器修复机制
+
+计数系统采用 **Bitmap（位图） + SDS（结构化数据快照）** 双存储设计：
+
+| 数据结构 | 作用 | Redis 键前缀 |
+|---------|------|------------|
+| Bitmap | 位图权威数据源，记录每个用户对每个实体的点赞/收藏状态 | `bm:{metric}:{entityType}:{entityID}:{chunk}` |
+| SDS | 位图的聚合快照（点赞数/收藏数），用于快速查询 | `cnt:{entityType}:{entityID}` |
+| Dirty Set | 标记 SDS 可能不一致的实体，触发修复 | `dirty:counter` |
+
+**正常路径**：
+
+```
+用户点赞 -> Lua toggle 位图 -> 发布 CounterEvent 到 Kafka counter-events
+                              -> AggregationConsumer 批量聚合
+                              -> flush delta 到 cnt:* SDS
+```
+
+**异常修复路径**：
+
+- 当 Kafka 发布失败或 flush/commit 失败时，实体被加入 **Dirty Set**
+- **Repair Loop**（每个实例的后台 goroutine）周期性扫描 Dirty Set：
+  1. 尝试获取全局 leader 锁 `lock:counter:repair`（避免多实例同时修复）
+  2. 对每个 Dirty Member 执行 `rebuildSds`：从位图重新统计 BITCOUNT 覆盖 SDS
+  3. 失败时通过**指数退避**（500ms → 1s → 2s → ... → 30s cap）延迟重试
+  4. 超过限流阈值（每分钟 5 次重建）时拒绝重建并提升退避等级
+- 所有失败消息持久化到 MySQL 表 `counter_failed_messages`，用于后续离线排查
+
+**水位线幂等**：
+
+- Kafka 消费者的每个 partition 通过 Redis 键 `counter:applied-offset:{groupID}:{topic}:{partition}` 记录已应用的 offset
+- 同一批消息内用 Lua 脚本 `APPLY_PARTITION_BATCH_LUA` 原子执行：
+  - 跳过 offset <= 已水位线的消息
+  - 检测 offset 连续性（不允许空洞）
+  - 只有所有校验通过后才写入 cnt:*
+- 这保证了多实例并发消费时不会重复应用同一条消息
+
+### 热 Key 检测
+
+知文缓存系统（`knowpost` 模块）采用两级缓存 + 热 Key 自动延长机制：
+
+| 缓存层级 | 实现 | 默认 TTL |
+|---------|------|---------|
+| L1 | freecache（进程内，约 50ns 响应） | 取决于 HotKeyDetector |
+| L2 | Redis | 15s（公共）/ 10s（个人） |
+
+**HotKeyDetector 工作原理**（`internal/cache/hotkey.go`）：
+
+- 每个请求计数写入本地滑动窗口计数器（进程内 map）
+- 每隔一定时间将本地计数汇总到 Redis Hash（键：`hotkey:counts:{window}`）
+- Redis 中设置三级阈值：
+  - **Threshold 1** (默认 50)：热 Key，延长缓存 TTL 到 5 分钟
+  - **Threshold 2** (默认 200)：高热度 Key，延长缓存 TTL 到 10 分钟
+  - **Threshold 3** (默认 500)：极高热度 Key，延长缓存 TTL 到 30 分钟
+- 热点衰减后自动恢复默认 TTL，无需人工干预

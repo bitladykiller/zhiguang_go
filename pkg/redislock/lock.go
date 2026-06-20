@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 const (
@@ -55,13 +56,15 @@ func (o Options) normalized() Options {
 //   - 续约 goroutine、停止信号、归属 token 和 Redis 客户端需要一起管理。
 //   - 把这些生命周期状态收敛到一个对象里，调用方只需要 `Release()` 即可。
 type Lock struct {
-	client   *redis.Client
-	lockKey  string
-	token    string
-	options  Options
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	stopOnce sync.Once
+	client    *redis.Client
+	lockKey   string
+	token     string
+	options   Options
+	stopCh    chan struct{}
+	doneCh    chan struct{}
+	parentCtx context.Context
+	stopOnce  sync.Once
+	logger    *zap.Logger
 }
 
 var releaseScript = redis.NewScript(`
@@ -88,7 +91,7 @@ return 0
 // 语义说明：
 //   - 这是一次性的 try-lock，不会在包内部自旋等待。
 //   - 如果调用方需要“直到拿到锁或 ctx 结束”为止的语义，应使用 AcquireWithRetry。
-func TryAcquire(ctx context.Context, client *redis.Client, lockKey string, options Options) (*Lock, bool, error) {
+func TryAcquire(ctx context.Context, client *redis.Client, lockKey string, options Options, logger *zap.Logger) (*Lock, bool, error) {
 	opts := options.normalized()
 	token := uuid.NewString()
 
@@ -98,12 +101,17 @@ func TryAcquire(ctx context.Context, client *redis.Client, lockKey string, optio
 	}
 
 	lock := &Lock{
-		client:  client,
-		lockKey: lockKey,
-		token:   token,
-		options: opts,
-		stopCh:  make(chan struct{}),
-		doneCh:  make(chan struct{}),
+		client:    client,
+		lockKey:   lockKey,
+		token:     token,
+		options:   opts,
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
+		parentCtx: ctx,
+		logger:    logger,
+	}
+	if lock.logger == nil {
+		lock.logger = zap.L()
 	}
 	go lock.watchdog()
 	return lock, true, nil
@@ -125,6 +133,7 @@ func AcquireWithRetry(
 	lockKey string,
 	options Options,
 	retryInterval time.Duration,
+	logger *zap.Logger,
 ) (*Lock, error) {
 	interval := retryInterval
 	if interval <= 0 {
@@ -132,7 +141,7 @@ func AcquireWithRetry(
 	}
 
 	for {
-		lock, locked, err := TryAcquire(ctx, client, lockKey, options)
+		lock, locked, err := TryAcquire(ctx, client, lockKey, options, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -153,9 +162,11 @@ func (l *Lock) Release() {
 
 	l.stopWatchdog()
 
-	releaseCtx, cancel := context.WithTimeout(context.Background(), l.options.OpTimeout)
+	releaseCtx, cancel := context.WithTimeout(l.parentCtxOrDefault(), l.options.OpTimeout)
 	defer cancel()
-	_, _ = releaseScript.Run(releaseCtx, l.client, []string{l.lockKey}, l.token).Result()
+	if _, err := releaseScript.Run(releaseCtx, l.client, []string{l.lockKey}, l.token).Result(); err != nil {
+		l.logger.Warn("redislock release failed", zap.String("key", l.lockKey), zap.Error(err))
+	}
 }
 
 // watchdog 在业务仍持有锁期间周期性续租。
@@ -171,10 +182,12 @@ func (l *Lock) watchdog() {
 		case <-ticker.C:
 			renewed, err := l.renew()
 			if err != nil {
+				l.logger.Warn("redislock renew failed", zap.String("key", l.lockKey), zap.Error(err))
 				// Redis 短暂抖动时继续下一轮续约，避免瞬时失败直接放弃租期。
 				continue
 			}
 			if !renewed {
+				l.logger.Warn("redislock not renewed, lock lost", zap.String("key", l.lockKey))
 				// token 已不匹配，说明锁已过期或已被其他实例获取。
 				return
 			}
@@ -184,7 +197,7 @@ func (l *Lock) watchdog() {
 
 // renew 仅在 token 仍归当前持锁方时刷新 TTL。
 func (l *Lock) renew() (bool, error) {
-	renewCtx, cancel := context.WithTimeout(context.Background(), l.options.OpTimeout)
+	renewCtx, cancel := context.WithTimeout(l.parentCtxOrDefault(), l.options.OpTimeout)
 	defer cancel()
 
 	result, err := renewScript.Run(
@@ -201,6 +214,14 @@ func (l *Lock) renew() (bool, error) {
 	return result == 1, nil
 }
 
+// parentCtxOrDefault 返回 parentCtx，若为 nil 则 fallback 到 Background。
+func (l *Lock) parentCtxOrDefault() context.Context {
+	if l.parentCtx != nil {
+		return l.parentCtx
+	}
+	return context.Background()
+}
+
 // stopWatchdog 保证看门狗只停止一次。
 func (l *Lock) stopWatchdog() {
 	l.stopOnce.Do(func() {
@@ -209,6 +230,14 @@ func (l *Lock) stopWatchdog() {
 	})
 }
 
+// sleepRetry 在 retryInterval 时间段内等待 ctx 取消或超时。
+//
+// 参数:
+//   - ctx: context.Context，用于取消等待
+//   - retryInterval: time.Duration，等待时长
+//
+// 返回值:
+//   - bool: true 表示等待完成未被取消；false 表示 ctx 已取消
 func sleepRetry(ctx context.Context, retryInterval time.Duration) bool {
 	timer := time.NewTimer(retryInterval)
 	defer timer.Stop()

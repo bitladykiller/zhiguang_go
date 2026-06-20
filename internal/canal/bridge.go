@@ -20,6 +20,8 @@ import (
 
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/contextutil"
+	pbe "github.com/withlin/canal-go/protocol/entry"
 )
 
 const (
@@ -71,6 +73,26 @@ func NewBridge(cfg *config.CanalConfig, writer *kafka.Writer, logger *zap.Logger
 	return &Bridge{cfg: cfg, writer: writer, logger: logger}
 }
 
+// socketTimeoutMs 返回 Canal Socket 超时（毫秒）。
+//
+// 功能：优先使用配置值，未配置则返回默认值 60000ms（60秒）。
+func (b *Bridge) socketTimeoutMs() int32 {
+	if b.cfg.SocketTimeoutMs > 0 {
+		return int32(b.cfg.SocketTimeoutMs)
+	}
+	return defaultCanalSocketTimeoutMs
+}
+
+// idleTimeoutMs 返回 Canal 空闲超时（毫秒）。
+//
+// 功能：优先使用配置值，未配置则返回默认值 3600000ms（1小时）。
+func (b *Bridge) idleTimeoutMs() int32 {
+	if b.cfg.IdleTimeoutMs > 0 {
+		return int32(b.cfg.IdleTimeoutMs)
+	}
+	return defaultCanalIdleTimeoutMs
+}
+
 // Start 持续连接 Canal 并将 outbox 表变更写入 Kafka。
 //
 // 功能：
@@ -116,7 +138,7 @@ func (b *Bridge) Start(ctx context.Context) {
 		if err != nil && !errors.Is(err, context.Canceled) && b.logger != nil {
 			b.logger.Warn("canal bridge stopped unexpectedly, will retry", zap.Error(err))
 		}
-		if !sleepContext(ctx, retryDelay) {
+		if !contextutil.Sleep(ctx, retryDelay) {
 			return
 		}
 	}
@@ -164,8 +186,8 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		b.cfg.Username,
 		b.cfg.Password,
 		b.cfg.Destination,
-		int32(defaultCanalSocketTimeoutMs),
-		int32(defaultCanalIdleTimeoutMs),
+		b.socketTimeoutMs(),
+		b.idleTimeoutMs(),
 	)
 	if err := connector.Connect(); err != nil {
 		return err
@@ -190,14 +212,16 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		}
 
 		if message.Id == -1 || len(message.Entries) == 0 {
-			_ = sleepContext(ctx, pollDelay)
+			contextutil.Sleep(ctx, pollDelay)
 			continue
 		}
 
 		batchID := message.Id
-		payloads, err := parseEntries(message.Entries)
+		payloads, err := parseEntries(entryPtrSlice(message.Entries))
 		if err != nil {
-			_ = connector.RollBack(batchID)
+			if rbErr := connector.RollBack(batchID); rbErr != nil {
+				b.logger.Warn("rollback canal batch failed after parse error", zap.Int64("batchID", batchID), zap.Error(rbErr))
+			}
 			return err
 		}
 		if len(payloads) == 0 {
@@ -212,7 +236,9 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 			var key []byte
 			rows, err := outbox.ExtractRows(payload)
 			if err != nil {
-				_ = connector.RollBack(batchID)
+				if rbErr := connector.RollBack(batchID); rbErr != nil {
+					b.logger.Warn("rollback canal batch failed after extract error", zap.Int64("batchID", batchID), zap.Error(rbErr))
+				}
 				return err
 			}
 			if len(rows) > 0 {
@@ -221,7 +247,9 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 			messages = append(messages, kafka.Message{Key: key, Value: payload})
 		}
 		if err := b.writer.WriteMessages(ctx, messages...); err != nil {
-			_ = connector.RollBack(batchID)
+			if rbErr := connector.RollBack(batchID); rbErr != nil {
+				b.logger.Warn("rollback canal batch failed after write error", zap.Int64("batchID", batchID), zap.Error(rbErr))
+			}
 			return err
 		}
 		if err := connector.Ack(batchID); err != nil {
@@ -255,40 +283,12 @@ func maxInt(value, fallback int) int {
 	return fallback
 }
 
-// sleepContext 是一个可被上下文取消的休眠函数。
-//
-// 功能：
-//
-//	使用 time.NewTimer 创建一个定时器，通过 select 同时监听
-//	timer 到期和 ctx.Done()。如果 ctx 在定时器到期前被取消，
-//	立即返回 false（不等待定时器到期）。
-//
-// 参数：
-//   - ctx: 上下文，用于取消休眠
-//   - d:   休眠时长
-//
-// 返回值：
-//   - bool: true=正常完成休眠，false=ctx 被取消
-//
-// 函数调用说明：
-//   - time.NewTimer(d):
-//     Go 标准库定时器，创建后 d 时长后 timer.C 通道会收到一个值。
-//   - defer timer.Stop():
-//     确保函数返回时停止定时器，防止 goroutine 泄漏。
-//     如果不 Stop，已过期但未消费的 timer 会一直持有资源。
-//
-// 设计决策：
-//
-//	使用 NewTimer + defer Stop 而非 time.After，
-//	因为 time.After 创建的定时器如果被 select 抛弃且未到期，
-//	会直到到期才被 GC 回收，可能造成内存泄漏。
-func sleepContext(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
+// entryPtrSlice 将 []pbe.Entry 转为 []*pbe.Entry，避免值拷贝锁问题。
+func entryPtrSlice(entries []pbe.Entry) []*pbe.Entry {
+	result := make([]*pbe.Entry, len(entries))
+	for i := range entries {
+		result[i] = &entries[i]
 	}
+	return result
 }
+

@@ -5,8 +5,20 @@ import (
 	"strings"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/zhiguang/app/internal/auth"
+	"github.com/zhiguang/app/internal/model"
 )
+
+// profileUpdateFields 是允许更新的字段白名单。
+// buildUpdateSet 仅会使用此 map 中的字段名拼接 SQL，防止注入。
+var profileUpdateFields = map[string]string{
+	"nickname":  "nickname",
+	"avatar":    "avatar",
+	"bio":       "bio",
+	"gender":    "gender",
+	"school":    "school",
+	"tags_json": "tags_json",
+	"birthday":  "birthday",
+}
 
 // Repository 封装资料领域的数据访问逻辑。
 type Repository struct {
@@ -23,76 +35,22 @@ func (r *Repository) WithDB(db sqlx.ExtContext) *Repository {
 	return &Repository{db: db}
 }
 
-// FindByID 根据用户 ID 查询完整用户资料。
-//
-// 功能：从 users 表查询用户全部字段（含密码哈希），通过 sqlx.GetContext 映射到 auth.User 结构体。
-// 查询结果包含敏感字段 password_hash，但该字段在 API 响应序列化时会被忽略。
-//
-// 参数：
-//   - ctx: context.Context，上下文。
-//   - id: uint64，用户 ID。
-//
-// 返回值：
-//   - *auth.User: 用户完整信息，包含所有数据库字段。
-//   - error: 用户不存在时返回 sql.ErrNoRows。
-func (r *Repository) FindByID(ctx context.Context, id uint64) (*auth.User, error) {
-	var user auth.User
-	if err := sqlx.GetContext(ctx, r.db, &user, `
-SELECT id, phone, email, password_hash, nickname, avatar, bio, zg_id, gender, birthday, school, tags_json, created_at, updated_at
-FROM users
-WHERE id = ?
-`, id); err != nil {
+// FindByID 根据用户 ID 查询用户公开资料。
+func (r *Repository) FindByID(ctx context.Context, id uint64) (*UserProfile, error) {
+	var row model.User
+	if err := sqlx.GetContext(ctx, r.db, &row, `
+	SELECT id, phone, email, nickname, avatar, bio, zg_id, gender, birthday, school, tags_json, created_at, updated_at
+	FROM users
+	WHERE id = ?
+	`, id); err != nil {
 		return nil, err
 	}
-	return &user, nil
+	return toUserProfile(&row), nil
 }
 
 // Update 动态更新用户资料的部分字段（PATCH 语义）。
-//
-// 功能：根据 ProfilePatchRequest 中非 nil 的字段动态构建 SET 子句。
-// 只更新调用方指定的字段，其他字段保持不变。
-//
-// 参数：
-//   - ctx: context.Context，上下文。
-//   - id: uint64，目标用户 ID。
-//   - req: *ProfilePatchRequest，包含要更新的字段。仅非 nil 的字段会被更新。
-//
-// 返回值：
-//   - error: 数据库执行失败时的错误。
-//
-// 边界情况：
-//   - req 所有字段都为 nil：跳过执行，返回 nil（无实际更新）。
 func (r *Repository) Update(ctx context.Context, id uint64, req *ProfilePatchRequest) error {
-	sets := make([]string, 0, 7)
-	args := make([]interface{}, 0, 8)
-	if req.Nickname != nil {
-		sets = append(sets, "nickname = ?")
-		args = append(args, *req.Nickname)
-	}
-	if req.Avatar != nil {
-		sets = append(sets, "avatar = ?")
-		args = append(args, *req.Avatar)
-	}
-	if req.Bio != nil {
-		sets = append(sets, "bio = ?")
-		args = append(args, *req.Bio)
-	}
-	if req.Gender != nil {
-		sets = append(sets, "gender = ?")
-		args = append(args, *req.Gender)
-	}
-	if req.School != nil {
-		sets = append(sets, "school = ?")
-		args = append(args, *req.School)
-	}
-	if req.TagsJson != nil {
-		sets = append(sets, "tags_json = ?")
-		args = append(args, *req.TagsJson)
-	}
-	if req.Birthday != nil {
-		sets = append(sets, "birthday = ?")
-		args = append(args, *req.Birthday)
-	}
+	sets, args := buildUpdateSet(req)
 	if len(sets) == 0 {
 		return nil
 	}
@@ -101,4 +59,65 @@ func (r *Repository) Update(ctx context.Context, id uint64, req *ProfilePatchReq
 	query := "UPDATE users SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	_, err := r.db.ExecContext(ctx, query, args...)
 	return err
+}
+
+// buildUpdateSet 根据 ProfilePatchRequest 中非 nil 字段构建 SQL SET 子句和参数。
+// 返回的 sets 和 args 一一对应，sets[i] = "col = ?"，args[i] = 对应值。
+func buildUpdateSet(req *ProfilePatchRequest) ([]string, []interface{}) {
+	sets := make([]string, 0, 7)
+	args := make([]interface{}, 0, 7)
+
+	type fieldDef struct {
+		ptr  interface{}
+		name string
+	}
+
+	fields := []fieldDef{
+		{req.Nickname, "nickname"},
+		{req.Avatar, "avatar"},
+		{req.Bio, "bio"},
+		{req.Gender, "gender"},
+		{req.School, "school"},
+		{req.TagsJson, "tags_json"},
+		{req.Birthday, "birthday"},
+	}
+
+	for _, f := range fields {
+		if f.ptr == nil {
+			continue
+		}
+		if _, ok := profileUpdateFields[f.name]; !ok {
+			continue
+		}
+		// 利用 switch 解引用不同类型的指针
+		switch v := f.ptr.(type) {
+		case *string:
+			if v == nil {
+				continue
+			}
+			sets = append(sets, f.name+" = ?")
+			args = append(args, *v)
+		}
+	}
+
+	return sets, args
+}
+
+// toUserProfile 将 model.User 映射为对外 DTO，过滤敏感字段。
+func toUserProfile(row *model.User) *UserProfile {
+	return &UserProfile{
+		ID:       row.ID,
+		Nickname: row.Nickname,
+		Avatar:   row.Avatar,
+		Phone:    row.Phone,
+		Email:    row.Email,
+		ZgID:     row.ZgID,
+		Birthday: row.Birthday,
+		School:   row.School,
+		Bio:      row.Bio,
+		Gender:   row.Gender,
+		TagsJSON: row.TagsJSON,
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
+	}
 }
