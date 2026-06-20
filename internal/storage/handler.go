@@ -82,7 +82,7 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 	}
 
 	objectKey := h.svc.GenerateObjectKey(req.Folder, req.FileName)
-	expiry := 10 * time.Minute
+	expiry := h.svc.PresignExpiry()
 
 	uploadURL, err := h.svc.GeneratePresignedPutURL(objectKey, expiry)
 	if err != nil {

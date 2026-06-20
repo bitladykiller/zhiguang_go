@@ -190,7 +190,7 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
 	}
 
-	if err := s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
 	}
 	s.recordLoginLog(ctx, user.ID, normalized, "REGISTER", LoginStatusSuccess, clientInfo)
@@ -266,7 +266,7 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
 	}
 
-	if err := s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
 	}
 	s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusSuccess, clientInfo)
@@ -316,11 +316,11 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 		return AuthResponse{}, appErr
 	}
 	defer lock.Release()
-	if !s.tokenStore.IsTokenValid(jwtClaims.UID, jwtClaims.ID) {
+	if !s.tokenStore.IsTokenValid(ctx, jwtClaims.UID, jwtClaims.ID) {
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
 	}
 
-	if err := s.tokenStore.RevokeToken(jwtClaims.UID, jwtClaims.ID); err != nil {
+	if err := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to revoke refresh token")
 	}
 
@@ -333,7 +333,7 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 	if err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
 	}
-	if err := s.tokenStore.StoreToken(user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
 	}
 
@@ -350,13 +350,13 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 //
 // 参数：
 //   - req: 包含需要吊销的 refresh token 的请求
-func (s *AuthService) Logout(_ context.Context, req *TokenRefreshRequest) {
+func (s *AuthService) Logout(ctx context.Context, req *TokenRefreshRequest) {
 	claims, err := s.jwtSvc.ValidateToken(req.RefreshToken)
 	if err != nil || claims.TokenType() != "refresh" {
 		return
 	}
 	if jwtClaims, ok := claims.(*JwtClaims); ok {
-		s.tokenStore.RevokeToken(jwtClaims.UID, jwtClaims.ID)
+		s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID)
 	}
 }
 
@@ -411,7 +411,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 	if err := s.repo.UpdatePassword(ctx, user.ID, string(hash)); err != nil {
 		return errcode.ErrInternal.WithMsg("failed to update password")
 	}
-	if err := s.tokenStore.RevokeAll(user.ID); err != nil {
+	if err := s.tokenStore.RevokeAll(ctx, user.ID); err != nil {
 		return errcode.ErrInternal.WithMsg("failed to revoke refresh tokens")
 	}
 	return nil

@@ -199,3 +199,13 @@ func (s *OssStorageService) GetObjectMeta(objectKey string) (etag string, size i
 	}
 	return etag, size, nil
 }
+
+// PresignExpiry 返回预签名 URL 过期时间。
+//
+// 功能：优先使用配置值，未配置则返回默认值 10 分钟。
+func (s *OssStorageService) PresignExpiry() time.Duration {
+	if s.cfg.PresignExpiryMs > 0 {
+		return time.Duration(s.cfg.PresignExpiryMs) * time.Millisecond
+	}
+	return 10 * time.Minute
+}

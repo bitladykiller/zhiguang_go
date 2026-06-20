@@ -191,7 +191,8 @@ func InitializeApp(configPath string) (*server.App, error) {
 		Profile:  profileHandler,
 	}
 
-	router := server.NewRouter(handlerSet, logger, jwtSvc)
+	healthChecker := server.NewHealthChecker(db, redisClient)
+	router := server.NewRouter(handlerSet, logger, jwtSvc, healthChecker)
 	backgroundRunners := make([]server.BackgroundRunner, 0, 3)
 	backgroundRunners = append(backgroundRunners, counterAggConsumer)
 	if cfg.Canal.Enabled {

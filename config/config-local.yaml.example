@@ -12,6 +12,9 @@ database:
   max_open_conns: 50
   max_idle_conns: 10
   conn_max_lifetime: 3600
+  dial_timeout_ms: 5000      # 连接超时 5秒
+  read_timeout_ms: 10000     # 读超时 10秒
+  write_timeout_ms: 10000    # 写超时 10秒
 
 redis:
   host: localhost
@@ -19,6 +22,12 @@ redis:
   password: ""
   db: 0
   pool_size: 20
+  min_idle_conns: 5          # 最小空闲连接数
+  max_retries: 3             # 最大重试次数
+  dial_timeout_ms: 5000      # 连接超时 5秒
+  read_timeout_ms: 3000      # 读超时 3秒
+  write_timeout_ms: 3000     # 写超时 3秒
+  conn_max_lifetime: 3600    # 连接最大生命周期 1小时
 
 id_generator:
   machine_id: 0
@@ -32,11 +41,15 @@ kafka:
   consumer_group: counter-agg
   topics:
     counter_events: counter-events
+  write_timeout_ms: 5000     # 写超时 5秒
+  read_timeout_ms: 10000     # 读超时 10秒
+  max_attempts: 5            # 最大重试次数
 
 elasticsearch:
   uris:
     - http://localhost:9200
   index_name: zhiguang-ai-index
+  max_retries: 3             # 最大重试次数
 
 auth:
   jwt:
@@ -72,6 +85,7 @@ oss:
   bucket: ""
   public_domain: ""
   folder: avatars
+  presign_expiry_ms: 600000    # 预签名 URL 过期时间 10分钟
 
 canal:
   enabled: false
@@ -83,6 +97,8 @@ canal:
   filter: zhiguang\\.outbox
   batch_size: 1000
   interval_ms: 1000
+  socket_timeout_ms: 60000     # Socket 超时 60秒
+  idle_timeout_ms: 3600000     # 空闲超时 60分钟
 
 counter:
   consumer:
@@ -113,14 +129,17 @@ cache:
       ttl_seconds: 10
       max_size: 1000
   hotkey:
-    window_seconds: 60
-    segment_seconds: 10
+    bucket_size_seconds: 6
+    bucket_count: 10
+    flush_interval_seconds: 6
+    stat_ttl_seconds: 120
     level_low: 50
     level_medium: 200
     level_high: 500
     extend_low_seconds: 20
     extend_medium_seconds: 60
     extend_high_seconds: 120
+    hot_mark_ttl_seconds: 60
 
 llm:
   deepseek:
@@ -133,3 +152,11 @@ llm:
     api_key: ""
     embedding_model: ""
     dimensions: 1536
+  timeout_ms: 30000             # HTTP 客户端超时 30秒
+
+# 全局超时配置（可选，各模块有独立配置时优先使用模块配置）
+timeouts:
+  http_client_timeout_ms: 30000   # HTTP 客户端超时 30秒（备用）
+  oss_presign_expiry_ms: 600000    # OSS 预签名 URL 过期时间 10分钟（备用）
+  canal_socket_timeout_ms: 60000   # Canal Socket 超时 60秒（备用）
+  canal_idle_timeout_ms: 3600000   # Canal 空闲超时 60分钟（备用）

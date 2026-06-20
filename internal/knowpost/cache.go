@@ -26,9 +26,9 @@ import (
 //     第二次删除可以清除这种竞争条件导致的不一致。
 //
 // 参数：
+//   - ctx: context.Context，用于传递请求上下文和控制超时。
 //   - id: uint64，知文 ID。
-func (s *KnowPostService) invalidateCache(id uint64) {
-	ctx := context.Background()
+func (s *KnowPostService) invalidateCache(ctx context.Context, id uint64) {
 	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
 	s.redis.Del(ctx, pageKey)
 	s.l1Cache.Del([]byte(pageKey))
@@ -44,17 +44,18 @@ func (s *KnowPostService) invalidateCache(id uint64) {
 //   - 删除该条目的碎片缓存（"feed:item:{id}"）。
 //
 // 参数：
+//   - ctx: context.Context，用于传递请求上下文和控制超时。
 //   - id: uint64，知文 ID。
 //   - creatorID: uint64，作者 ID。
 //
 // 边界情况：
 //   - feedCache == nil：不做任何操作，不会 panic。
 //     这在 KnowPostService 刚构造完成但 SetFeedCacheInvalidator 尚未被调用时发生。
-func (s *KnowPostService) invalidateFeedCaches(id, creatorID uint64) {
+func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorID uint64) {
 	if s.feedCache == nil {
 		return
 	}
-	s.feedCache.InvalidateAfterPostMutation(context.Background(), id, creatorID)
+	s.feedCache.InvalidateAfterPostMutation(ctx, id, creatorID)
 }
 
 // recordHotKeyAndExtendTTL 记录某篇知文的热点访问，并酌情延长缓存 TTL。

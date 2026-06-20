@@ -43,6 +43,7 @@ import (
 //   - 已删除（deleted）→ 返回 404
 //
 // 参数：
+//   - ctx: context.Context，用于传递请求上下文和控制超时。
 //   - id: uint64，知文的雪花 ID。
 //   - currentUserID: *uint64，当前正在请求的用户 ID（可选）。
 //     传 nil 表示未登录，此时无法获得点赞/收藏状态和私有内容的查看权限。
@@ -51,8 +52,7 @@ import (
 //   - *KnowPostDetailResponse: 详情响应，包含标题、描述、内容 URL、作者信息、计数等。
 //   - error: 错误对象。可能的值包括 errcode.ErrNotFound（内容不存在/已删除）、
 //     errcode.ErrForbidden（无权限查看）。
-func (s *KnowPostService) GetDetail(id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
-	ctx := context.Background()
+func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
 
 	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {

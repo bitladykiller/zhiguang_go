@@ -49,7 +49,7 @@ func NewKnowPostDescriptionService(cfg *config.LLMConfig) *KnowPostDescriptionSe
 //
 // 函数调用说明：
 //   - http.Post(url, contentType, body):
-//     Go 标准库的 HTTP POST 请求。需要设置 30 秒超时防止 API 阻塞。
+//     Go 标准库的 HTTP POST 请求。需要设置超时防止 API 阻塞。
 //   - json.Marshal(reqBody):
 //     构造请求体。messages 数组包含 system prompt 和 user prompt 两个消息。
 //   - io.ReadAll(resp.Body):
@@ -84,7 +84,12 @@ func (s *KnowPostDescriptionService) SuggestDescription(title, content string) (
 		return "", err
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// 使用配置的超时，未配置则默认 30 秒
+	timeout := 30 * time.Second
+	if s.cfg.TimeoutMs > 0 {
+		timeout = time.Duration(s.cfg.TimeoutMs) * time.Millisecond
+	}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Post(
 		s.cfg.DeepSeek.BaseURL+"/v1/chat/completions",
 		"application/json",

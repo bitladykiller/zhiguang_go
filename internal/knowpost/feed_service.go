@@ -96,6 +96,7 @@ func (s *KnowPostFeedService) SetCounterClient(c CounterClient) { s.counter = c 
 //     进入 getPublicFeedUnderLock 的锁区回源数据库。
 //
 // 参数：
+//   - ctx: context.Context，用于传递请求上下文和控制超时。
 //   - page: int，页码，从 1 开始。若传入 <= 0 则强制为 1。
 //   - size: int，每页数量，会被 clamp 到 [1, 50] 之间。
 //   - currentUserID: *uint64，当前用户 ID（可选）。
@@ -103,8 +104,7 @@ func (s *KnowPostFeedService) SetCounterClient(c CounterClient) { s.counter = c 
 // 返回值：
 //   - *FeedPageResponse: 包含 Items（FeedItemResponse 列表）、Page、Size 和 HasMore。
 //   - error: 数据库查询错误等。
-func (s *KnowPostFeedService) GetPublicFeed(page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
-	ctx := context.Background()
+func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
 	safeSize := clamp(size, 1, 50)
 	safePage := max(page, 1)
 	feedVersion := s.currentPublicFeedVersion(ctx)
@@ -250,6 +250,7 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 // 且数据量相对有限，整页缓存的实现更简单、维护成本更低。
 //
 // 参数：
+//   - ctx: context.Context，用于传递请求上下文和控制超时。
 //   - userID: uint64，目标用户 ID。
 //   - page: int，页码，从 1 开始。
 //   - size: int，每页条数，被 clamp 到 [1, 50]。
@@ -257,8 +258,7 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 // 返回值：
 //   - *FeedPageResponse: 分页结果。
 //   - error: 查询失败时的错误。
-func (s *KnowPostFeedService) GetMyPublished(userID uint64, page, size int) (*FeedPageResponse, error) {
-	ctx := context.Background()
+func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
 	safeSize := clamp(size, 1, 50)
 	safePage := max(page, 1)
 	feedVersion := s.currentMineFeedVersion(ctx, userID)

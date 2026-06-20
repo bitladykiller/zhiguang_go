@@ -17,10 +17,10 @@ import (
 //   - 定向吊销：使某个特定的刷新令牌失效
 //   - 批量吊销：使用户的全部刷新令牌失效（例如重置密码后）
 type RefreshTokenStore interface {
-	StoreToken(userID uint64, tokenID string, ttl time.Duration) error
-	IsTokenValid(userID uint64, tokenID string) bool
-	RevokeToken(userID uint64, tokenID string) error
-	RevokeAll(userID uint64) error
+	StoreToken(ctx context.Context, userID uint64, tokenID string, ttl time.Duration) error
+	IsTokenValid(ctx context.Context, userID uint64, tokenID string) bool
+	RevokeToken(ctx context.Context, userID uint64, tokenID string) error
+	RevokeAll(ctx context.Context, userID uint64) error
 }
 
 // RedisRefreshTokenStore 使用 Redis 实现 RefreshTokenStore。
@@ -50,9 +50,9 @@ func NewRedisRefreshTokenStore(redisClient *redis.Client) *RedisRefreshTokenStor
 //
 // 返回值:
 //   - error: Redis 操作异常时返回
-func (s *RedisRefreshTokenStore) StoreToken(userID uint64, tokenID string, ttl time.Duration) error {
+func (s *RedisRefreshTokenStore) StoreToken(ctx context.Context, userID uint64, tokenID string, ttl time.Duration) error {
 	key := fmt.Sprintf("rt:%d:%s", userID, tokenID)
-	return s.redis.Set(context.Background(), key, "1", ttl).Err()
+	return s.redis.Set(ctx, key, "1", ttl).Err()
 }
 
 // IsTokenValid 检查刷新令牌是否仍存在于 Redis 白名单中。
@@ -69,9 +69,9 @@ func (s *RedisRefreshTokenStore) StoreToken(userID uint64, tokenID string, ttl t
 //
 // 边界情况:
 //   - Redis 连接异常时 s.redis.Exists 返回 error，代码忽略后 exists 为 0，返回 false（fail-closed 策略）
-func (s *RedisRefreshTokenStore) IsTokenValid(userID uint64, tokenID string) bool {
+func (s *RedisRefreshTokenStore) IsTokenValid(ctx context.Context, userID uint64, tokenID string) bool {
 	key := fmt.Sprintf("rt:%d:%s", userID, tokenID)
-	exists, _ := s.redis.Exists(context.Background(), key).Result()
+	exists, _ := s.redis.Exists(ctx, key).Result()
 	return exists > 0
 }
 
@@ -86,9 +86,9 @@ func (s *RedisRefreshTokenStore) IsTokenValid(userID uint64, tokenID string) boo
 //
 // 返回值:
 //   - error: Redis 操作异常时返回
-func (s *RedisRefreshTokenStore) RevokeToken(userID uint64, tokenID string) error {
+func (s *RedisRefreshTokenStore) RevokeToken(ctx context.Context, userID uint64, tokenID string) error {
 	key := fmt.Sprintf("rt:%d:%s", userID, tokenID)
-	return s.redis.Del(context.Background(), key).Err()
+	return s.redis.Del(ctx, key).Err()
 }
 
 // RevokeAll 吊销指定用户的全部刷新令牌（使用 Redis SCAN 非阻塞遍历）。
@@ -116,9 +116,8 @@ func (s *RedisRefreshTokenStore) RevokeToken(userID uint64, tokenID string) erro
 // 边界情况:
 //   - 如果用户没有任何白名单令牌，迭代器直接结束，不执行任何操作，返回 nil
 //   - 遍历过程中新创建的令牌可能不会被本次扫描到（弱一致性），可忽略
-func (s *RedisRefreshTokenStore) RevokeAll(userID uint64) error {
+func (s *RedisRefreshTokenStore) RevokeAll(ctx context.Context, userID uint64) error {
 	pattern := fmt.Sprintf("rt:%d:*", userID)
-	ctx := context.Background()
 	iter := s.redis.Scan(ctx, 0, pattern, 100).Iterator()
 	for iter.Next(ctx) {
 		s.redis.Del(ctx, iter.Val())

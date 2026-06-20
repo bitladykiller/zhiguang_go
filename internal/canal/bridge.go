@@ -71,6 +71,26 @@ func NewBridge(cfg *config.CanalConfig, writer *kafka.Writer, logger *zap.Logger
 	return &Bridge{cfg: cfg, writer: writer, logger: logger}
 }
 
+// socketTimeoutMs 返回 Canal Socket 超时（毫秒）。
+//
+// 功能：优先使用配置值，未配置则返回默认值 60000ms（60秒）。
+func (b *Bridge) socketTimeoutMs() int32 {
+	if b.cfg.SocketTimeoutMs > 0 {
+		return int32(b.cfg.SocketTimeoutMs)
+	}
+	return defaultCanalSocketTimeoutMs
+}
+
+// idleTimeoutMs 返回 Canal 空闲超时（毫秒）。
+//
+// 功能：优先使用配置值，未配置则返回默认值 3600000ms（1小时）。
+func (b *Bridge) idleTimeoutMs() int32 {
+	if b.cfg.IdleTimeoutMs > 0 {
+		return int32(b.cfg.IdleTimeoutMs)
+	}
+	return defaultCanalIdleTimeoutMs
+}
+
 // Start 持续连接 Canal 并将 outbox 表变更写入 Kafka。
 //
 // 功能：
@@ -164,8 +184,8 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		b.cfg.Username,
 		b.cfg.Password,
 		b.cfg.Destination,
-		int32(defaultCanalSocketTimeoutMs),
-		int32(defaultCanalIdleTimeoutMs),
+		b.socketTimeoutMs(),
+		b.idleTimeoutMs(),
 	)
 	if err := connector.Connect(); err != nil {
 		return err

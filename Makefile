@@ -56,8 +56,7 @@ db-init:
 # Generate local RS256 JWT keys used by config/config-local.yaml
 gen-jwt-keys:
 	mkdir -p config/keys
-	openssl genrsa -out config/keys/private.pem 2048
-	openssl rsa -in config/keys/private.pem -pubout -out config/keys/public.pem
+	$(GO) run ./cmd/gen-jwt-keys -private config/keys/private.pem -public config/keys/public.pem
 
 # Show help
 help:

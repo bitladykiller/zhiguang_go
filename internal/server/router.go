@@ -41,6 +41,7 @@ type RouteRegistrar interface {
 //     （由外部初始化时根据配置决定是否创建）。
 //   - logger:   zap 结构化日志器，用于 LoggerMiddleware
 //   - tokenValidator: JWT Token 校验器，用于 OptionalAuthMiddleware。可能为 nil。
+//   - healthChecker: 健康检查器，用于注册 /health 和 /ready 端点。可能为 nil。
 //
 // 返回值：
 //   - *gin.Engine: 配置完成的 Gin 引擎，可直接用于 Run()
@@ -71,7 +72,8 @@ type RouteRegistrar interface {
 //     （不会 panic 或报错）
 //   - tokenValidator 为 nil → 不挂载 OptionalAuthMiddleware
 //     （所有接口均匿名访问）
-func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middleware.TokenValidator) *gin.Engine {
+//   - healthChecker 为 nil → 使用默认的简单健康检查端点
+func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middleware.TokenValidator, healthChecker *HealthChecker) *gin.Engine {
 	r := gin.New()
 
 	// --- 全局中间件 ---
@@ -84,9 +86,14 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 
 	// --- 健康检查 ---
 	// K8s 或 Docker 的健康探针使用此接口判断服务存活状态
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
-	})
+	if healthChecker != nil {
+		healthChecker.RegisterRoutes(&r.RouterGroup)
+	} else {
+		// 兜底：如果没有提供 HealthChecker，使用简单的存活探针
+		r.GET("/health", func(c *gin.Context) {
+			c.JSON(200, gin.H{"status": "ok"})
+		})
+	}
 
 	// --- API v1 路由 ---
 	// 按模块注册路由，每个处理器可选（可能因配置不完整而返回 nil）

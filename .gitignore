@@ -11,6 +11,9 @@ vendor/
 bin/
 dist/
 tmp/
+.tmp/
+.tools/
+.gopath/
 config/config-local.yaml
 *.pem
 *.key

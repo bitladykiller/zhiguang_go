@@ -42,6 +42,9 @@ import (
 //   - db.SetConnMaxLifetime():
 //     设置连接的最大存活时间。超过此时间后连接会被优雅关闭并替换为新连接。
 //     这是防止长时间运行的连接被 MySQL 服务端断开的重要措施。
+//
+// 超时配置：
+//   - 连接超时、读超时、写超时已通过 cfg.DSN() 中的 DSN 参数传递给 MySQL 驱动。
 func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
 	db, err := sqlx.Open("mysql", cfg.DSN())
 	if err != nil {
@@ -75,11 +78,41 @@ func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
 //     - DB: 数据库编号（0-15），不同业务可以隔离到不同 db
 //     - PoolSize: 连接池大小，默认 10/CPU
 //     注意：NewClient 不会立即连接 Redis，而是在首次操作时懒加载建立连接。
+//
+// 超时配置：
+//   - DialTimeout: 连接建立超时时间
+//   - ReadTimeout: 读取响应超时时间
+//   - WriteTimeout: 发送命令超时时间
+//   - MinIdleConns: 最小空闲连接数，确保连接池预热
+//   - MaxRetries: 命令执行失败时的最大重试次数
+//   - ConnMaxLifetime: 连接最大生命周期（秒），超时后连接会被关闭重建
 func NewRedisClient(cfg *config.RedisConfig) *redis.Client {
-	return redis.NewClient(&redis.Options{
+	opts := &redis.Options{
 		Addr:     cfg.Addr(),
 		Password: cfg.Password,
 		DB:       cfg.DB,
 		PoolSize: cfg.PoolSize,
-	})
+	}
+
+	// 设置超时和重试参数
+	if cfg.DialTimeoutMs > 0 {
+		opts.DialTimeout = time.Duration(cfg.DialTimeoutMs) * time.Millisecond
+	}
+	if cfg.ReadTimeoutMs > 0 {
+		opts.ReadTimeout = time.Duration(cfg.ReadTimeoutMs) * time.Millisecond
+	}
+	if cfg.WriteTimeoutMs > 0 {
+		opts.WriteTimeout = time.Duration(cfg.WriteTimeoutMs) * time.Millisecond
+	}
+	if cfg.MinIdleConns > 0 {
+		opts.MinIdleConns = cfg.MinIdleConns
+	}
+	if cfg.MaxRetries > 0 {
+		opts.MaxRetries = cfg.MaxRetries
+	}
+	if cfg.ConnMaxLifetime > 0 {
+		opts.ConnMaxLifetime = time.Duration(cfg.ConnMaxLifetime) * time.Second
+	}
+
+	return redis.NewClient(opts)
 }

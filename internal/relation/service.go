@@ -247,14 +247,14 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 // 缓存带来的收益和复杂度不成正比。
 //
 // 参数：
+//   - ctx: context.Context。
 //   - fromUserID: uint64，可能未关注的人。
 //   - toUserID: uint64，被关注的目标。
 //
 // 返回值：
 //   - bool: true 表示已关注，false 表示未关注。
 //   - error: 数据库查询错误。
-func (s *RelationService) IsFollowing(fromUserID, toUserID uint64) (bool, error) {
-	ctx := context.Background()
+func (s *RelationService) IsFollowing(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	cnt, err := s.repo.ExistsFollowing(ctx, fromUserID, toUserID)
 	if err != nil {
 		return false, err
@@ -361,11 +361,11 @@ func (s *RelationService) FollowersCursor(ctx context.Context, userID uint64, li
 //   - string: 关系状态。
 //   - error: 查询错误。
 func (s *RelationService) RelationStatus(ctx context.Context, fromUserID, toUserID uint64) (string, error) {
-	following, err := s.IsFollowing(fromUserID, toUserID)
+	following, err := s.IsFollowing(ctx, fromUserID, toUserID)
 	if err != nil {
 		return "", err
 	}
-	followedBy, err := s.IsFollowing(toUserID, fromUserID)
+	followedBy, err := s.IsFollowing(ctx, toUserID, fromUserID)
 	if err != nil {
 		return "", err
 	}

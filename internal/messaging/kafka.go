@@ -95,14 +95,15 @@ func NewKafkaWriter(cfg *config.KafkaConfig) *kafka.Writer {
 //   - MaxAttempts: 写入失败时的最大重试次数
 //   - WriteBackoffMin/Max: 重试退避的间隔范围
 //   - AllowAutoTopicCreation: 是否允许自动创建 topic
+//   - WriteTimeout: 写入超时时间
 //   - kafka.TCP(brokers...):
 //     创建 TCP 网络地址，用于连接 Kafka broker。
 //
 // 设计决策：
 //
-//	不同类型 topic 的不同保证策略体现了"为不同数据选择不同可靠性级别"的设计原则：
+//	不同类型 topic 的不同保证策略体现了”为不同数据选择不同可靠性级别”的设计原则：
 //	outbox 链路是搜索索引和关系数据的消费源头，必须至少一次交付。
-//	计数事件不是核心业务，但也不能继续维持“完全不等确认”的极低保证。
+//	计数事件不是核心业务，但也不能继续维持”完全不等确认”的极低保证。
 func NewTopicWriter(cfg *config.KafkaConfig, topic string, async bool) *kafka.Writer {
 	writer := &kafka.Writer{
 		Addr:     kafka.TCP(cfg.Brokers...),
@@ -110,6 +111,14 @@ func NewTopicWriter(cfg *config.KafkaConfig, topic string, async bool) *kafka.Wr
 		Balancer: &kafka.LeastBytes{},
 		Async:    async,
 	}
+
+	// 应用超时配置
+	if cfg.WriteTimeoutMs > 0 {
+		writer.WriteTimeout = time.Duration(cfg.WriteTimeoutMs) * time.Millisecond
+	}
+
+	// 应用全局重试次数配置（仅对非 outbox topic 生效）
+	globalMaxAttempts := cfg.MaxAttempts
 
 	if topic == outbox.CanalOutboxTopic {
 		// outbox 事件是异步同步链路源头，显式要求 ISR 全确认并保留默认级别的重试能力。
@@ -123,7 +132,11 @@ func NewTopicWriter(cfg *config.KafkaConfig, topic string, async bool) *kafka.Wr
 
 	// counter 事件采用更高可靠性配置，但是否异步仍由调用方决定。
 	writer.RequiredAcks = kafka.RequireAll
-	writer.MaxAttempts = counterWriterMaxAttempts
+	if globalMaxAttempts > 0 {
+		writer.MaxAttempts = globalMaxAttempts
+	} else {
+		writer.MaxAttempts = counterWriterMaxAttempts
+	}
 	writer.WriteBackoffMin = counterBackoffMin
 	writer.WriteBackoffMax = counterBackoffMax
 	writer.AllowAutoTopicCreation = false
@@ -183,11 +196,18 @@ func NewKafkaReader(cfg *config.KafkaConfig, topic string) *kafka.Reader {
 //	但同时可能增加单条消息的延迟（因为要等缓冲区积累够 10KB 才返回）。
 //	对于非实时消费场景（如搜索索引同步），这种取舍是合理的。
 func NewKafkaReaderWithGroup(cfg *config.KafkaConfig, topic, groupID string) *kafka.Reader {
-	return kafka.NewReader(kafka.ReaderConfig{
+	config := kafka.ReaderConfig{
 		Brokers:  cfg.Brokers,
 		GroupID:  groupID,
 		Topic:    topic,
 		MinBytes: 10e3, // 10KB
 		MaxBytes: 10e6, // 10MB
-	})
+	}
+
+	// 应用超时配置 - 使用 ReadBatchTimeout 控制读取批次超时
+	if cfg.ReadTimeoutMs > 0 {
+		config.ReadBatchTimeout = time.Duration(cfg.ReadTimeoutMs) * time.Millisecond
+	}
+
+	return kafka.NewReader(config)
 }
