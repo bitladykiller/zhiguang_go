@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+
+	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
 // CounterReader 定义搜索索引投影过程中所需的计数读取接口子集。
@@ -183,12 +185,12 @@ WHERE know_posts.id = ?
 		Description:   strings.TrimSpace(strValue(row.Description)),
 		Body:          strings.TrimSpace(strValue(row.Description)),
 		TagID:         row.TagID,
-		Tags:          parseJSONTags(row.Tags),
+		Tags:          jsonutil.ParseStringArray(row.Tags),
 		AuthorID:      strconv.FormatUint(row.CreatorID, 10),
 		AuthorAvatar:  row.AuthorAvatar,
 		AuthorName:    row.AuthorNickname,
 		AuthorTagJSON: row.AuthorTagJSON,
-		ImgURLs:       parseJSONTags(row.ImgURLs),
+		ImgURLs:       jsonutil.ParseStringArray(row.ImgURLs),
 		LikeCount:     int64(metrics["like"]),
 		FavCount:      int64(metrics["fav"]),
 		ViewCount:     0,
@@ -205,24 +207,6 @@ WHERE know_posts.id = ?
 	return doc, nil
 }
 
-// parseJSONTags 解析 JSON 字符串数组为 Go []string。
-//
-// 参数：
-//   - raw: 指向 JSON 字符串的指针（可能为 nil）
-//
-// 返回空切片而非 nil，避免序列化时为 null。
-func parseJSONTags(raw *string) []string {
-	if raw == nil || strings.TrimSpace(*raw) == "" {
-		return []string{}
-	}
-
-	var tags []string
-	if err := json.Unmarshal([]byte(*raw), &tags); err != nil {
-		return []string{}
-	}
-	return tags
-}
-
 // buildSuggestField 构建 ES completion suggester 字段，包含标题和标签。
 //
 // 参数：
@@ -237,7 +221,7 @@ func buildSuggestField(title *string, tags *string) *SuggestField {
 	if text := strings.TrimSpace(strValue(title)); text != "" {
 		inputs = append(inputs, text)
 	}
-	for _, tag := range parseJSONTags(tags) {
+	for _, tag := range jsonutil.ParseStringArray(tags) {
 		tag = strings.TrimSpace(tag)
 		if tag != "" {
 			inputs = append(inputs, tag)

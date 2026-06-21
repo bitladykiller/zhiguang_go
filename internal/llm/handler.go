@@ -11,15 +11,15 @@ import (
 
 // LlmHandler 暴露 AI 相关 HTTP 接口。
 type LlmHandler struct {
-	descSvc *KnowPostDescriptionService
-	ragSvc  *RagQueryService
+	descSvc DescriptionServiceInterface
+	ragSvc  RagQueryServiceInterface
 }
 
 // NewLlmHandler 创建 LLM 处理器实例。
 //
 // descSvc 和 ragSvc 可能为 nil（配置不完整时降级），
 // handler 会在调用前检查 nil 并返回 503。
-func NewLlmHandler(descSvc *KnowPostDescriptionService, ragSvc *RagQueryService) *LlmHandler {
+func NewLlmHandler(descSvc DescriptionServiceInterface, ragSvc RagQueryServiceInterface) *LlmHandler {
 	return &LlmHandler{descSvc: descSvc, ragSvc: ragSvc}
 }
 
@@ -72,7 +72,8 @@ func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 
 	desc, err := h.descSvc.SuggestDescription(req.Title, req.Content)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 
@@ -145,7 +146,22 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	streamChan := make(chan string, 10)
 
 	go func() {
-		h.ragSvc.Query(postID, req.Question, streamChan)
+		defer func() {
+			if r := recover(); r != nil {
+				// 即使 ragSvc.Query 内部 panic，也要保证客户端收到终止信号，
+				// 避免 SSE 连接永久挂起。
+				select {
+				case streamChan <- fmt.Sprintf("data: {\"error\": \"internal server error\"}\n\n"):
+				default:
+				}
+				select {
+				case streamChan <- "data: [DONE]\n\n":
+				default:
+				}
+			}
+			close(streamChan)
+		}()
+		h.ragSvc.Query(c.Request.Context(), postID, req.Question, streamChan)
 	}()
 
 	flusher, _ := c.Writer.(interface{ Flush() })

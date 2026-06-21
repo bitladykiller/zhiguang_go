@@ -5,19 +5,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
 
 // KnowPostHandler 暴露知文模块的 HTTP 接口，负责请求参数解析和响应组装。
 type KnowPostHandler struct {
-	svc     *KnowPostService
-	feedSvc *KnowPostFeedService
+	svc     KnowPostWriteService
+	readSvc KnowPostReadService
+	feedSvc KnowPostFeedServiceInterface
 }
 
 // NewKnowPostHandler 创建处理器实例。
-func NewKnowPostHandler(svc *KnowPostService, feedSvc *KnowPostFeedService) *KnowPostHandler {
-	return &KnowPostHandler{svc: svc, feedSvc: feedSvc}
+func NewKnowPostHandler(svc KnowPostWriteService, readSvc KnowPostReadService, feedSvc KnowPostFeedServiceInterface) *KnowPostHandler {
+	return &KnowPostHandler{svc: svc, readSvc: readSvc, feedSvc: feedSvc}
 }
 
 // RegisterRoutes 注册知文模块的全部路由。
@@ -70,7 +72,7 @@ func (h *KnowPostHandler) CreateDraft(c *gin.Context) {
 	}
 	id, err := h.svc.CreateDraft(c.Request.Context(), userID)
 	if err != nil {
-		response.Error(c, errcode.ErrInternal.WithMsg(err.Error()))
+		response.Error(c, errcode.ErrInternal.WithMsg("internal server error"))
 		return
 	}
 	response.Created(c, gin.H{"id": strconv.FormatUint(id, 10)})
@@ -266,7 +268,7 @@ func (h *KnowPostHandler) GetDetail(c *gin.Context) {
 	if uid, ok := middleware.GetUserID(c); ok {
 		userID = &uid
 	}
-	resp, err := h.svc.GetDetail(c.Request.Context(), id, userID)
+	resp, err := h.readSvc.GetDetail(c.Request.Context(), id, userID)
 	if err != nil {
 		response.Error(c, toAppErr(err))
 		return
@@ -284,15 +286,15 @@ func (h *KnowPostHandler) GetDetail(c *gin.Context) {
 //   - 携带 JWT token：在 Feed 条目中附加 Liked/Faved 状态。
 //   - 不携带 JWT token：Feed 条目中 Liked/Faved 为 nil。
 func (h *KnowPostHandler) GetPublicFeed(c *gin.Context) {
-	page := queryInt(c, "page", 1)
-	size := queryInt(c, "size", 20)
+	page := httputil.QueryInt(c, "page", 1)
+	size := httputil.QueryInt(c, "size", 20)
 	var userID *uint64
 	if uid, ok := middleware.GetUserID(c); ok {
 		userID = &uid
 	}
 	resp, err := h.feedSvc.GetPublicFeed(c.Request.Context(), page, size, userID)
 	if err != nil {
-		response.Error(c, errcode.ErrInternal.WithMsg(err.Error()))
+		response.Error(c, errcode.ErrInternal.WithMsg("internal server error"))
 		return
 	}
 	response.Success(c, resp)
@@ -313,40 +315,14 @@ func (h *KnowPostHandler) GetMyPublished(c *gin.Context) {
 		response.Error(c, errcode.ErrUnauthorized)
 		return
 	}
-	page := queryInt(c, "page", 1)
-	size := queryInt(c, "size", 20)
+	page := httputil.QueryInt(c, "page", 1)
+	size := httputil.QueryInt(c, "size", 20)
 	resp, err := h.feedSvc.GetMyPublished(c.Request.Context(), userID, page, size)
 	if err != nil {
-		response.Error(c, errcode.ErrInternal.WithMsg(err.Error()))
+		response.Error(c, errcode.ErrInternal.WithMsg("internal server error"))
 		return
 	}
 	response.Success(c, resp)
-}
-
-// --- [辅助函数] ---
-
-// queryInt 从请求查询参数中解析整数值，解析失败时返回默认值。
-//
-// 功能：安全地从查询字符串中读取整数参数。
-// 如果参数缺失或无法解析为整数，返回给定的默认值。
-//
-// 参数：
-//   - c: *gin.Context，当前请求上下文。
-//   - key: string，查询参数名。
-//   - defaultVal: int，解析失败时的默认值。
-//
-// 返回值：
-//   - int: 解析成功返回整数，失败返回 defaultVal。
-func queryInt(c *gin.Context, key string, defaultVal int) int {
-	s := c.Query(key)
-	if s == "" {
-		return defaultVal
-	}
-	v, err := strconv.Atoi(s)
-	if err != nil {
-		return defaultVal
-	}
-	return v
 }
 
 // toAppErr 将任意 error 转换为 *errcode.AppError。

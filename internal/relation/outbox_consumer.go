@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/outbox"
+	"github.com/zhiguang/app/pkg/contextutil"
 )
 
 // OutboxConsumer 消费 canal-outbox 主题中的关系事件。
@@ -85,7 +86,7 @@ func (c *OutboxConsumer) Start(ctx context.Context) {
 			if c.logger != nil {
 				c.logger.Warn("fetch relation outbox kafka message failed", zap.Error(err))
 			}
-			if !sleepRelationConsumer(ctx, time.Second) {
+			if !contextutil.Sleep(ctx, time.Second) {
 				return
 			}
 			continue
@@ -95,7 +96,7 @@ func (c *OutboxConsumer) Start(ctx context.Context) {
 			if c.logger != nil {
 				c.logger.Warn("process relation outbox kafka message failed", zap.Error(err))
 			}
-			if !sleepRelationConsumer(ctx, time.Second) {
+			if !contextutil.Sleep(ctx, time.Second) {
 				return
 			}
 			continue
@@ -149,24 +150,3 @@ func (c *OutboxConsumer) handleMessage(ctx context.Context, value []byte) error 
 	return nil
 }
 
-// sleepRelationConsumer 可中断的休眠等待，用于消费失败后的重试延迟。
-//
-// 功能：在失败后等待指定时间再重试。如果 ctx 在等待期间被取消（服务关闭），
-// 立即返回 false 以终止消费循环。
-//
-// 参数：
-//   - ctx: context.Context，控制生命周期的上下文。
-//   - d: time.Duration，等待时长。
-//
-// 返回值：
-//   - bool: true 表示正常等待到超时；false 表示 ctx 被取消。
-func sleepRelationConsumer(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}

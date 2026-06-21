@@ -8,11 +8,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/coocood/freecache"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/zhiguang/app/internal/cache"
-	"github.com/zhiguang/app/pkg/redislock"
+	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
 const feedLayoutVer = 1
@@ -46,8 +45,8 @@ const (
 type KnowPostFeedService struct {
 	repo     *KnowPostRepository
 	redis    *redis.Client
-	l1Public *freecache.Cache
-	l1Mine   *freecache.Cache
+	l1Public *PrefixCache
+	l1Mine   *PrefixCache
 	hotKey   *cache.HotKeyDetector
 	counter  CounterClient
 }
@@ -58,12 +57,21 @@ type FeedCacheInvalidator interface {
 }
 
 // NewKnowPostFeedService 创建带有 L1 缓存实例的 Feed 服务。
+//
+// 参数：
+//   - repo: 知文仓储
+//   - redisClient: Redis 客户端
+//   - l1Public: 公共 Feed 的 L1 缓存（带前缀的 freecache）
+//   - l1Mine: 我的 Feed 的 L1 缓存（带前缀的 freecache）
+//   - hotKey: 热点探测器
+//   - counter: 计数器客户端，nil 表示不使用计数器
 func NewKnowPostFeedService(
 	repo *KnowPostRepository,
 	redisClient *redis.Client,
-	l1Public *freecache.Cache,
-	l1Mine *freecache.Cache,
+	l1Public *PrefixCache,
+	l1Mine *PrefixCache,
 	hotKey *cache.HotKeyDetector,
+	counter CounterClient,
 ) *KnowPostFeedService {
 	return &KnowPostFeedService{
 		repo:     repo,
@@ -71,11 +79,9 @@ func NewKnowPostFeedService(
 		l1Public: l1Public,
 		l1Mine:   l1Mine,
 		hotKey:   hotKey,
+		counter:  counter,
 	}
 }
-
-// SetCounterClient 注入计数器依赖。
-func (s *KnowPostFeedService) SetCounterClient(c CounterClient) { s.counter = c }
 
 // ============================================================================
 // 获取公共 Feed
@@ -119,7 +125,7 @@ func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int,
 		resp, parseErr := s.parseFeedPage(val)
 		if parseErr == nil {
 			for _, item := range resp.Items {
-				s.recordItemHotKey(item.ID)
+				s.recordItemHotKey(ctx, item.ID)
 			}
 			return &FeedPageResponse{
 				Items:   s.enrichItems(ctx, resp.Items, currentUserID),
@@ -134,7 +140,7 @@ func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int,
 	if resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, safePage, safeSize, currentUserID); resp != nil {
 		s.cacheFeedPage(localPageKey, resp, s.l1Public)
 		for _, item := range resp.Items {
-			s.recordItemHotKey(item.ID)
+			s.recordItemHotKey(ctx, item.ID)
 		}
 		return resp, nil
 	}
@@ -175,60 +181,46 @@ func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int,
 //   - error: 数据库等错误。
 func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey, hasMoreKey, localPageKey string, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
 	lockKey := "lock:" + idsKey
-	for {
-		lock, locked, err := redislock.TryAcquire(ctx, s.redis, lockKey, knowPostLockOptions())
-		if err != nil {
-			return nil, err
-		}
-
-		if !locked {
+	return cacheReadThrough(ctx, s.redis, lockKey,
+		func(ctx context.Context) (*FeedPageResponse, bool, error) {
 			if resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, page, size, currentUserID); resp != nil {
 				s.cacheFeedPage(localPageKey, resp, s.l1Public)
-				return resp, nil
+				return resp, true, nil
 			}
-			if !sleepDistributedLockRetry(ctx) {
-				return nil, ctx.Err()
+			return nil, false, nil
+		},
+		func(ctx context.Context) (*FeedPageResponse, error) {
+			offset := (page - 1) * size
+			rows, err := s.repo.ListFeedPublic(ctx, size+1, offset)
+			if err != nil {
+				return nil, err
 			}
-			continue
-		}
 
-		defer lock.Release()
+			hasMore := len(rows) > size
+			if hasMore {
+				rows = rows[:size]
+			}
 
-		if resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, page, size, currentUserID); resp != nil {
+			items := s.mapRowsToItems(ctx, rows, currentUserID, false)
+
+			resp := &FeedPageResponse{
+				Items:   items,
+				Page:    page,
+				Size:    size,
+				HasMore: hasMore,
+			}
+
+			s.writeFragmentCaches(ctx, idsKey, hasMoreKey, size, rows, items, hasMore)
 			s.cacheFeedPage(localPageKey, resp, s.l1Public)
-			return resp, nil
-		}
 
-		offset := (page - 1) * size
-		rows, err := s.repo.ListFeedPublic(ctx, size+1, offset)
-		if err != nil {
-			return nil, err
-		}
-
-		hasMore := len(rows) > size
-		if hasMore {
-			rows = rows[:size]
-		}
-
-		items := s.mapRowsToItems(ctx, rows, currentUserID, false)
-
-		resp := &FeedPageResponse{
-			Items:   items,
-			Page:    page,
-			Size:    size,
-			HasMore: hasMore,
-		}
-
-		s.writeFragmentCaches(ctx, idsKey, hasMoreKey, size, rows, items, hasMore)
-		s.cacheFeedPage(localPageKey, resp, s.l1Public)
-
-		return &FeedPageResponse{
-			Items:   s.enrichItems(ctx, items, currentUserID),
-			Page:    page,
-			Size:    size,
-			HasMore: hasMore,
-		}, nil
-	}
+			return &FeedPageResponse{
+				Items:   s.enrichItems(ctx, items, currentUserID),
+				Page:    page,
+				Size:    size,
+				HasMore: hasMore,
+			}, nil
+		},
+	)
 }
 
 // ============================================================================
@@ -306,7 +298,10 @@ func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64,
 	}
 
 	// 回填 L2 和 L1
-	jsonBytes, _ := json.Marshal(resp)
+	jsonBytes, err := json.Marshal(resp)
+	if err != nil {
+		return resp, nil
+	}
 	baseTTL := 30 + rand.Intn(21) // 30-50s with jitter
 	s.redis.Set(ctx, key, string(jsonBytes), time.Duration(baseTTL)*time.Second)
 	s.l1Mine.Set([]byte(key), jsonBytes, baseTTL)
@@ -448,7 +443,10 @@ func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, h
 	// 写入条目碎片
 	for _, item := range items {
 		itemKey := "feed:item:" + item.ID
-		jsonBytes, _ := json.Marshal(item)
+		jsonBytes, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
 		ttl := time.Duration(60+rand.Intn(31)) * time.Second
 		s.redis.Set(ctx, itemKey, string(jsonBytes), ttl)
 	}
@@ -514,16 +512,28 @@ func (s *KnowPostFeedService) InvalidateAfterPostMutation(ctx context.Context, p
 // 返回值：[]FeedItemResponse，转换后的条目列表，长度与 rows 相同。
 func (s *KnowPostFeedService) mapRowsToItems(ctx context.Context, rows []KnowPostFeedRow, userID *uint64, includeIsTop bool) []FeedItemResponse {
 	items := make([]FeedItemResponse, len(rows))
+
+	// 批量获取计数信息
+	var countsBatch map[string]map[string]int32
+	if s.counter != nil && len(rows) > 0 {
+		entityIDs := make([]string, len(rows))
+		for i, r := range rows {
+			entityIDs[i] = strconv.FormatUint(r.ID, 10)
+		}
+		countsBatch, _ = s.counter.GetCountsBatch(ctx, "knowpost", entityIDs, []string{"like", "fav"})
+	}
+
 	for i, r := range rows {
-		tags := parseStringArray(r.Tags)
-		imgs := parseStringArray(r.ImgUrls)
+		tags := jsonutil.ParseStringArray(r.Tags)
+		imgs := jsonutil.ParseStringArray(r.ImgUrls)
 		var cover *string
 		if len(imgs) > 0 {
 			cover = &imgs[0]
 		}
 
+		eid := strconv.FormatUint(r.ID, 10)
 		item := FeedItemResponse{
-			ID:             strconv.FormatUint(r.ID, 10),
+			ID:             eid,
 			Title:          r.Title,
 			Description:    r.Description,
 			CoverImage:     cover,
@@ -533,11 +543,11 @@ func (s *KnowPostFeedService) mapRowsToItems(ctx context.Context, rows []KnowPos
 			TagJson:        r.AuthorTagJson,
 		}
 
-		// 获取计数信息
-		if s.counter != nil {
-			counts, _ := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(r.ID, 10), []string{"like", "fav"})
-			item.LikeCount = int64(counts["like"])
-			item.FavoriteCount = int64(counts["fav"])
+		if countsBatch != nil {
+			if c, ok := countsBatch[eid]; ok {
+				item.LikeCount = int64(c["like"])
+				item.FavoriteCount = int64(c["fav"])
+			}
 		}
 
 		if includeIsTop {
@@ -571,12 +581,26 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 		return items
 	}
 
+	itemIDs := make([]string, len(items))
+	for i, item := range items {
+		itemIDs[i] = item.ID
+	}
+
+	likedMap, _ := s.counter.BatchIsLiked(ctx, *userID, "knowpost", itemIDs)
+	favedMap, _ := s.counter.BatchIsFaved(ctx, *userID, "knowpost", itemIDs)
+
 	enriched := make([]FeedItemResponse, len(items))
 	for i, item := range items {
-		liked, _ := s.counter.IsLiked(ctx, *userID, "knowpost", item.ID)
-		faved, _ := s.counter.IsFaved(ctx, *userID, "knowpost", item.ID)
-		item.Liked = &liked
-		item.Faved = &faved
+		if likedMap != nil {
+			if l, ok := likedMap[item.ID]; ok {
+				item.Liked = &l
+			}
+		}
+		if favedMap != nil {
+			if f, ok := favedMap[item.ID]; ok {
+				item.Faved = &f
+			}
+		}
 		enriched[i] = item
 	}
 	return enriched
@@ -590,16 +614,16 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 // 计算一个更长的 TTL。
 //
 // TTL 延长使用 Lua 脚本保证只增不减，多实例并发安全。
-func (s *KnowPostFeedService) recordItemHotKey(itemID string) {
+func (s *KnowPostFeedService) recordItemHotKey(ctx context.Context, itemID string) {
 	hotKeyID := "knowpost:" + itemID
 	s.hotKey.Record(hotKeyID)
 
 	baseTTL := 60
-	target := s.hotKey.TtlForPublic(baseTTL, hotKeyID)
+	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 
 	// Lua 脚本原子操作：只有当前 TTL < 目标 TTL 时才延长
 	itemKey := "feed:item:" + itemID
-	extendTTL(context.Background(), s.redis, itemKey, target)
+	extendTTL(ctx, s.redis, itemKey, target)
 }
 
 // ============================================================================
@@ -625,8 +649,11 @@ func (s *KnowPostFeedService) recordItemHotKey(itemID string) {
 //   - key: string，缓存键名。
 //   - resp: *FeedPageResponse，需要缓存的整页响应。
 //   - cache: *freecache.Cache，目标缓存实例（公共 Feed 使用 l1Public，"我的 Feed" 使用 l1Mine）。
-func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, cache *freecache.Cache) {
-	jsonBytes, _ := json.Marshal(resp)
+func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, cache *PrefixCache) {
+	jsonBytes, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
 	cache.Set([]byte(key), jsonBytes, 15) // 15s for L1 feed cache
 }
 

@@ -1,17 +1,14 @@
 package counter
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
-	"os/exec"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
@@ -22,9 +19,8 @@ func TestTogglePublishFailureMarksDirty(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")}, nil)
 	recorder := &stubCounterFailureRecorder{}
-	svc.SetFailureRecorder(recorder, "counter-events")
+	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")}, nil, recorder, "counter-events", nil)
 	ctx := context.Background()
 	entityType := "knowpost"
 	entityID := "42"
@@ -64,8 +60,7 @@ func TestTogglePublishesSnowflakeMessageID(t *testing.T) {
 	defer shutdown()
 
 	publisher := &stubCapturingCounterPublisher{published: make(chan *CounterEvent, 1)}
-	svc := NewCounterService(rdb, publisher, nil)
-	svc.SetMessageIDGenerator(stubMessageIDGenerator{next: 987654321})
+	svc := NewCounterService(rdb, publisher, nil, nil, "", stubMessageIDGenerator{next: 987654321})
 
 	changed, err := svc.Like(context.Background(), 1001, "knowpost", "66")
 	if err != nil {
@@ -103,7 +98,7 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 		t.Fatalf("seed sds: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil)
 	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
 	batch := newCounterBatch(2)
 	if err := batch.add(mustCounterMessageAt(t, 3, 10, CounterEvent{
@@ -164,7 +159,7 @@ func TestApplyBatchSkipsAlreadyAppliedPrefix(t *testing.T) {
 		t.Fatalf("seed applied offset: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil)
 	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
 	batch := newCounterBatch(4)
 	for offset := int64(9); offset <= 12; offset++ {
@@ -210,7 +205,7 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 	entityType := "knowpost"
 	entityID := "77"
 
-	svc := NewCounterService(rdb, nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil)
 	if _, err := svc.Like(ctx, 1001, entityType, entityID); err != nil {
 		t.Fatalf("like first user: %v", err)
 	}
@@ -266,9 +261,8 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 		t.Fatalf("seed sds: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil)
 	recorder := &stubCounterFailureRecorder{}
-	svc.SetFailureRecorder(recorder, "counter-events")
+	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil)
 	commitCalls := 0
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -342,9 +336,8 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 		t.Fatalf("seed sds: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil)
 	recorder := &stubCounterFailureRecorder{}
-	svc.SetFailureRecorder(recorder, "counter-events")
+	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil)
 
 	commitCalls := 0
 	consumer := &AggregationConsumer{
@@ -419,7 +412,7 @@ type stubCounterPublisher struct {
 	err error
 }
 
-func (p *stubCounterPublisher) Publish(event *CounterEvent) error {
+func (p *stubCounterPublisher) Publish(ctx context.Context, event *CounterEvent) error {
 	return p.err
 }
 
@@ -427,7 +420,7 @@ type stubCapturingCounterPublisher struct {
 	published chan *CounterEvent
 }
 
-func (p *stubCapturingCounterPublisher) Publish(event *CounterEvent) error {
+func (p *stubCapturingCounterPublisher) Publish(ctx context.Context, event *CounterEvent) error {
 	if p != nil && p.published != nil {
 		p.published <- cloneCounterEvent(event)
 	}
@@ -527,63 +520,15 @@ func waitForCondition(t *testing.T, timeout time.Duration, fn func() bool) {
 func startTestRedis(t *testing.T) (*redis.Client, func()) {
 	t.Helper()
 
-	port := reservePort(t)
-	dataDir := t.TempDir()
-	cmd := exec.Command(
-		"redis-server",
-		"--save", "",
-		"--appendonly", "no",
-		"--bind", "127.0.0.1",
-		"--port", strconv.Itoa(port),
-		"--dir", dataDir,
-	)
-
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start redis-server: %v", err)
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
 	}
 
-	addr := "127.0.0.1:" + strconv.Itoa(port)
-	client := redis.NewClient(&redis.Options{Addr: addr})
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if err := client.Ping(context.Background()).Err(); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			_ = client.Close()
-			t.Fatalf("redis-server did not become ready: %s", output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 
 	return client, func() {
-		_ = client.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
+		client.Close()
+		mr.Close()
 	}
-}
-
-func reservePort(t *testing.T) int {
-	t.Helper()
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve tcp port: %v", err)
-	}
-	defer ln.Close()
-
-	addr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("unexpected addr type: %T", ln.Addr())
-	}
-	return addr.Port
 }

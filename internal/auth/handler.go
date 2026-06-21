@@ -10,11 +10,11 @@ import (
 // AuthHandler 负责鉴权模块的 HTTP 路由注册与请求适配。
 // 它将 HTTP 请求参数反序列化、验证后传递给 AuthService 处理，再组装响应。
 type AuthHandler struct {
-	svc    *AuthService
+	svc    AuthServiceInterface
 	jwtSvc *JwtService
 }
 
-func NewAuthHandler(svc *AuthService, jwtSvc *JwtService) *AuthHandler {
+func NewAuthHandler(svc AuthServiceInterface, jwtSvc *JwtService) *AuthHandler {
 	return &AuthHandler{svc: svc, jwtSvc: jwtSvc}
 }
 

@@ -2,7 +2,7 @@ package relation
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,6 +11,8 @@ import (
 	"github.com/coocood/freecache"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/zhiguang/app/internal/outbox"
 )
 
 // TOKEN_BUCKET_LUA 实现一个通用令牌桶限流器。
@@ -144,43 +146,31 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 
 	id := s.idGen.NextID()
 	reverseID := s.idGen.NextID()
-
-	// 事务内同时写正向表、反向表和 outbox。
-	// WHY：粉丝列表和关系状态查询依赖反向索引表，不能只写单边。
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	txRepo := s.repo.WithDB(tx)
-	defer func() {
-		if r := recover(); r != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if err := txRepo.UpsertFollowing(ctx, id, fromUserID, toUserID, 1); err != nil {
-		_ = tx.Rollback()
-		return false, err
-	}
-	if err := txRepo.UpsertFollower(ctx, reverseID, toUserID, fromUserID, 1); err != nil {
-		_ = tx.Rollback()
-		return false, err
-	}
+	outboxID := s.idGen.NextID()
 
 	event := RelationEvent{EventType: "FollowCreated", FromUserID: fromUserID, ToUserID: toUserID, RelationID: &id}
-	payload, _ := json.Marshal(event)
-	outboxID := s.idGen.NextID()
-	if err := txRepo.InsertOutbox(ctx, outboxID, "following", &id, "FollowCreated", string(payload)); err != nil {
-		_ = tx.Rollback()
-		return false, err
-	}
 
-	if err := tx.Commit(); err != nil {
+	if err := outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
+		txRepo := s.repo.WithDB(tx)
+		if err := txRepo.UpsertFollowing(ctx, id, fromUserID, toUserID, 1); err != nil {
+			return err
+		}
+		if err := txRepo.UpsertFollower(ctx, reverseID, toUserID, fromUserID, 1); err != nil {
+			return err
+		}
+		return nil
+	}, []outbox.OutboxEvent{{
+		ID:            outboxID,
+		AggregateType: "following",
+		AggregateID:   &id,
+		EventType:     "FollowCreated",
+		Payload:       event,
+	}}); err != nil {
 		return false, err
 	}
 
 	// 失效相关缓存
-	s.invalidateCaches(fromUserID, toUserID)
+	s.invalidateCaches(ctx, fromUserID, toUserID)
 	return true, nil
 }
 
@@ -201,42 +191,48 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 // 返回值：
 //   - bool: true 表示取关成功（affected > 0）；false 表示未关注或已取关。
 //   - error: 数据库错误。
+// errNothingToCancel 表示取关时没有有效的关注关系，需要回滚事务但不视为错误。
+var errNothingToCancel = errors.New("relation: nothing to cancel")
+
 func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	txRepo := s.repo.WithDB(tx)
-
-	affected, err := txRepo.CancelFollowing(ctx, fromUserID, toUserID)
-	if err != nil || affected == 0 {
-		_ = tx.Rollback()
-		return false, err
-	}
-	reverseAffected, err := txRepo.CancelFollower(ctx, toUserID, fromUserID)
-	if err != nil {
-		_ = tx.Rollback()
-		return false, err
-	}
-	if reverseAffected == 0 {
-		// 历史遗留数据可能只写入了正向 following 表。
-		// WHY：在修复反向索引之前，早期写入可能是不完整的，
-		// 所以恢复取关时只能把正向记录视为权威来源。
-	}
-
-	event := RelationEvent{EventType: "FollowCanceled", FromUserID: fromUserID, ToUserID: toUserID}
-	payload, _ := json.Marshal(event)
 	outboxID := s.idGen.NextID()
-	if err := txRepo.InsertOutbox(ctx, outboxID, "following", nil, "FollowCanceled", string(payload)); err != nil {
-		_ = tx.Rollback()
+	event := RelationEvent{EventType: "FollowCanceled", FromUserID: fromUserID, ToUserID: toUserID}
+
+	err := outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
+		txRepo := s.repo.WithDB(tx)
+		affected, err := txRepo.CancelFollowing(ctx, fromUserID, toUserID)
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			// 没有有效的关注关系，回滚事务且不写 outbox。
+			return errNothingToCancel
+		}
+		reverseAffected, err := txRepo.CancelFollower(ctx, toUserID, fromUserID)
+		if err != nil {
+			return err
+		}
+		if reverseAffected == 0 {
+			// 历史遗留数据可能只写入了正向 following 表。
+			// WHY：在修复反向索引之前，早期写入可能是不完整的，
+			// 所以恢复取关时只能把正向记录视为权威来源。
+		}
+		return nil
+	}, []outbox.OutboxEvent{{
+		ID:            outboxID,
+		AggregateType: "following",
+		AggregateID:   nil,
+		EventType:     "FollowCanceled",
+		Payload:       event,
+	}})
+	if err != nil {
+		if errors.Is(err, errNothingToCancel) {
+			return false, nil
+		}
 		return false, err
 	}
 
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-
-	s.invalidateCaches(fromUserID, toUserID)
+	s.invalidateCaches(ctx, fromUserID, toUserID)
 	return true, nil
 }
 
@@ -656,9 +652,15 @@ func (s *RelationService) readFromDB(ctx context.Context, listType string, userI
 	}
 	if len(rows) == 0 {
 		// 向后兼容：旧版本写入只填充了正向索引。
-		rows, err = s.repo.ListFollowerRowsFromFollowing(ctx, userID, limit, offset)
-		if err != nil {
-			return nil, err
+		// 同时写入 Redis 标记，避免后续请求重复执行降级查询。
+		if s.shouldFallbackToFollowing(ctx, userID) {
+			rows, err = s.repo.ListFollowerRowsFromFollowing(ctx, userID, limit, offset)
+			if err != nil {
+				return nil, err
+			}
+			if len(rows) == 0 {
+				s.markFollowerFallbackExhausted(ctx, userID)
+			}
 		}
 	}
 	entries := make([]listEntry, len(rows))
@@ -666,6 +668,31 @@ func (s *RelationService) readFromDB(ctx context.Context, listType string, userI
 		entries[i] = listEntry{UserID: r.FromUserID, CreatedAt: r.CreatedAt}
 	}
 	return entries, nil
+}
+
+// shouldFallbackToFollowing 判断是否需要从 following 表降级查询粉丝。
+//
+// 使用 Redis key "follower:fallback:exhausted:{userID}" 作为标记：
+//   - key 不存在：允许降级查询（首次或 TTL 过期后）
+//   - key 存在：已确认该用户没有粉丝数据，跳过降级查询
+//
+// TTL 设为 10 分钟，之后重新检查（可能有新粉丝写入 follower 表）。
+func (s *RelationService) shouldFallbackToFollowing(ctx context.Context, userID uint64) bool {
+	key := fmt.Sprintf("follower:fallback:exhausted:%d", userID)
+	exists, err := s.redis.Exists(ctx, key).Result()
+	if err != nil {
+		return true // Redis 不可用时保守降级
+	}
+	return exists == 0
+}
+
+// markFollowerFallbackExhausted 标记该用户的粉丝降级查询已穷尽。
+//
+// 当 follower 表和 following 反向查询都为空时，写入 Redis 标记，
+// 后续 10 分钟内不再重复执行降级查询。
+func (s *RelationService) markFollowerFallbackExhausted(ctx context.Context, userID uint64) {
+	key := fmt.Sprintf("follower:fallback:exhausted:%d", userID)
+	s.redis.Set(ctx, key, "1", 10*time.Minute)
 }
 
 // isBigV 判断某个用户是否是 BigV（粉丝数 >= 500）。
@@ -765,36 +792,53 @@ func (s *RelationService) toIDList(members []string) []uint64 {
 // 功能：失效发起人（fromUserID）的关注列表缓存和被关注者（toUserID）的粉丝列表缓存。
 // 这样可以确保下次查询时不会读到过期的关注/粉丝数据。
 //
+// 同时删除 follower fallback 标记，因为新写入的 follower 数据可能改变了降级状态。
+//
 // WHY 只失效两个列表缓存而非四个：
 //   - 关注 fromUserID 的粉丝列表不受影响（fromUserID 的粉丝没变化）。
 //   - toUserID 的关注列表不受影响（toUserID 的关注人没变化）。
 //
 // 参数：
+//   - ctx: context.Context，用于控制缓存失效操作的超时
 //   - fromUserID: uint64，关注/取关的发起人。
 //   - toUserID: uint64，关注/取关的目标。
-func (s *RelationService) invalidateCaches(fromUserID, toUserID uint64) {
-	ctx, cancel := context.WithTimeout(context.Background(), relationInvalidateLockWaitLimit)
+func (s *RelationService) invalidateCaches(ctx context.Context, fromUserID, toUserID uint64) {
+	cacheCtx, cancel := context.WithTimeout(ctx, relationInvalidateLockWaitLimit)
 	defer cancel()
 
+	// 先拿到锁，再删缓存，避免与 ensureListCacheWarm 中的回填操作产生竞态。
+	//
+	// 多实例场景：
+	//   - 实例A 执行关注（失效缓存），实例B 同时查关注列表（回源回填缓存）
+	//   - 如果不加锁，可能出现：B 回填完成 → A 删除缓存（B 回填的数据丢失）
+	//   - 加锁后：B 等待 A 释放锁再回填 → A 删除缓存 → B 拿到锁 → B double-check 缓存已空 → B 回源 DB 回填
 	targets := []relationListCacheTarget{
 		{listType: "following", userID: fromUserID},
 		{listType: "followers", userID: toUserID},
 	}
-	locks, err := s.acquireListCacheLocks(ctx, targets)
-	if err == nil {
-		defer func() {
-			for i := len(locks) - 1; i >= 0; i-- {
-				locks[i].Release()
-			}
-		}()
+	locks, err := s.acquireListCacheLocks(cacheCtx, targets)
+	if err != nil {
+		// 获取分布式锁失败（Redis 不可用或超时），此时不删除缓存。
+		// WHY: 如果直接删缓存而没有锁保护，可能与另一个实例的 ensureListCacheWarm
+		// 产生竞态——缓存被回填后又被误删，导致下次读取仍要回源 DB。
+		// 缓存过期（TTL 自然淘汰）会兜底，不会造成永久不一致。
+		return
 	}
+	defer func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			locks[i].Release()
+		}
+	}()
 
 	// 失效 fromUserID 的关注列表缓存
-	s.redis.Del(ctx, s.zsetKey("following", fromUserID))
+	s.redis.Del(cacheCtx, s.zsetKey("following", fromUserID))
 	s.l1.Del([]byte(s.l1KeyStr("following", fromUserID)))
 	// 失效 toUserID 的粉丝列表缓存
-	s.redis.Del(ctx, s.zsetKey("followers", toUserID))
+	s.redis.Del(cacheCtx, s.zsetKey("followers", toUserID))
 	s.l1.Del([]byte(s.l1KeyStr("followers", toUserID)))
+
+	// 删除 follower fallback 标记，新的 follower 写入后降级缓存不再有效
+	s.redis.Del(cacheCtx, fmt.Sprintf("follower:fallback:exhausted:%d", toUserID))
 }
 
 // ensureListCacheWarm 在分布式锁保护下回填某个用户的关注/粉丝 ZSet。

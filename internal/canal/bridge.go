@@ -20,6 +20,7 @@ import (
 
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/contextutil"
 )
 
 const (
@@ -136,7 +137,7 @@ func (b *Bridge) Start(ctx context.Context) {
 		if err != nil && !errors.Is(err, context.Canceled) && b.logger != nil {
 			b.logger.Warn("canal bridge stopped unexpectedly, will retry", zap.Error(err))
 		}
-		if !sleepContext(ctx, retryDelay) {
+		if !contextutil.Sleep(ctx, retryDelay) {
 			return
 		}
 	}
@@ -210,7 +211,7 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		}
 
 		if message.Id == -1 || len(message.Entries) == 0 {
-			_ = sleepContext(ctx, pollDelay)
+			_ = contextutil.Sleep(ctx, pollDelay)
 			continue
 		}
 
@@ -275,40 +276,3 @@ func maxInt(value, fallback int) int {
 	return fallback
 }
 
-// sleepContext 是一个可被上下文取消的休眠函数。
-//
-// 功能：
-//
-//	使用 time.NewTimer 创建一个定时器，通过 select 同时监听
-//	timer 到期和 ctx.Done()。如果 ctx 在定时器到期前被取消，
-//	立即返回 false（不等待定时器到期）。
-//
-// 参数：
-//   - ctx: 上下文，用于取消休眠
-//   - d:   休眠时长
-//
-// 返回值：
-//   - bool: true=正常完成休眠，false=ctx 被取消
-//
-// 函数调用说明：
-//   - time.NewTimer(d):
-//     Go 标准库定时器，创建后 d 时长后 timer.C 通道会收到一个值。
-//   - defer timer.Stop():
-//     确保函数返回时停止定时器，防止 goroutine 泄漏。
-//     如果不 Stop，已过期但未消费的 timer 会一直持有资源。
-//
-// 设计决策：
-//
-//	使用 NewTimer + defer Stop 而非 time.After，
-//	因为 time.After 创建的定时器如果被 select 抛弃且未到期，
-//	会直到到期才被 GC 回收，可能造成内存泄漏。
-func sleepContext(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}

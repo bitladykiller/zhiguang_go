@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/contextutil"
 	"github.com/zhiguang/app/pkg/redislock"
 )
 
@@ -135,7 +136,7 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 					continue
 				}
 				c.logWarn("fetch counter kafka message failed", err)
-				if !sleepCounterConsumer(ctx, time.Second) {
+				if !contextutil.Sleep(ctx, time.Second) {
 					return
 				}
 				continue
@@ -152,7 +153,7 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 				return
 			}
 			c.logWarn("fetch counter kafka message failed", err)
-			if !sleepCounterConsumer(ctx, time.Second) {
+			if !contextutil.Sleep(ctx, time.Second) {
 				return
 			}
 			continue
@@ -173,7 +174,7 @@ func (c *AggregationConsumer) flushAndReset(ctx context.Context, batch *counterB
 		if err := c.flushBatch(ctx, batch); err != nil {
 			c.logWarn(fmt.Sprintf("flush counter batch failed (attempt %d/%d)", attempt, maxAttempts), err)
 			if attempt == maxAttempts {
-				recordCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+				recordCtx, cancel := context.WithTimeout(ctx, time.Second)
 				if recordErr := c.service.recordFailedKafkaMessages(recordCtx, counterFailureStageFlush, batch.messages, err); recordErr != nil {
 					c.logWarn("persist counter failed messages failed", recordErr)
 				}
@@ -187,7 +188,7 @@ func (c *AggregationConsumer) flushAndReset(ctx context.Context, batch *counterB
 				)
 				break
 			}
-			if !sleepCounterConsumer(ctx, c.retryDelay()) {
+			if !contextutil.Sleep(ctx, c.retryDelay()) {
 				return
 			}
 			continue
@@ -612,13 +613,3 @@ func parseCounterEvent(value []byte) (CounterEvent, error) {
 	return evt, nil
 }
 
-func sleepCounterConsumer(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}

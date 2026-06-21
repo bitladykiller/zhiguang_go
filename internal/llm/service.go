@@ -10,6 +10,7 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -167,13 +168,22 @@ func NewRagQueryService(llmCfg *config.LLMConfig, esURL string) *RagQueryService
 //   - postID: 知文 ID（用于筛选检索范围）
 //   - question: 用户提出的问题
 //   - streamChan: 用于写入 SSE 格式 token 的 channel（函数会在完成后 close）
-func (s *RagQueryService) Query(postID uint64, question string, streamChan chan<- string) error {
+func (s *RagQueryService) Query(ctx context.Context, postID uint64, question string, streamChan chan<- string) error {
 	defer close(streamChan)
 
 	// 当前仍是占位实现。
 	// 这里先返回一个简单流式响应，用来验证 SSE 链路与交互模式。
-	streamChan <- "data: {\"token\": \"RAG 问答系统已就绪，等待接入向量检索和流式生成。\"}\n\n"
-	streamChan <- "data: [DONE]\n\n"
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case streamChan <- "data: {\"token\": \"RAG 问答系统已就绪，等待接入向量检索和流式生成。\"}\n\n":
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case streamChan <- "data: [DONE]\n\n":
+	}
 
 	return nil
 }

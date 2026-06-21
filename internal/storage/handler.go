@@ -11,7 +11,7 @@ import (
 
 // StorageHandler 暴露 OSS 存储相关 HTTP 接口。
 type StorageHandler struct {
-	svc *OssStorageService
+	svc StorageServiceInterface
 }
 
 // NewStorageHandler 创建 OSS 存储处理器实例。
@@ -19,10 +19,10 @@ type StorageHandler struct {
 // 功能：将 OSS 存储服务注入 HTTP 处理器。
 //
 // 参数：
-//   - svc: *OssStorageService，OSS 存储服务实例。可能为 nil（配置不完整时）。
+//   - svc: OSS 存储服务实例。可能为 nil（配置不完整时）。
 //
 // 返回值：*StorageHandler，创建好的处理器实例。
-func NewStorageHandler(svc *OssStorageService) *StorageHandler {
+func NewStorageHandler(svc StorageServiceInterface) *StorageHandler {
 	return &StorageHandler{svc: svc}
 }
 
@@ -86,7 +86,8 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 
 	uploadURL, err := h.svc.GeneratePresignedPutURL(objectKey, expiry)
 	if err != nil {
-		response.Fail(c, 500, "failed to generate upload URL: "+err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "failed to generate upload URL")
 		return
 	}
 

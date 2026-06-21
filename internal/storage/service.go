@@ -10,13 +10,17 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 )
 
-// OssStorageService 管理 OSS 对象存储相关操作。
+// OssStorageService 管理 OSS 对象存储相关操作，实现 ObjectStorage 接口。
+//
 // 它提供直传 OSS 的预签名 URL，以及对象公开访问地址的构造能力。
 type OssStorageService struct {
 	client *oss.Client
 	bucket *oss.Bucket
 	cfg    *config.OssConfig
 }
+
+// 编译期断言：*OssStorageService 实现了 ObjectStorage 接口。
+var _ ObjectStorage = (*OssStorageService)(nil)
 
 // NewOssStorageService 创建 OSS 客户端以及 bucket 引用。
 //

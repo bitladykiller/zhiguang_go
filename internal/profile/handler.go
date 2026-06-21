@@ -11,7 +11,7 @@ import (
 
 // ProfileHandler 负责处理资料相关接口。
 type ProfileHandler struct {
-	svc *Service
+	svc ProfileServiceInterface
 }
 
 // NewProfileHandler 创建资料 HTTP 处理器。
@@ -21,7 +21,7 @@ type ProfileHandler struct {
 //
 // 返回值:
 //   - *ProfileHandler: 处理器实例
-func NewProfileHandler(svc *Service) *ProfileHandler {
+func NewProfileHandler(svc ProfileServiceInterface) *ProfileHandler {
 	return &ProfileHandler{svc: svc}
 }
 

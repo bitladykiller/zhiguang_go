@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/zhiguang/app/pkg/errcode"
-	"github.com/zhiguang/app/pkg/redislock"
+	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
 // --- [详情读取链路] --- //
@@ -56,7 +56,7 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
 
 	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {
-		s.recordHotKeyAndExtendTTL(id, pageKey)
+		s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 		resp, parseErr := s.parseDetail(val)
 		if parseErr == nil {
 			return s.enrichDetail(ctx, resp, currentUserID, true), nil
@@ -69,7 +69,7 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 			return nil, errcode.ErrNotFound.WithMsg("content not found")
 		}
 		s.l1Cache.Set([]byte(pageKey), []byte(cached), 60)
-		s.recordHotKeyAndExtendTTL(id, pageKey)
+		s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 		resp, parseErr := s.parseDetail([]byte(cached))
 		if parseErr == nil {
 			return s.enrichDetail(ctx, resp, currentUserID, true), nil
@@ -111,90 +111,73 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 //   - error: errcode.ErrNotFound（内容不存在或已删除）或 errcode.ErrForbidden（无权限）。
 func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pageKey string, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	lockKey := "lock:" + pageKey
-	for {
-		lock, locked, err := redislock.TryAcquire(ctx, s.redis, lockKey, knowPostLockOptions())
-		if err != nil {
-			return nil, err
-		}
-
-		if !locked {
+	return cacheReadThrough(ctx, s.redis, lockKey,
+		func(ctx context.Context) (*KnowPostDetailResponse, bool, error) {
 			cached, _ := s.redis.Get(ctx, pageKey).Result()
 			if cached == "NULL" {
-				return nil, errcode.ErrNotFound.WithMsg("content not found")
+				return nil, false, errcode.ErrNotFound.WithMsg("content not found")
 			}
 			if cached != "" {
 				resp, parseErr := s.parseDetail([]byte(cached))
 				if parseErr == nil {
 					s.l1Cache.Set([]byte(pageKey), []byte(cached), 60)
-					return s.enrichDetail(ctx, resp, currentUserID, true), nil
+					return s.enrichDetail(ctx, resp, currentUserID, true), true, nil
 				}
 			}
-			if !sleepDistributedLockRetry(ctx) {
-				return nil, ctx.Err()
+			return nil, false, nil
+		},
+		func(ctx context.Context) (*KnowPostDetailResponse, error) {
+			row, err := s.repo.FindDetailByID(ctx, id)
+			if err != nil || row == nil || row.Status == "deleted" {
+				ttl := time.Duration(30+rand.Intn(31)) * time.Second
+				s.redis.Set(ctx, pageKey, "NULL", ttl)
+				return nil, errcode.ErrNotFound.WithMsg("content not found")
 			}
-			continue
-		}
 
-		defer lock.Release()
-
-		cached, _ := s.redis.Get(ctx, pageKey).Result()
-		if cached == "NULL" {
-			return nil, errcode.ErrNotFound.WithMsg("content not found")
-		}
-		if cached != "" {
-			resp, err := s.parseDetail([]byte(cached))
-			if err == nil {
-				return s.enrichDetail(ctx, resp, currentUserID, true), nil
+			isPublic := row.Status == "published" && row.Visible == "public"
+			isOwner := currentUserID != nil && *currentUserID == row.CreatorID
+			if !isPublic && !isOwner {
+				return nil, errcode.ErrForbidden.WithMsg("no permission to view")
 			}
-		}
 
-		row, err := s.repo.FindDetailByID(ctx, id)
-		if err != nil || row == nil || row.Status == "deleted" {
-			ttl := time.Duration(30+rand.Intn(31)) * time.Second
-			s.redis.Set(ctx, pageKey, "NULL", ttl)
-			return nil, errcode.ErrNotFound.WithMsg("content not found")
-		}
+			resp := &KnowPostDetailResponse{
+				ID:             strconv.FormatUint(row.ID, 10),
+				Title:          row.Title,
+				Description:    row.Description,
+				ContentUrl:     row.ContentUrl,
+				Images:         jsonutil.ParseStringArray(row.ImgUrls),
+				Tags:           jsonutil.ParseStringArray(row.Tags),
+				AuthorID:       strconv.FormatUint(row.CreatorID, 10),
+				AuthorAvatar:   row.AuthorAvatar,
+				AuthorNickname: row.AuthorNickname,
+				AuthorTagJson:  row.AuthorTagJson,
+				IsTop:          row.IsTop,
+				Visible:        row.Visible,
+				Type:           row.Type,
+				PublishTime:    row.PublishTime,
+			}
 
-		isPublic := row.Status == "published" && row.Visible == "public"
-		isOwner := currentUserID != nil && *currentUserID == row.CreatorID
-		if !isPublic && !isOwner {
-			return nil, errcode.ErrForbidden.WithMsg("no permission to view")
-		}
+			if s.counter != nil {
+				counts, _ := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
+				resp.LikeCount = int64(counts["like"])
+				resp.FavoriteCount = int64(counts["fav"])
+			}
 
-		resp := &KnowPostDetailResponse{
-			ID:             strconv.FormatUint(row.ID, 10),
-			Title:          row.Title,
-			Description:    row.Description,
-			ContentUrl:     row.ContentUrl,
-			Images:         parseStringArray(row.ImgUrls),
-			Tags:           parseStringArray(row.Tags),
-			AuthorID:       strconv.FormatUint(row.CreatorID, 10),
-			AuthorAvatar:   row.AuthorAvatar,
-			AuthorNickname: row.AuthorNickname,
-			AuthorTagJson:  row.AuthorTagJson,
-			IsTop:          row.IsTop,
-			Visible:        row.Visible,
-			Type:           row.Type,
-			PublishTime:    row.PublishTime,
-		}
+			jsonBytes, err := json.Marshal(resp)
+			if err != nil {
+				return s.enrichDetail(ctx, resp, currentUserID, false), nil
+			}
+			baseTTL := 60 + rand.Intn(31)
+			targetTTL := s.hotKey.TtlForPublic(ctx, baseTTL, pageKey)
+			if targetTTL < baseTTL {
+				targetTTL = baseTTL
+			}
+			s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
+			s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
 
-		if s.counter != nil {
-			counts, _ := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
-			resp.LikeCount = int64(counts["like"])
-			resp.FavoriteCount = int64(counts["fav"])
-		}
-
-		jsonBytes, _ := json.Marshal(resp)
-		baseTTL := 60 + rand.Intn(31)
-		targetTTL := s.hotKey.TtlForPublic(baseTTL, pageKey)
-		if targetTTL < baseTTL {
-			targetTTL = baseTTL
-		}
-		s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
-		s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
-
-		return s.enrichDetail(ctx, resp, currentUserID, false), nil
-	}
+			return s.enrichDetail(ctx, resp, currentUserID, false), nil
+		},
+	)
 }
 
 // enrichDetail 在基础详情上叠加实时计数和当前用户的点赞/收藏状态。

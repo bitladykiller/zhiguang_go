@@ -51,7 +51,7 @@ const (
 // 并发安全：
 //   - buf 由 sync.Mutex 保护
 //   - levelCache 由 sync.RWMutex 保护（读多写少）
-//   - 后台 goroutine 通过 sync.Once 惰性启动
+//   - 后台 goroutine 通过 Run(ctx) 显式启动
 type HotKeyDetector struct {
 	config *config.HotKeyConfig
 	redis  *redis.Client
@@ -89,12 +89,18 @@ func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client) *Hot
 	}
 }
 
+// Run 启动后台 flush goroutine，使用给定的 ctx 控制生命周期。
+//
+// ctx 通常来自服务启动时的 root context，当 ctx 被取消时，flush goroutine 会退出。
+// 调用方应在服务初始化时调用此方法一次。
+func (d *HotKeyDetector) Run(ctx context.Context) {
+	d.startOnce.Do(func() {
+		go d.flushLoop(ctx)
+	})
+}
+
 // Record 为指定键在当前时间窗口内增加一次命中计数。
 func (d *HotKeyDetector) Record(key string) {
-	d.startOnce.Do(func() {
-		go d.flushLoop()
-	})
-
 	bucket := d.currentBucket()
 
 	d.mu.Lock()
@@ -112,29 +118,33 @@ func (d *HotKeyDetector) currentBucket() int64 {
 }
 
 // flushLoop 是后台 flush goroutine 的主循环。
-func (d *HotKeyDetector) flushLoop() {
+func (d *HotKeyDetector) flushLoop(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			go d.flushLoop()
+			go d.flushLoop(ctx)
 		}
 	}()
 
 	ticker := time.NewTicker(d.flushInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		d.flushOnce()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.flushOnce(ctx)
+		}
 	}
 }
 
 // flushOnce 执行一轮完整的 flush 流程。
-func (d *HotKeyDetector) flushOnce() {
+func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 	snapshot := d.snapshotAndReset()
 	if len(snapshot) == 0 {
 		return
 	}
 
-	ctx := context.Background()
 	nowBucket := d.currentBucket()
 
 	pipe := d.redis.Pipeline()
@@ -235,17 +245,16 @@ func (d *HotKeyDetector) calcLevel(total int64) HotKeyLevel {
 }
 
 // TtlForPublic 返回公共缓存键根据热度调整后的 TTL。
-func (d *HotKeyDetector) TtlForPublic(baseTTL int, key string) int {
-	return d.ttlForLevel(baseTTL, d.getLevel(key))
+func (d *HotKeyDetector) TtlForPublic(ctx context.Context, baseTTL int, key string) int {
+	return d.ttlForLevel(baseTTL, d.getLevel(ctx, key))
 }
 
 // getLevel 根据本地 levelCache 或 Redis hotkey:active 标记判断热度等级。
-func (d *HotKeyDetector) getLevel(key string) HotKeyLevel {
+func (d *HotKeyDetector) getLevel(ctx context.Context, key string) HotKeyLevel {
 	if level, ok := d.readLevelCache(key); ok {
 		return level
 	}
 
-	ctx := context.Background()
 	exists, err := d.redis.Exists(ctx, hotkeyActivePrefix+key).Result()
 	if err == nil && exists > 0 {
 		return LevelMedium

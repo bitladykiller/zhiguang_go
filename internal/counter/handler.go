@@ -1,6 +1,7 @@
 package counter
 
 import (
+	"context"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -11,10 +12,10 @@ import (
 
 // CounterHandler 暴露计数器模块的 HTTP 接口。
 type CounterHandler struct {
-	svc *CounterService
+	svc CounterServiceInterface
 }
 
-func NewCounterHandler(svc *CounterService) *CounterHandler {
+func NewCounterHandler(svc CounterServiceInterface) *CounterHandler {
 	return &CounterHandler{svc: svc}
 }
 
@@ -47,29 +48,9 @@ func (h *CounterHandler) RegisterRoutes(r *gin.RouterGroup) {
 //   - 400: 请求体格式错误
 //   - 500: 服务端错误（Redis 操作失败）
 //
-// 函数调用说明：
-//   - middleware.GetUserID(c): 从 Gin 上下文中提取已认证的用户 ID（由 AuthMiddleware 注入）
-//   - c.ShouldBindJSON(&req): Gin 提供的 JSON 请求体绑定，自动解析并校验字段
-//   - response.Success / response.Error / response.Fail: 统一响应格式工具函数
-//
 // 权限：要求登录（需先经过 AuthMiddleware 鉴权）
 func (h *CounterHandler) Like(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	var req ToggleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
-		return
-	}
-	changed, err := h.svc.Like(c.Request.Context(), userID, req.EntityType, req.EntityID)
-	if err != nil {
-		response.Fail(c, 500, err.Error())
-		return
-	}
-	response.Success(c, gin.H{"success": true, "changed": changed})
+	h.handleToggle(c, h.svc.Like)
 }
 
 // Unlike 处理 POST /counter/unlike 请求。
@@ -82,22 +63,7 @@ func (h *CounterHandler) Like(c *gin.Context) {
 //
 // 权限：要求登录。
 func (h *CounterHandler) Unlike(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	var req ToggleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
-		return
-	}
-	changed, err := h.svc.Unlike(c.Request.Context(), userID, req.EntityType, req.EntityID)
-	if err != nil {
-		response.Fail(c, 500, err.Error())
-		return
-	}
-	response.Success(c, gin.H{"success": true, "changed": changed})
+	h.handleToggle(c, h.svc.Unlike)
 }
 
 // Fav 处理 POST /counter/fav 请求。
@@ -110,22 +76,7 @@ func (h *CounterHandler) Unlike(c *gin.Context) {
 //
 // 权限：要求登录。
 func (h *CounterHandler) Fav(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	var req ToggleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
-		return
-	}
-	changed, err := h.svc.Fav(c.Request.Context(), userID, req.EntityType, req.EntityID)
-	if err != nil {
-		response.Fail(c, 500, err.Error())
-		return
-	}
-	response.Success(c, gin.H{"success": true, "changed": changed})
+	h.handleToggle(c, h.svc.Fav)
 }
 
 // Unfav 处理 POST /counter/unfav 请求。
@@ -138,6 +89,19 @@ func (h *CounterHandler) Fav(c *gin.Context) {
 //
 // 权限：要求登录。
 func (h *CounterHandler) Unfav(c *gin.Context) {
+	h.handleToggle(c, h.svc.Unfav)
+}
+
+// handleToggle 统一处理 Like/Unlike/Fav/Unfav 四个 toggle 接口的通用逻辑。
+//
+// 抽取原因：
+//   四个接口的鉴权、参数绑定、错误处理和响应格式完全相同，
+//   唯一不同的是调用的 service 方法。抽取后消除重复代码，
+//   同时保持每个接口的文档注释清晰。
+func (h *CounterHandler) handleToggle(
+	c *gin.Context,
+	toggleFn func(ctx context.Context, userID uint64, entityType, entityID string) (bool, error),
+) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
 		response.Error(c, errcode.ErrUnauthorized)
@@ -148,9 +112,10 @@ func (h *CounterHandler) Unfav(c *gin.Context) {
 		response.Fail(c, 400, "invalid request")
 		return
 	}
-	changed, err := h.svc.Unfav(c.Request.Context(), userID, req.EntityType, req.EntityID)
+	changed, err := toggleFn(c.Request.Context(), userID, req.EntityType, req.EntityID)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, gin.H{"success": true, "changed": changed})
@@ -194,7 +159,8 @@ func (h *CounterHandler) GetCounts(c *gin.Context) {
 	metrics := strings.Split(metricsStr, ",")
 	counts, err := h.svc.GetCounts(c.Request.Context(), entityType, entityID, metrics)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, gin.H{"data": counts})

@@ -10,7 +10,7 @@ import (
 
 // CounterEventPublisher 抽象计数事件发布能力，便于测试时注入 stub。
 type CounterEventPublisher interface {
-	Publish(event *CounterEvent) error
+	Publish(ctx context.Context, event *CounterEvent) error
 }
 
 // CounterEventProducer 负责把计数变化事件发布到 Kafka。
@@ -48,6 +48,7 @@ func NewCounterEventProducer(writer *kafka.Writer) *CounterEventProducer {
 //  3. 通过 kafka-go Writer 的 WriteMessages 方法发送。
 //
 // 参数：
+//   - ctx: 上下文，用于控制 Kafka 写入超时
 //   - event: 包含实体类型、实体 ID、指标、用户 ID、增量的计数变更事件
 //
 // 返回值：
@@ -75,7 +76,7 @@ func NewCounterEventProducer(writer *kafka.Writer) *CounterEventProducer {
 //     （kafka-go 不会校验内容）
 //   - Kafka broker 不可用时，WriteMessages 会返回连接错误，
 //     调用方会把对应实体标记到 dirty set，交给后台位图修复兜底。
-func (p *CounterEventProducer) Publish(event *CounterEvent) error {
+func (p *CounterEventProducer) Publish(ctx context.Context, event *CounterEvent) error {
 	if p == nil || p.writer == nil {
 		return fmt.Errorf("counter kafka writer is nil")
 	}
@@ -83,7 +84,7 @@ func (p *CounterEventProducer) Publish(event *CounterEvent) error {
 	if err != nil {
 		return err
 	}
-	return p.writer.WriteMessages(context.Background(), kafka.Message{
+	return p.writer.WriteMessages(ctx, kafka.Message{
 		Key:   []byte(event.EntityType + ":" + event.EntityID),
 		Value: data,
 	})

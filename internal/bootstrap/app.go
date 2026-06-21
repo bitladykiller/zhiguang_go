@@ -4,10 +4,20 @@
 //  1. 加载并解析 YAML 配置（config.LoadConfig）
 //  2. 创建所有基础设施连接（MySQL、Redis、Kafka）
 //  3. 创建所有缓存实例（freecache、HotKeyDetector）
-//  4. 通过构造函数注入创建所有业务服务
+//  4. 通过模块级 init* 函数创建所有业务服务
 //  5. 为可选能力（搜索、LLM、OSS）检测配置完整性，
 //     配置不完整时自动降级为 nil，由 handler 层返回 503
 //  6. 组装路由和后台消费者
+//
+// 模块初始化逻辑已拆分到独立文件：
+//   - init_auth.go: 鉴权模块
+//   - init_knowpost.go: 知文模块 + ID 生成器
+//   - init_counter.go: 计数器模块
+//   - init_relation.go: 关系模块
+//   - init_search.go: 搜索模块 + outbox 消费者
+//   - init_optional.go: LLM + OSS 可选服务
+//   - init_profile.go: 资料模块
+//   - runners.go: 后台运行适配器
 //
 // WHY 使用手动装配而非 DI 框架：
 // 虽然 wire 等工具可以自动生成依赖图，但手动装配提供了：
@@ -18,55 +28,29 @@ package bootstrap
 
 import (
 	"context"
-	"strings"
 
 	"github.com/coocood/freecache"
 	"go.uber.org/zap"
 
-	"github.com/zhiguang/app/internal/auth"
 	"github.com/zhiguang/app/internal/cache"
 	"github.com/zhiguang/app/internal/canal"
-	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/internal/database"
-	"github.com/zhiguang/app/internal/knowpost"
-	"github.com/zhiguang/app/internal/llm"
 	"github.com/zhiguang/app/internal/messaging"
 	"github.com/zhiguang/app/internal/outbox"
-	"github.com/zhiguang/app/internal/profile"
-	"github.com/zhiguang/app/internal/relation"
-	"github.com/zhiguang/app/internal/search"
 	"github.com/zhiguang/app/internal/server"
-	"github.com/zhiguang/app/internal/storage"
 	"github.com/zhiguang/app/pkg/config"
 )
 
 // InitializeApp 完成整个应用的依赖装配，返回 *server.App 实例。
 //
-// 参数:
-//   - configPath: YAML 配置文件路径，例如 "config.yaml" 或 "/etc/zhiguang/config.yaml"
-//
-// 返回值:
-//   - *server.App: 已装配完成的应用实例，包含 Gin Router 和后台消费者
-//   - error: 任何一个强制依赖创建失败时返回（如 MySQL 连接失败、JWT 密钥加载失败等）
-//
-// 装配流程:
-//  1. 初始化日志（zap.NewProduction）和加载配置（config.LoadConfig）
-//  2. 创建基础设施连接：MySQL（sqlx）、Redis（go-redis）、Kafka Writer
-//  3. 创建缓存实例：freecache 作为 L2 缓存、HotKeyDetector 热点检测
-//  4. 创建鉴权服务栈：JWT 签发/校验、验证码服务、刷新令牌白名单
-//  5. 创建知文服务（含 ID 生成器、详情 & Feed 缓存、写操作 outbox 注入）
-//  6. 创建计数器服务（Redis SDS + Bitmap + Kafka 事件发布）
-//  7. 创建关系服务（关注/取关，事务内 outbox）
-//  8. 可选能力检查：ES 搜索、LLM DeepSeek、OSS 存储（配置不完善时自动降级）
-//  9. 创建资料服务（用户资料查询与编辑）
-//
-// 10. 组装 Gin 路由和后台消费者（Canal Bridge、Outbox Consumer）
-//
-// WHY 使用手动装配而非 DI 框架：
-// 虽然 wire 等工具可以自动生成依赖图，但手动装配提供了：
-//   - 完全可读的依赖关系——开发者可以 grep 追踪任意依赖的创建和注入点
-//   - 精确控制生命周期——可以决定何时创建、如何关闭
-//   - 无隐式行为——所有代码显式可见
+// 装配流程：
+//  1. 初始化日志和加载配置
+//  2. 创建基础设施连接（MySQL、Redis、Kafka）
+//  3. 创建缓存实例（freecache、HotKeyDetector）
+//  4. 创建 ID 生成器 → 计数器服务 → 知文服务（解决循环依赖）
+//  5. 创建其余模块（auth、relation、search、llm、storage、profile）
+//  6. 组装 HandlerSet、路由、后台消费者
+//  7. 注册清理回调
 //
 // 重要:
 //   - 强制依赖创建失败（如 MySQL）会直接返回 error，阻止服务启动
@@ -82,104 +66,51 @@ func InitializeApp(configPath string) (*server.App, error) {
 		return nil, err
 	}
 
+	// ── 基础设施 ──
 	db, err := database.NewDB(&cfg.Database)
 	if err != nil {
 		return nil, err
 	}
-
 	redisClient := database.NewRedisClient(&cfg.Redis)
 	kafkaWriter := messaging.NewKafkaWriter(&cfg.Kafka)
 	canalOutboxWriter := messaging.NewTopicWriter(&cfg.Kafka, outbox.CanalOutboxTopic, false)
 
-	detailCache := freecache.NewCache(cfg.Cache.L2.PublicCfg.MaxSize * 1024 * 1024)
-	feedPublicCache := freecache.NewCache(cfg.Cache.L2.PublicCfg.MaxSize * 1024 * 1024)
-	feedMineCache := freecache.NewCache(cfg.Cache.L2.MineCfg.MaxSize * 1024 * 1024)
+	// ── 缓存 ──
+	// 使用带前缀的单例 freecache，替代之前的 3 个独立实例。
+	// 统一的内存池管理可以减少内存碎片，key 前缀隔离不同的缓存用途。
+	sharedFreeCache := newFreeCacheWithConfig(cfg)
 	hotKeyDetector := cache.NewHotKeyDetector(&cfg.Cache.HotKey, redisClient)
 
-	jwtSvc, err := auth.NewJwtService(&cfg.Auth.Jwt)
+	// ── 模块初始化（按依赖拓扑序） ──
+	authHandler, jwtSvc, err := initAuth(db, redisClient, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	verifSvc := auth.NewVerificationService(redisClient, &cfg.Auth.Verification)
-	tokenStore := auth.NewRedisRefreshTokenStore(redisClient)
-	authRepo := auth.NewAuthRepository(db)
-	authSvc := auth.NewAuthService(authRepo, verifSvc, jwtSvc, tokenStore, redisClient, &cfg.Auth)
-	authHandler := auth.NewAuthHandler(authSvc, jwtSvc)
-
-	idGen, err := knowpost.NewSnowflakeIdGenerator(&cfg.IDGenerator)
+	// ID 生成器是 counter 和 knowpost 的共同依赖，先创建
+	idGen, err := initIDGenerator(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
-	logger.Info("snowflake generator initialized",
-		zap.Int("machine_id", idGen.MachineID()),
-		zap.Int("worker_id", idGen.WorkerID()),
-		zap.Int64("node_id", idGen.NodeID()),
-	)
 
-	kpSvc := knowpost.NewKnowPostService(db, idGen, redisClient, detailCache, hotKeyDetector, &cfg.OSS)
-	feedSvc := knowpost.NewKnowPostFeedService(knowpost.NewKnowPostRepository(db), redisClient, feedPublicCache, feedMineCache, hotKeyDetector)
-	kpHandler := knowpost.NewKnowPostHandler(kpSvc, feedSvc)
-	kpSvc.SetFeedCacheInvalidator(feedSvc)
-
-	counterProducer := counter.NewCounterEventProducer(kafkaWriter)
-	counterSvc := counter.NewCounterService(redisClient, counterProducer, &cfg.Counter)
-	counterSvc.SetFailureRecorder(counter.NewCounterFailedMessageRepository(db), cfg.Kafka.Topics.CounterEvents)
-	counterSvc.SetMessageIDGenerator(idGen)
-	counterAggConsumer := counter.NewAggregationConsumer(
-		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, cfg.Kafka.Topics.CounterEvents, cfg.Kafka.ConsumerGroup),
-		counterSvc,
-		logger,
-		&cfg.Counter,
-	)
-	counterHandler := counter.NewCounterHandler(counterSvc)
-	kpSvc.SetCounterClient(counterSvc)
-	feedSvc.SetCounterClient(counterSvc)
-
-	relSvc := relation.NewRelationService(db, redisClient, 10*1024*1024, idGen)
-	relHandler := relation.NewRelationHandler(relSvc)
-
-	var searchSvc *search.SearchService
-	if hasElasticsearchConfig(cfg) {
-		searchSvc, err = search.NewSearchService(struct {
-			URIs      []string
-			IndexName string
-		}{URIs: cfg.Elasticsearch.URIs, IndexName: cfg.Elasticsearch.IndexName})
-		if err != nil {
-			logger.Warn("Failed to initialize search service (ES may be unavailable)", zap.Error(err))
-			searchSvc = nil
-		} else {
-			searchSvc.SetCounterClient(counterSvc)
-		}
-	} else {
-		logger.Warn("Search service disabled: elasticsearch config is incomplete")
+	// counter 先于 knowpost 创建（knowpost 需要 counter 读接口）
+	counterHandler, counterSvc, counterAggConsumer, err := initCounter(db, redisClient, kafkaWriter, idGen, cfg, logger)
+	if err != nil {
+		return nil, err
 	}
-	searchHandler := search.NewSearchHandler(searchSvc)
-	searchProjector := search.NewKnowPostProjector(db, searchSvc, counterSvc)
-	searchOutboxConsumer := search.NewOutboxConsumer(
-		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, outbox.CanalOutboxTopic, outbox.SearchOutboxConsumerGroup),
-		searchProjector,
-		logger,
-	)
-	relationEventProcessor := relation.NewEventProcessor(redisClient, counterSvc)
-	relationOutboxConsumer := relation.NewOutboxConsumer(
-		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, outbox.CanalOutboxTopic, outbox.RelationOutboxConsumerGroup),
-		relationEventProcessor,
-		logger,
-	)
-	canalBridge := canal.NewBridge(&cfg.Canal, canalOutboxWriter, logger)
 
-	descSvc := buildDescriptionService(cfg, logger)
-	ragQuerySvc := buildRagQueryService(cfg, logger)
-	llmHandler := llm.NewLlmHandler(descSvc, ragQuerySvc)
+	// knowpost 构造时注入 counterSvc 和 feedSvc
+	kpHandler, _, _ := initKnowPost(db, redisClient, sharedFreeCache, hotKeyDetector, cfg, idGen, counterSvc)
 
-	ossSvc := buildOssService(cfg, logger)
-	storageHandler := storage.NewStorageHandler(ossSvc)
+	relHandler, _ := initRelation(db, redisClient, idGen)
 
-	profileRepo := profile.NewProfileRepository(db)
-	profileSvc := profile.NewProfileService(profileRepo)
-	profileHandler := profile.NewProfileHandler(profileSvc)
+	searchHandler, searchOutboxConsumer, relationOutboxConsumer := initSearch(db, redisClient, counterSvc, cfg, logger)
 
+	llmHandler := initLLM(cfg, logger)
+	storageHandler := initStorage(cfg, logger)
+	profileHandler := initProfile(db)
+
+	// ── 路由与后台消费者 ──
 	handlerSet := &server.HandlerSet{
 		Auth:     authHandler,
 		KnowPost: kpHandler,
@@ -193,10 +124,16 @@ func InitializeApp(configPath string) (*server.App, error) {
 
 	healthChecker := server.NewHealthChecker(db, redisClient)
 	router := server.NewRouter(handlerSet, logger, jwtSvc, healthChecker)
-	backgroundRunners := make([]server.BackgroundRunner, 0, 3)
-	backgroundRunners = append(backgroundRunners, counterAggConsumer)
+
+	backgroundRunners := make([]server.BackgroundRunner, 0, 4)
+	backgroundRunners = append(backgroundRunners, counterAggConsumer, &hotKeyRunner{d: hotKeyDetector})
+
 	if cfg.Canal.Enabled {
-		backgroundRunners = append(backgroundRunners, canalBridge, relationOutboxConsumer, searchOutboxConsumer)
+		canalBridge := canal.NewBridge(&cfg.Canal, canalOutboxWriter, logger)
+		backgroundRunners = append(backgroundRunners, canalBridge, relationOutboxConsumer)
+		if searchOutboxConsumer != nil {
+			backgroundRunners = append(backgroundRunners, searchOutboxConsumer)
+		}
 	} else {
 		logger.Warn("canal is disabled: outbox async sync pipeline will not start")
 	}
@@ -211,120 +148,25 @@ func InitializeApp(configPath string) (*server.App, error) {
 	return app, nil
 }
 
-// hasElasticsearchConfig 检查 Elasticsearch 是否已正确配置。
-// 要求 URIs 列表非空且至少第一个 URI 不为空，且索引名已填写。
+// newFreeCacheWithConfig 根据配置创建统一的 freecache 实例。
 //
-// 参数:
-//   - cfg: 应用配置，包含 Elasticsearch 配置段
+// 使用单一缓存池替代之前的 3 个独立实例（detailCache、feedPublicCache、feedMineCache），
+// 通过 key 前缀区分不同用途：
+//   - "d:" 前缀：详情缓存（detailCache）
+//   - "fp:" 前缀：公共 Feed 缓存（feedPublicCache）
+//   - "fm:" 前缀：我的 Feed 缓存（feedMineCache）
 //
-// 返回值:
-//   - bool: 配置完整返回 true，否则返回 false
+// 总内存大小 = PublicCfg.MaxSize + MineCfg.MaxSize（单位 MB），
+// 保证与之前 3 个独立实例的总容量一致。
 //
-// 说明:
-//
-//	此函数用于在 InitializeApp 中判断是否应该初始化搜索服务（ES）和 RAG 问答服务。
-//	仅检查 URIs[0] 和 IndexName 两个关键字段，skip 了用户名/密码等高级配置。
-func hasElasticsearchConfig(cfg *config.Config) bool {
-	return len(cfg.Elasticsearch.URIs) > 0 && strings.TrimSpace(cfg.Elasticsearch.URIs[0]) != "" &&
-		strings.TrimSpace(cfg.Elasticsearch.IndexName) != ""
-}
-
-// buildDescriptionService 根据配置完整性创建 AI 摘要生成服务。
-// 配置不完整时返回 nil 并打印警告日志，不阻塞服务启动。
-//
-// 参数:
-//   - cfg: 应用配置（含 LLM.DeepSeek 配置段）
-//   - logger: zap 日志实例，用于输出配置缺失警告
-//
-// 返回值:
-//   - *llm.KnowPostDescriptionService: 非 nil 表示配置完整可用
-//
-// 依赖的配置字段:
-//   - cfg.LLM.DeepSeek.APIKey: DeepSeek API 密钥（必填）
-//   - cfg.LLM.DeepSeek.BaseURL: DeepSeek API 基础地址（必填）
-//   - cfg.LLM.DeepSeek.Model: 模型名称（必填）
-//
-// 降级策略:
-//
-//	任一必填字段缺失 → 返回 nil → SuggestDescription 接口返回 503
-func buildDescriptionService(cfg *config.Config, logger *zap.Logger) *llm.KnowPostDescriptionService {
-	if strings.TrimSpace(cfg.LLM.DeepSeek.APIKey) == "" ||
-		strings.TrimSpace(cfg.LLM.DeepSeek.BaseURL) == "" ||
-		strings.TrimSpace(cfg.LLM.DeepSeek.Model) == "" {
-		logger.Warn("LLM description service disabled: DeepSeek config is incomplete")
-		return nil
+// WHY 统一缓存池：
+//   - 减少内存碎片：3 个独立实例各自分配内存池，合并后内存利用率更高。
+//   - 弹性分配：热门缓存类型可以自然占用更多空间，不会因固定分区而浪费。
+//   - 简化依赖注入：只需传递一个 cache 实例。
+func newFreeCacheWithConfig(cfg *config.Config) *freecache.Cache {
+	totalMB := cfg.Cache.L2.PublicCfg.MaxSize + cfg.Cache.L2.MineCfg.MaxSize
+	if totalMB <= 0 {
+		totalMB = 32 // 默认 32MB
 	}
-	return llm.NewKnowPostDescriptionService(&cfg.LLM)
-}
-
-// buildRagQueryService 根据配置完整性创建 RAG 问答服务。
-// 需要 ES 地址、OpenAI embedding 配置、DeepSeek chat 配置三类信息同时完整。
-//
-// 参数:
-//   - cfg: 应用配置（含 Elasticsearch、LLM.OpenAI、LLM.DeepSeek 配置段）
-//   - logger: zap 日志实例
-//
-// 返回值:
-//   - *llm.RagQueryService: 非 nil 表示配置完整可用
-//
-// 配置检查顺序:
-//  1. ES 配置（URIs 和 IndexName）
-//  2. OpenAI embedding 配置（APIKey 和 BaseURL）
-//  3. DeepSeek chat 配置（APIKey、BaseURL、Model）
-//
-// 降级策略:
-//
-//	任意一类配置缺失将返回 nil，并打印具体缺失原因的警告日志。
-//
-// 调用方（RagQuery handler）在 svc 为 nil 时返回 503。
-func buildRagQueryService(cfg *config.Config, logger *zap.Logger) *llm.RagQueryService {
-	if !hasElasticsearchConfig(cfg) {
-		logger.Warn("RAG query service disabled: elasticsearch config is incomplete")
-		return nil
-	}
-	if strings.TrimSpace(cfg.LLM.OpenAI.APIKey) == "" || strings.TrimSpace(cfg.LLM.OpenAI.BaseURL) == "" {
-		logger.Warn("RAG query service disabled: embedding config is incomplete")
-		return nil
-	}
-	if strings.TrimSpace(cfg.LLM.DeepSeek.APIKey) == "" ||
-		strings.TrimSpace(cfg.LLM.DeepSeek.BaseURL) == "" ||
-		strings.TrimSpace(cfg.LLM.DeepSeek.Model) == "" {
-		logger.Warn("RAG query service disabled: chat model config is incomplete")
-		return nil
-	}
-	return llm.NewRagQueryService(&cfg.LLM, cfg.Elasticsearch.URIs[0])
-}
-
-// buildOssService 根据配置完整性创建 OSS 存储服务。
-//
-// 参数:
-//   - cfg: 应用配置（含 OSS 配置段）
-//   - logger: zap 日志实例
-//
-// 返回值:
-//   - *storage.OssStorageService: 非 nil 表示配置完整且客户端创建成功
-//
-// 配置检查顺序:
-//  1. 检查 cfg.OSS.Endpoint、AccessKeyID、AccessKeySecret、Bucket 是否非空
-//  2. 如果配置完整，调用 storage.NewOssStorageService 创建客户端
-//  3. 如果客户端创建失败（如网络不通），打印 warn 日志并返回 nil
-//
-// 降级策略:
-//
-//	配置不完整或客户端创建失败 → 返回 nil → Presign 接口返回 503
-func buildOssService(cfg *config.Config, logger *zap.Logger) *storage.OssStorageService {
-	if strings.TrimSpace(cfg.OSS.Endpoint) == "" ||
-		strings.TrimSpace(cfg.OSS.AccessKeyID) == "" ||
-		strings.TrimSpace(cfg.OSS.AccessKeySecret) == "" ||
-		strings.TrimSpace(cfg.OSS.Bucket) == "" {
-		logger.Warn("Storage service disabled: OSS config is incomplete")
-		return nil
-	}
-
-	ossSvc, err := storage.NewOssStorageService(&cfg.OSS)
-	if err != nil {
-		logger.Warn("Failed to initialize OSS service", zap.Error(err))
-		return nil
-	}
-	return ossSvc
+	return freecache.NewCache(totalMB * 1024 * 1024)
 }

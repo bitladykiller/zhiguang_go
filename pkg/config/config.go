@@ -155,6 +155,7 @@ type KafkaTopicsConfig struct {
 
 // ElasticsearchConfig 配置 Elasticsearch 集群连接信息。
 type ElasticsearchConfig struct {
+	Enabled    *bool    `yaml:"enabled"`    // 显式功能开关，nil 表示跟随配置完整性判断
 	URIs       []string `yaml:"uris"`
 	IndexName  string   `yaml:"index_name"`  // primary search index
 	MaxRetries int      `yaml:"max_retries"` // 最大重试次数
@@ -180,12 +181,13 @@ type JwtConfig struct {
 
 // VerificationConfig 控制验证码相关行为。
 type VerificationConfig struct {
-	CodeLength   int            `yaml:"code_length"`
-	TTL          time.Duration  `yaml:"ttl"`
-	MaxAttempts  int            `yaml:"max_attempts"`
-	SendInterval time.Duration  `yaml:"send_interval"`
-	DailyLimit   int            `yaml:"daily_limit"`
-	Lock         AuthLockConfig `yaml:"lock"`
+	CodeLength        int            `yaml:"code_length"`
+	TTL               time.Duration  `yaml:"ttl"`
+	MaxAttempts       int            `yaml:"max_attempts"`
+	SendInterval      time.Duration  `yaml:"send_interval"`
+	DailyLimit        int            `yaml:"daily_limit"`
+	OperationTimeoutMs int           `yaml:"operation_timeout_ms"`
+	Lock              AuthLockConfig `yaml:"lock"`
 }
 
 // PasswordConfig 约束密码强度策略。
@@ -196,7 +198,8 @@ type PasswordConfig struct {
 
 // RefreshConfig 配置 refresh token 轮换相关行为。
 type RefreshConfig struct {
-	Lock AuthLockConfig `yaml:"lock"`
+	Lock               AuthLockConfig `yaml:"lock"`
+	OperationTimeoutMs int            `yaml:"operation_timeout_ms"`
 }
 
 // AuthLockConfig 统一描述鉴权域分布式锁参数。
@@ -208,6 +211,7 @@ type AuthLockConfig struct {
 
 // OssConfig 配置阿里云 OSS 对象存储。
 type OssConfig struct {
+	Enabled         *bool  `yaml:"enabled"`          // 显式功能开关，nil 表示跟随配置完整性判断
 	Endpoint        string `yaml:"endpoint"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	AccessKeySecret string `yaml:"access_key_secret"`
@@ -334,6 +338,7 @@ type HotKeyConfig struct {
 
 // LLMConfig 配置 AI 模型连接信息。
 type LLMConfig struct {
+	Enabled   *bool          `yaml:"enabled"`   // 显式功能开关，nil 表示跟随配置完整性判断
 	DeepSeek  DeepSeekConfig `yaml:"deepseek"`
 	OpenAI    OpenAIConfig   `yaml:"openai"`
 	TimeoutMs int            `yaml:"timeout_ms"` // HTTP 客户端超时（毫秒），默认 30000

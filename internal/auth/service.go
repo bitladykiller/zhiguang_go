@@ -17,6 +17,11 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+var (
+	phoneRegex = regexp.MustCompile(`^1[3-9]\d{9}$`)
+	emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+)
+
 // AuthService 编排整个鉴权域的业务流程：
 // 包括发送验证码、注册、登录、刷新令牌、登出、重置密码、读取当前用户信息。
 //
@@ -32,6 +37,7 @@ type AuthService struct {
 	cfg                  *config.AuthConfig
 	refreshLockOptions   redislock.Options
 	refreshLockRetryWait time.Duration
+	refreshLockTimeout   time.Duration
 }
 
 // NewAuthService 使用完整依赖创建 AuthService。
@@ -60,6 +66,7 @@ func NewAuthService(
 		cfg:                  cfg,
 		refreshLockOptions:   refreshSessionLockOptions(cfg),
 		refreshLockRetryWait: refreshSessionRetryInterval(cfg),
+		refreshLockTimeout:   refreshSessionLockTimeout(cfg),
 	}
 }
 
@@ -426,8 +433,10 @@ func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint
 	if s.redis == nil {
 		return nil, errcode.ErrInternal.WithMsg("redis client is unavailable")
 	}
-	if ctx == nil {
-		ctx = context.Background()
+	if s.refreshLockTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.refreshLockTimeout)
+		defer cancel()
 	}
 
 	lock, err := redislock.AcquireWithRetry(
@@ -508,13 +517,11 @@ func (s *AuthService) recordLoginLog(ctx context.Context, userID uint64, identif
 func validateIdentifier(idType IdentifierType, identifier string) error {
 	switch idType {
 	case IdentifierPhone:
-		matched, _ := regexp.MatchString(`^1[3-9]\d{9}$`, identifier)
-		if !matched {
+		if !phoneRegex.MatchString(identifier) {
 			return fmt.Errorf("invalid phone number format")
 		}
 	case IdentifierEmail:
-		matched, _ := regexp.MatchString(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`, identifier)
-		if !matched {
+		if !emailRegex.MatchString(identifier) {
 			return fmt.Errorf("invalid email format")
 		}
 	}

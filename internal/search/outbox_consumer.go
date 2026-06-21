@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/outbox"
+	"github.com/zhiguang/app/pkg/contextutil"
 )
 
 // OutboxConsumer 消费 canal-outbox 主题中的 search 事件，并驱动搜索索引更新。
@@ -83,7 +84,7 @@ func (c *OutboxConsumer) Start(ctx context.Context) {
 			if c.logger != nil {
 				c.logger.Warn("fetch search outbox kafka message failed", zap.Error(err))
 			}
-			if !sleepConsumer(ctx, time.Second) {
+			if !contextutil.Sleep(ctx, time.Second) {
 				return
 			}
 			continue
@@ -93,7 +94,7 @@ func (c *OutboxConsumer) Start(ctx context.Context) {
 			if c.logger != nil {
 				c.logger.Warn("process search outbox kafka message failed", zap.Error(err))
 			}
-			if !sleepConsumer(ctx, time.Second) {
+			if !contextutil.Sleep(ctx, time.Second) {
 				return
 			}
 			continue
@@ -139,26 +140,3 @@ func (c *OutboxConsumer) handleMessage(ctx context.Context, value []byte) error 
 	return nil
 }
 
-// sleepConsumer 在指定时长内等待，并在等待期间监听上下文取消信号。
-//
-// 参数:
-//   - ctx: 上下文对象
-//   - d: 等待时长
-//
-// 返回值:
-//   - bool: 正常等待完成返回 true；上下文取消（服务关闭信号）返回 false
-//
-// 说明:
-//   自定义的睡眠函数，使用 time.NewTimer 保证即使 d 很小也能被取消中断。
-//   不直接使用 time.Sleep 的原因是无法在服务关闭时提前返回，
-//   导致 Shutdown 等待时间延长。
-func sleepConsumer(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}

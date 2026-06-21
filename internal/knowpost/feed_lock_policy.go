@@ -1,7 +1,6 @@
 package knowpost
 
 import (
-	"context"
 	"time"
 
 	"github.com/zhiguang/app/pkg/redislock"
@@ -29,13 +28,3 @@ func knowPostLockOptions() redislock.Options {
 	}
 }
 
-func sleepDistributedLockRetry(ctx context.Context) bool {
-	timer := time.NewTimer(knowPostLockRetryInterval)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}

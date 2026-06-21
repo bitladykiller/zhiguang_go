@@ -29,6 +29,7 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/zhiguang/app/internal/knowpost"
+	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
 // SearchIndexDoc 是知文内容在 ES 中的文档结构。
@@ -72,6 +73,8 @@ type SearchResponse struct {
 type SearchCounterClient interface {
 	IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	IsFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+	BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
+	BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
 }
 
 // indexMapping 是知文搜索索引的 ES mapping 模板。
@@ -123,20 +126,17 @@ type SearchService struct {
 // NewSearchService 使用给定 URI 地址列表创建 ES 客户端，并调用 EnsureIndex 确保索引存在。
 //
 // 参数:
-//   - cfg.URIs: Elasticsearch 集群节点地址列表，格式如 []string{"http://localhost:9200"}
-//   - cfg.IndexName: 搜索索引名称，与 Java 版 zhiguang_be 使用相同的索引名以保证兼容性
+//   - cfg.URIs: Elasticsearch 集群节点地址列表
+//   - cfg.IndexName: 搜索索引名称
+//   - counter: 用户态计数查询接口，nil 表示搜索结果不包含 liked/faved 状态
 //
 // 返回值:
-//   - *SearchService: 搜索服务实例，上层可通过该实例执行搜索、建议、文档索引等操作
+//   - *SearchService: 搜索服务实例
 //   - error: 如果创建客户端失败或索引创建/校验出错则返回非 nil 错误
-//
-// 注意:
-//   - 构造函数在启动阶段会一次性完成客户端创建和索引初始化
-//   - 如果 ES 集群尚未启动，此处会返回连接错误，调用方应处理降级逻辑
 func NewSearchService(cfg struct {
 	URIs      []string
 	IndexName string
-}) (*SearchService, error) {
+}, counter SearchCounterClient) (*SearchService, error) {
 	client, err := elasticsearch.NewClient(elasticsearch.Config{
 		Addresses: cfg.URIs,
 	})
@@ -144,7 +144,7 @@ func NewSearchService(cfg struct {
 		return nil, fmt.Errorf("create es client: %w", err)
 	}
 
-	svc := &SearchService{client: client, indexName: cfg.IndexName}
+	svc := &SearchService{client: client, indexName: cfg.IndexName, counter: counter}
 
 	// 启动时确保索引已存在
 	if err := svc.EnsureIndex(); err != nil {
@@ -152,19 +152,6 @@ func NewSearchService(cfg struct {
 	}
 
 	return svc, nil
-}
-
-// SetCounterClient 注入搜索结果所需的用户态计数依赖。
-//
-// 参数:
-//   - counter: 实现 SearchCounterClient 接口的实例（通常为 counter.CounterService），
-//     提供 IsLiked 和 IsFaved 方法用于判断当前用户对搜索结果的点赞/收藏状态
-//
-// 说明:
-//   - 需要在 Search 接口被调用前注入，否则搜索结果中 liked/faved 字段将为 nil
-//   - 使用接口而非具体类型是为了解耦，避免 search 包依赖 counter 包
-func (s *SearchService) SetCounterClient(counter SearchCounterClient) {
-	s.counter = counter
 }
 
 // EnsureIndex 检查索引是否存在，不存在时按预定义的 indexMapping 创建索引。
@@ -200,7 +187,10 @@ func (s *SearchService) EnsureIndex() error {
 	defer res.Body.Close()
 
 	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
+		body, readErr := io.ReadAll(res.Body)
+		if readErr != nil {
+			return fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
+		}
 		return fmt.Errorf("create index failed: %s", string(body))
 	}
 
@@ -251,7 +241,10 @@ func (s *SearchService) ensureCompatibleMappings() error {
 	defer res.Body.Close()
 
 	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
+		body, readErr := io.ReadAll(res.Body)
+		if readErr != nil {
+			return fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
+		}
 		return fmt.Errorf("put mapping failed: %s", string(body))
 	}
 
@@ -386,7 +379,10 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 	defer res.Body.Close()
 
 	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
+		body, readErr := io.ReadAll(res.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
+		}
 		return nil, fmt.Errorf("search failed: %s", string(body))
 	}
 
@@ -406,6 +402,18 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 	}
 
 	items := make([]knowpost.FeedItemResponse, 0, len(result.Hits.Hits))
+
+	// 批量查询当前用户的点赞/收藏状态
+	var likedMap, favedMap map[string]bool
+	if currentUserID != nil && s.counter != nil && len(result.Hits.Hits) > 0 {
+		hitIDs := make([]string, len(result.Hits.Hits))
+		for i, hit := range result.Hits.Hits {
+			hitIDs[i] = hit.Source.ID
+		}
+		likedMap, _ = s.counter.BatchIsLiked(ctx, *currentUserID, "knowpost", hitIDs)
+		favedMap, _ = s.counter.BatchIsFaved(ctx, *currentUserID, "knowpost", hitIDs)
+	}
+
 	for _, hit := range result.Hits.Hits {
 		source := hit.Source
 		description := source.Description
@@ -417,11 +425,21 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 			first := source.ImgURLs[0]
 			coverImage = &first
 		}
-		liked, faved := s.userFlags(ctx, currentUserID, source.ID)
+		var liked, faved *bool
+		if likedMap != nil {
+			if l, ok := likedMap[source.ID]; ok {
+				liked = &l
+			}
+		}
+		if favedMap != nil {
+			if f, ok := favedMap[source.ID]; ok {
+				faved = &f
+			}
+		}
 		items = append(items, knowpost.FeedItemResponse{
 			ID:             source.ID,
-			Title:          stringPtrOrNil(source.Title),
-			Description:    stringPtrOrNil(description),
+			Title:          jsonutil.StrPtr(source.Title),
+			Description:    jsonutil.StrPtr(description),
 			CoverImage:     coverImage,
 			Tags:           source.Tags,
 			AuthorAvatar:   source.AuthorAvatar,
@@ -511,7 +529,10 @@ func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([
 	defer res.Body.Close()
 
 	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
+		body, readErr := io.ReadAll(res.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
+		}
 		return nil, fmt.Errorf("suggest failed: %s", string(body))
 	}
 
@@ -685,23 +706,6 @@ func buildSnippet(highlight map[string][]string) string {
 	return strings.Join(parts, " ")
 }
 
-// stringPtrOrNil 将 Go 字符串转为 *string 指针。空字符串返回 nil。
-//
-// 参数:
-//   - value: 原始字符串
-//
-// 返回值:
-//   - *string: value 非空时返回指向 value 的指针，否则返回 nil
-//
-// 设计原因: JSON 响应中空字符串字段应序列化为 null 而非 ""（与 Java 版 Jackson 行为对齐）。
-// if source.Title == "" 时使用 nil 指针可以在 JSON 中输出 null 或省略该字段。
-func stringPtrOrNil(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
-}
-
 // boolPtr 返回 bool 值的指针。
 //
 // 参数:
@@ -716,28 +720,6 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
-// userFlags 查询当前用户对指定知文是否已点赞/已收藏。
-//
-// 参数:
-//   - ctx: 上下文对象
-//   - currentUserID: 当前用户 ID 的指针，nil 表示未登录
-//   - entityID: 知文 ID 字符串
-//
-// 返回值:
-//   - liked: *bool 类型，已点赞为 true，未点赞为 false；用户未登录或 counter 未注入时返回 nil
-//   - faved: *bool 类型，语义同上
-//
-// 注意:
-//   - 本函数内部忽略 counter 调用返回的错误，在计数值查询失败时静默返回 false
-//   - 这是为了确保计数器服务的短暂故障不会影响搜索结果的主要展示
-func (s *SearchService) userFlags(ctx context.Context, currentUserID *uint64, entityID string) (*bool, *bool) {
-	if currentUserID == nil || s.counter == nil {
-		return nil, nil
-	}
-	liked, _ := s.counter.IsLiked(ctx, *currentUserID, "knowpost", entityID)
-	faved, _ := s.counter.IsFaved(ctx, *currentUserID, "knowpost", entityID)
-	return &liked, &faved
-}
 
 // IndexDocument 将搜索文档索引到 Elasticsearch 中（创建或全量替换）。
 //
@@ -774,7 +756,10 @@ func (s *SearchService) IndexDocument(ctx context.Context, doc *SearchIndexDoc) 
 	defer res.Body.Close()
 
 	if res.IsError() {
-		body, _ := io.ReadAll(res.Body)
+		body, readErr := io.ReadAll(res.Body)
+		if readErr != nil {
+			return fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
+		}
 		return fmt.Errorf("index failed: %s", string(body))
 	}
 

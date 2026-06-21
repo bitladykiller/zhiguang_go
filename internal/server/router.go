@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/middleware"
 	"go.uber.org/zap"
@@ -47,10 +49,12 @@ type RouteRegistrar interface {
 //   - *gin.Engine: 配置完成的 Gin 引擎，可直接用于 Run()
 //
 // 全局中间件链（按执行顺序）：
-//  1. LoggerMiddleware：记录请求日志（zap 结构化）
-//  2. CorsMiddleware：处理跨域请求
-//  3. gin.Recovery：捕获 panic 并返回 500，防止服务崩溃
-//  4. OptionalAuthMiddleware：尝试解析 JWT Token，但不拒绝未登录的请求
+//  1. TraceMiddleware：注入 trace id + 请求超时
+//  2. LoggerMiddleware：记录请求日志（zap 结构化）
+//  3. ErrorLogMiddleware：记录 handler 层的错误
+//  4. CorsMiddleware：处理跨域请求
+//  5. gin.Recovery：捕获 panic 并返回 500，防止服务崩溃
+//  6. OptionalAuthMiddleware：尝试解析 JWT Token，但不拒绝未登录的请求
 //
 // WHY 使用 OptionalAuthMiddleware 而非 AuthMiddleware：
 //   全局挂载可选鉴权中间件后，那些同时支持匿名访问和登录态增强的接口
@@ -77,7 +81,9 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 	r := gin.New()
 
 	// --- 全局中间件 ---
+	r.Use(middleware.TraceMiddleware(30 * time.Second))
 	r.Use(middleware.LoggerMiddleware(logger))
+	r.Use(middleware.ErrorLogMiddleware(logger))
 	r.Use(middleware.CorsMiddleware())
 	r.Use(gin.Recovery())
 	if tokenValidator != nil {

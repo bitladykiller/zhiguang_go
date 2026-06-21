@@ -1,16 +1,15 @@
 package search
 
 import (
-	"strconv"
-
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
 
 // SearchHandler 暴露内容搜索相关的 HTTP 接口。
 type SearchHandler struct {
-	svc *SearchService
+	svc SearchServiceInterface
 }
 
 // NewSearchHandler 创建搜索 HTTP 处理器。
@@ -24,7 +23,7 @@ type SearchHandler struct {
 // 说明:
 //   svc 可能为 nil（当 ES 配置不完整时），此时所有接口返回 503 Service Unavailable。
 //   这样设计是为了避免启动时因 ES 不可用而拒绝服务，让其他模块正常工作。
-func NewSearchHandler(svc *SearchService) *SearchHandler {
+func NewSearchHandler(svc SearchServiceInterface) *SearchHandler {
 	return &SearchHandler{svc: svc}
 }
 
@@ -86,11 +85,12 @@ func (h *SearchHandler) Search(c *gin.Context) {
 
 	tags := c.Query("tags")
 	after := c.Query("after")
-	size := queryInt(c, "size", 20)
+	size := httputil.QueryInt(c, "size", 20)
 
 	result, err := h.svc.Search(c.Request.Context(), keyword, size, tags, after, currentUserID)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, result)
@@ -120,37 +120,13 @@ func (h *SearchHandler) Suggest(c *gin.Context) {
 	}
 
 	prefix := c.Query("prefix")
-	size := queryInt(c, "size", 10)
+	size := httputil.QueryInt(c, "size", 10)
 
 	suggestions, err := h.svc.Suggest(c.Request.Context(), prefix, size)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, gin.H{"items": suggestions})
-}
-
-// queryInt 从查询字符串中读取整数参数，如果缺失或无效则返回默认值。
-//
-// 参数:
-//   - c: Gin 上下文
-//   - key: 查询参数名称
-//   - def: 默认值（当参数缺失或解析失败时返回）
-//
-// 返回值:
-//   - int: 解析后的整数值，失败时返回默认值
-//
-// 说明:
-//   strconv.Atoi 将空字符串解析为 0，但这里先通过 s == "" 判断缺失情况，
-//   避免用户显式传入 ?size=0 时被默认值覆盖。
-func queryInt(c *gin.Context, key string, def int) int {
-	s := c.Query(key)
-	if s == "" {
-		return def
-	}
-	v, _ := strconv.Atoi(s)
-	if v <= 0 {
-		return def
-	}
-	return v
 }

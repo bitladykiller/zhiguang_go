@@ -221,12 +221,3 @@ LIMIT ? OFFSET ?
 `, userID, "deleted", limit, offset)
 	return rows, err
 }
-
-// InsertOutbox 写入 outbox 事务消息，使用 ExecContext。
-func (r *KnowPostRepository) InsertOutbox(ctx context.Context, id uint64, aggType string, aggID *uint64, eventType, payload string) error {
-	_, err := r.db.ExecContext(ctx,
-		"INSERT INTO outbox (id, aggregate_type, aggregate_id, type, payload) VALUES (?, ?, ?, ?, ?)",
-		id, aggType, aggID, eventType, payload,
-	)
-	return err
-}

@@ -85,6 +85,7 @@ func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorI
 //   - Lua 脚本执行出错：extendTTL 返回 false，不影响业务正常运行（只是 TTL 延长功能降级）。
 //
 // 参数：
+//   - ctx: context.Context，用于控制 Redis 操作超时
 //   - id: uint64，当前被访问的知文 ID。
 //   - pageKey: string，详情页的缓存键名。
 //
@@ -93,18 +94,18 @@ func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorI
 //   每 6 秒批量 flush 到 Redis Hash 进行跨实例聚合。当某个 key 在 60 秒窗口内的
 //   全局访问计数超过配置阈值时，被认为是一个"热点 key"。
 //   TtlForPublic 方法根据热度和基础 TTL 计算出一个延长的 TTL 值。
-func (s *KnowPostService) recordHotKeyAndExtendTTL(id uint64, pageKey string) {
+func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint64, pageKey string) {
 	hotKeyID := fmt.Sprintf("knowpost:%d", id)
 	s.hotKey.Record(hotKeyID)
 
 	baseTTL := 60
-	target := s.hotKey.TtlForPublic(baseTTL, hotKeyID)
+	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 
 	// EXPIRE GT：只有当新 TTL 大于当前 TTL 时才更新，保证不缩短
-	extendTTL(context.Background(), s.redis, pageKey, target)
+	extendTTL(ctx, s.redis, pageKey, target)
 
 	itemKey := fmt.Sprintf("feed:item:%d", id)
-	extendTTL(context.Background(), s.redis, itemKey, target)
+	extendTTL(ctx, s.redis, itemKey, target)
 }
 
 // extendTTLScript 是 Redis Lua 脚本，原子性地延长缓存 TTL（只增不减）。

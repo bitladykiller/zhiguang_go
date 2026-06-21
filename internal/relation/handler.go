@@ -5,16 +5,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
 
 // RelationHandler 暴露关注、取关和关系列表相关 HTTP 接口。
 type RelationHandler struct {
-	svc *RelationService
+	svc RelationServiceInterface
 }
 
-func NewRelationHandler(svc *RelationService) *RelationHandler {
+func NewRelationHandler(svc RelationServiceInterface) *RelationHandler {
 	return &RelationHandler{svc: svc}
 }
 
@@ -57,7 +58,8 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 	}
 	ok, err := h.svc.Follow(c.Request.Context(), userID, req.ToUserID)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	if !ok {
@@ -85,7 +87,8 @@ func (h *RelationHandler) Unfollow(c *gin.Context) {
 	}
 	ok, err := h.svc.Unfollow(c.Request.Context(), userID, req.ToUserID)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, gin.H{"success": true, "changed": ok})
@@ -108,7 +111,8 @@ func (h *RelationHandler) Status(c *gin.Context) {
 	}
 	status, err := h.svc.RelationStatus(c.Request.Context(), userID, otherID)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, gin.H{"status": status})
@@ -119,12 +123,13 @@ func (h *RelationHandler) Status(c *gin.Context) {
 // 功能：使用 offset 分页查询某用户关注的人列表。
 func (h *RelationHandler) Following(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
-	limit := queryInt(c, "limit", 20)
-	offset := queryInt(c, "offset", 0)
+	limit := httputil.QueryInt(c, "limit", 20)
+	offset := httputil.QueryInt(c, "offset", 0)
 
 	data, err := h.svc.Following(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, gin.H{"data": data})
@@ -135,12 +140,13 @@ func (h *RelationHandler) Following(c *gin.Context) {
 // 功能：使用 offset 分页查询某用户的粉丝列表。
 func (h *RelationHandler) Followers(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
-	limit := queryInt(c, "limit", 20)
-	offset := queryInt(c, "offset", 0)
+	limit := httputil.QueryInt(c, "limit", 20)
+	offset := httputil.QueryInt(c, "offset", 0)
 
 	data, err := h.svc.Followers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, gin.H{"data": data})
@@ -154,12 +160,13 @@ func (h *RelationHandler) Followers(c *gin.Context) {
 // 响应中包含 next_cursor 可用于后续请求。
 func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
-	limit := queryInt(c, "limit", 20)
+	limit := httputil.QueryInt(c, "limit", 20)
 	cursor := queryInt64(c, "cursor")
 
 	data, nextCursor, err := h.svc.FollowingCursor(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
@@ -170,30 +177,16 @@ func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 // 功能：使用游标分页查询某用户的粉丝列表。
 func (h *RelationHandler) FollowersCursor(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
-	limit := queryInt(c, "limit", 20)
+	limit := httputil.QueryInt(c, "limit", 20)
 	cursor := queryInt64(c, "cursor")
 
 	data, nextCursor, err := h.svc.FollowersCursor(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
-		response.Fail(c, 500, err.Error())
+		middleware.RecordError(c, err)
+		response.Fail(c, 500, "internal server error")
 		return
 	}
 	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
-}
-
-// queryInt 从查询参数中解析整数，缺失或非法时返回默认值。
-//
-// 功能：与 knowpost/handler.go 中的 queryInt 功能相同，但额外校验返回值 > 0。
-func queryInt(c *gin.Context, key string, def int) int {
-	s := c.Query(key)
-	if s == "" {
-		return def
-	}
-	v, _ := strconv.Atoi(s)
-	if v <= 0 {
-		return def
-	}
-	return v
 }
 
 // queryInt64 从查询参数中解析 int64 值，缺失或非法时返回 0。
@@ -204,7 +197,10 @@ func queryInt64(c *gin.Context, key string) int64 {
 	if s == "" {
 		return 0
 	}
-	v, _ := strconv.ParseInt(s, 10, 64)
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
 	return v
 }
 
@@ -217,6 +213,9 @@ func queryUint64(c *gin.Context, key string) uint64 {
 	if s == "" {
 		return 0
 	}
-	v, _ := strconv.ParseUint(s, 10, 64)
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0
+	}
 	return v
 }
