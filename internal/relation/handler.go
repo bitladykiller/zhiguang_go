@@ -15,6 +15,13 @@ type RelationHandler struct {
 	svc RelationServiceInterface
 }
 
+// NewRelationHandler 创建 RelationHandler 实例。
+//
+// 参数:
+//   - svc: RelationServiceInterface 实现，负责关系业务逻辑
+//
+// 返回值:
+//   - *RelationHandler: 已初始化的 Handler 实例
 func NewRelationHandler(svc RelationServiceInterface) *RelationHandler {
 	return &RelationHandler{svc: svc}
 }

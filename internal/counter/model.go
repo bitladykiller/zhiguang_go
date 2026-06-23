@@ -60,6 +60,13 @@ var nameToIdx = map[string]int{
 	"posts": IdxPosts,
 }
 
+// NameToIdx 将指标名称映射到 SDS 槽位索引。
+//
+// 参数:
+//   - metric: string，指标名称（如 "like"、"fav"、"follower"、"following"、"posts"）
+//
+// 返回值:
+//   - int: 对应的 SDS 槽位索引；找不到时返回 -1
 func NameToIdx(metric string) int {
 	return nameToIdx[metric]
 }
@@ -82,6 +89,16 @@ func BitOf(userID uint64) uint64 { return userID % ChunkSize }
 func BitmapKey(metric, entityType, entityID string, chunk uint64) string {
 	return fmt.Sprintf("bm:%s:%s:%s:%d", metric, entityType, entityID, chunk)
 }
+// SdsKey 生成实体在 Redis 中的 SDS 正式快照键。
+//
+// 格式: "cnt:{entityType}:{entityID}"
+//
+// 参数:
+//   - entityType: string，实体类型
+//   - entityID:   string，实体 ID
+//
+// 返回值:
+//   - string: Redis 键名
 func SdsKey(entityType, entityID string) string {
 	return fmt.Sprintf("cnt:%s:%s", entityType, entityID)
 }

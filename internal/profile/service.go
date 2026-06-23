@@ -38,12 +38,17 @@ func (s *Service) UpdateProfile(ctx context.Context, callerID, targetID uint64, 
 	if callerID != targetID {
 		return errcode.ErrForbidden
 	}
-	if req.Nickname == nil && req.Avatar == nil && req.Bio == nil && req.Gender == nil &&
-		req.Birthday == nil && req.School == nil && req.TagsJson == nil {
+	if isNoOp(req) {
 		return errcode.ErrBadRequest.WithMsg("no fields to update")
 	}
 	if err := s.repo.Update(ctx, targetID, req); err != nil {
 		return errcode.ErrInternal.WithMsg("failed to update profile")
 	}
 	return nil
+}
+
+// isNoOp 判断资料更新请求是否所有字段都为空（无实际操作）。
+func isNoOp(req *ProfilePatchRequest) bool {
+	return req.Nickname == nil && req.Avatar == nil && req.Bio == nil && req.Gender == nil &&
+		req.Birthday == nil && req.School == nil && req.TagsJson == nil
 }

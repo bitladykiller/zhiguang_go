@@ -14,6 +14,13 @@ type KnowPostRepository struct {
 	db sqlx.ExtContext
 }
 
+// NewKnowPostRepository 创建 KnowPostRepository 实例。
+//
+// 参数:
+//   - db: sqlx.ExtContext，支持 *sqlx.DB 或 *sqlx.Tx
+//
+// 返回值:
+//   - *KnowPostRepository: 已初始化的仓储实例
 func NewKnowPostRepository(db sqlx.ExtContext) *KnowPostRepository {
 	return &KnowPostRepository{db: db}
 }

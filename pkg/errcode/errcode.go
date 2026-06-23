@@ -2,6 +2,8 @@ package errcode
 
 import "fmt"
 
+// ErrorCode 定义业务错误码类型，底层为 int。
+// 0 表示成功，4xx/5xx 系列映射到对应 HTTP 状态码。
 type ErrorCode int
 
 const (
@@ -25,6 +27,8 @@ const (
 	ErrCodeServiceUnavailable          ErrorCode = 503
 )
 
+// AppError 是统一的业务错误类型，包含错误码和消息。
+// 实现 error 接口，便于在业务层直接返回与 HTTP 层统一处理。
 type AppError struct {
 	Code    ErrorCode `json:"code"`
 	Message string    `json:"message"`
@@ -58,6 +62,19 @@ var (
 	ErrVerificationTooManyAttempts = &AppError{Code: ErrCodeVerificationTooManyAttempts, Message: "too many verification attempts"}
 )
 
+// HTTPStatusFromCode 根据错误码获取对应的 HTTP 状态码。
+//
+// 映射规则:
+//   - 0（CodeSuccess）→ 200
+//   - 自定义错误码 >= 1000 时先除 100 取整
+//   - 然后按 401/403/404/409/429/5xx/4xx 区间匹配
+//   - 未能匹配时默认返回 500
+//
+// 参数:
+//   - code: ErrorCode，业务错误码
+//
+// 返回值:
+//   - int: HTTP 状态码
 func HTTPStatusFromCode(code ErrorCode) int {
 	if code >= 1000 {
 		code = code / 100

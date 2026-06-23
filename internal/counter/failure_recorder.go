@@ -42,6 +42,13 @@ type CounterFailedMessageRepository struct {
 	db *sqlx.DB
 }
 
+// NewCounterFailedMessageRepository 创建 CounterFailedMessageRepository 实例。
+//
+// 参数:
+//   - db: *sqlx.DB，用于写入失败消息的数据库连接
+//
+// 返回值:
+//   - *CounterFailedMessageRepository: 已初始化的仓储实例；db 为 nil 时返回 nil
 func NewCounterFailedMessageRepository(db *sqlx.DB) *CounterFailedMessageRepository {
 	if db == nil {
 		return nil

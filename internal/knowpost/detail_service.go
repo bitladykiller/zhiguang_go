@@ -13,6 +13,14 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	l1DetailCacheTTL    = 60
+	nullCacheTTLBase    = 30
+	nullCacheJitter     = 31
+	l2DetailTTLBase     = 60
+	l2DetailJitter      = 31
+)
+
 // --- [详情读取链路] --- //
 
 // GetDetail 返回知文详情，并补充当前用户维度的点赞/收藏状态。
@@ -69,7 +77,7 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 		if cached == "NULL" {
 			return nil, errcode.ErrNotFound.WithMsg("content not found")
 		}
-		s.l1Cache.Set([]byte(pageKey), []byte(cached), 60)
+		s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
 		s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 		resp, parseErr := s.parseDetail([]byte(cached))
 		if parseErr == nil {
@@ -121,7 +129,7 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			if cached != "" {
 				resp, parseErr := s.parseDetail([]byte(cached))
 				if parseErr == nil {
-					s.l1Cache.Set([]byte(pageKey), []byte(cached), 60)
+s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
 					return s.enrichDetail(ctx, resp, currentUserID, true), true, nil
 				}
 			}
@@ -130,7 +138,7 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 		func(ctx context.Context) (*KnowPostDetailResponse, error) {
 			row, err := s.repo.FindDetailByID(ctx, id)
 			if err != nil || row == nil || row.Status == "deleted" {
-				ttl := time.Duration(30+rand.Intn(31)) * time.Second
+				ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
 				s.redis.Set(ctx, pageKey, "NULL", ttl)
 				return nil, errcode.ErrNotFound.WithMsg("content not found")
 			}
@@ -172,7 +180,7 @@ if s.counter != nil {
 			if err != nil {
 				return s.enrichDetail(ctx, resp, currentUserID, false), nil
 			}
-			baseTTL := 60 + rand.Intn(31)
+			baseTTL := l2DetailTTLBase + rand.Intn(l2DetailJitter)
 			targetTTL := s.hotKey.TtlForPublic(ctx, baseTTL, pageKey)
 			if targetTTL < baseTTL {
 				targetTTL = baseTTL

@@ -15,11 +15,29 @@ import (
 	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
+// feedLayoutVer 定义 Feed 列表缓存的布局版本号。
+// 用于缓存键编码，递增版本号可使旧缓存整体失效。
 const feedLayoutVer = 1
 
 const (
 	publicFeedVersionKey = "feed:public:version"
 	mineFeedVersionKey   = "feed:mine:version:%d"
+)
+
+const (
+	defaultSafeSize  = 50
+	secondsPerHour   = 3600
+	l1FeedCacheTTL   = 15
+	l2IDListTTLBase  = 60
+	l2IDListJitter   = 31
+	l2HasMoreTTLBase = 10
+	l2HasMoreJitter  = 11
+	l2ItemTTLBase    = 60
+	l2ItemJitter     = 31
+	l2MineTTLBase    = 30
+	l2MineJitter     = 21
+	l1MineCacheTTL   = 30
+	extendTTLBase    = 60
 )
 
 // KnowPostFeedService 实现基于碎片缓存架构的 Feed 列表流读取。
@@ -114,12 +132,12 @@ func NewKnowPostFeedService(
 //   - *FeedPageResponse: 包含 Items（FeedItemResponse 列表）、Page、Size 和 HasMore。
 //   - error: 数据库查询错误等。
 func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
-	safeSize := clamp(size, 1, 50)
+	safeSize := clamp(size, 1, defaultSafeSize)
 	safePage := max(page, 1)
 	feedVersion := s.currentPublicFeedVersion(ctx)
 	localPageKey := fmt.Sprintf("feed:public:%d:%d:v%d:%d", safeSize, safePage, feedLayoutVer, feedVersion)
 
-	hourSlot := time.Now().Unix() / 3600
+	hourSlot := time.Now().Unix() / secondsPerHour
 	idsKey := fmt.Sprintf("feed:public:ids:%d:%d:%d:%d", feedVersion, safeSize, hourSlot, safePage)
 	hasMoreKey := idsKey + ":hasMore"
 
@@ -254,7 +272,7 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 //   - *FeedPageResponse: 分页结果。
 //   - error: 查询失败时的错误。
 func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
-	safeSize := clamp(size, 1, 50)
+	safeSize := clamp(size, 1, defaultSafeSize)
 	safePage := max(page, 1)
 	feedVersion := s.currentMineFeedVersion(ctx, userID)
 	key := fmt.Sprintf("feed:mine:%d:%d:%d:%d", userID, safeSize, safePage, feedVersion)
@@ -273,7 +291,7 @@ func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64,
 	if err == nil && cached != "" {
 		resp, parseErr := s.parseFeedPage([]byte(cached))
 		if parseErr == nil {
-			s.l1Mine.Set([]byte(key), []byte(cached), 30)
+			s.l1Mine.Set([]byte(key), []byte(cached), l1MineCacheTTL)
 			s.hotKey.Record(key)
 			return resp, nil
 		}
@@ -305,7 +323,7 @@ func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64,
 	if err != nil {
 		return resp, nil
 	}
-	baseTTL := 30 + rand.Intn(21) // 30-50s with jitter
+	baseTTL := l2MineTTLBase + rand.Intn(l2MineJitter)
 	s.redis.Set(ctx, key, string(jsonBytes), time.Duration(baseTTL)*time.Second)
 	s.l1Mine.Set([]byte(key), jsonBytes, baseTTL)
 	s.hotKey.Record(key)
@@ -438,13 +456,13 @@ func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, h
 		if err := s.redis.LPush(ctx, idsKey, idVals...).Err(); err != nil {
 			s.logger.Warn("failed to LPush feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
 		}
-		ttl := time.Duration(60+rand.Intn(31)) * time.Second
+		ttl := time.Duration(l2IDListTTLBase+rand.Intn(l2IDListJitter)) * time.Second
 		if err := s.redis.Expire(ctx, idsKey, ttl).Err(); err != nil {
 			s.logger.Warn("failed to set expire on feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
 		}
 
 		// hasMore 软缓存
-		hasMoreTTL := time.Duration(10+rand.Intn(11)) * time.Second
+		hasMoreTTL := time.Duration(l2HasMoreTTLBase+rand.Intn(l2HasMoreJitter)) * time.Second
 		if err := s.redis.Set(ctx, hasMoreKey, boolToStr(hasMore), hasMoreTTL).Err(); err != nil {
 			s.logger.Warn("failed to set hasMore cache", zap.String("hasMoreKey", hasMoreKey), zap.Error(err))
 		}
@@ -458,7 +476,7 @@ func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, h
 			s.logger.Warn("failed to marshal feed item for cache", zap.String("itemID", item.ID), zap.Error(err))
 			continue
 		}
-		ttl := time.Duration(60+rand.Intn(31)) * time.Second
+		ttl := time.Duration(l2ItemTTLBase+rand.Intn(l2ItemJitter)) * time.Second
 		if err := s.redis.Set(ctx, itemKey, string(jsonBytes), ttl).Err(); err != nil {
 			s.logger.Warn("failed to cache feed item", zap.String("itemKey", itemKey), zap.Error(err))
 		}
@@ -639,7 +657,7 @@ func (s *KnowPostFeedService) recordItemHotKey(ctx context.Context, itemID strin
 	hotKeyID := "knowpost:" + itemID
 	s.hotKey.Record(hotKeyID)
 
-	baseTTL := 60
+	baseTTL := extendTTLBase
 	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 
 	// Lua 脚本原子操作：只有当前 TTL < 目标 TTL 时才延长
@@ -676,7 +694,7 @@ func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, 
 		s.logger.Warn("failed to marshal feed page for cache", zap.String("key", key), zap.Error(err))
 		return
 	}
-	cache.Set([]byte(key), jsonBytes, 15) // 15s for L1 feed cache
+	cache.Set([]byte(key), jsonBytes, l1FeedCacheTTL)
 }
 
 // parseFeedPage 将 feed 页的 JSON 缓存数据反序列化为 FeedPageResponse。

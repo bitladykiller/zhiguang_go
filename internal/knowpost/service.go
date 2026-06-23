@@ -10,6 +10,8 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 )
 
+// detailLayoutVer 定义知文详情缓存的布局版本号。
+// 用于缓存键编码，递增版本号可使旧缓存整体失效。
 const detailLayoutVer = 1
 
 // CounterClient 定义 KnowPostService 所依赖的计数器读写接口。

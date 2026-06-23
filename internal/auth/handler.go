@@ -14,6 +14,14 @@ type AuthHandler struct {
 	jwtSvc *JwtService
 }
 
+// NewAuthHandler 创建 AuthHandler 实例。
+//
+// 参数:
+//   - svc: AuthServiceInterface 实现，负责鉴权业务逻辑
+//   - jwtSvc: JwtService 指针，用于 JWT 令牌解析路由保护规则
+//
+// 返回值:
+//   - *AuthHandler: 已初始化的 Handler 实例
 func NewAuthHandler(svc AuthServiceInterface, jwtSvc *JwtService) *AuthHandler {
 	return &AuthHandler{svc: svc, jwtSvc: jwtSvc}
 }

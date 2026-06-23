@@ -26,6 +26,13 @@ type AuthRepository struct {
 	logger *zap.Logger
 }
 
+// NewAuthRepository 创建 AuthRepository 实例。
+//
+// 参数:
+//   - db: sqlx.ExtContext，支持 *sqlx.DB 或 *sqlx.Tx
+//
+// 返回值:
+//   - *AuthRepository: 已初始化的仓储实例
 func NewAuthRepository(db sqlx.ExtContext) *AuthRepository {
 	return &AuthRepository{db: db, logger: zap.L()}
 }

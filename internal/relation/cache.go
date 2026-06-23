@@ -11,6 +11,11 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	l1CacheTTL          = 600
+	fallbackExhaustedTTL = 10 * time.Minute
+)
+
 // fillL1 将 BigV 用户的前 500 个关注/粉丝 ID 写入 freecache（L1）。
 func (s *RelationService) fillL1(ctx context.Context, listType string, userID uint64) {
 	key := s.l1KeyStr(listType, userID)
@@ -22,7 +27,7 @@ func (s *RelationService) fillL1(ctx context.Context, listType string, userID ui
 	for i, e := range entries {
 		idStrs[i] = strconv.FormatUint(e.UserID, 10)
 	}
-	s.l1.Set([]byte(key), []byte(strings.Join(idStrs, ",")), 600)
+	s.l1.Set([]byte(key), []byte(strings.Join(idStrs, ",")), l1CacheTTL)
 }
 
 // invalidateCaches 在关注/取关操作后，失效涉及用户的 L1（freecache）和 L2（Redis ZSet）缓存。
@@ -140,7 +145,7 @@ func (s *RelationService) shouldFallbackToFollowing(ctx context.Context, userID 
 // markFollowerFallbackExhausted 标记该用户的粉丝降级查询已穷尽。
 func (s *RelationService) markFollowerFallbackExhausted(ctx context.Context, userID uint64) {
 	key := fmt.Sprintf("follower:fallback:exhausted:%d", userID)
-	if err := s.redis.Set(ctx, key, "1", 10*time.Minute).Err(); err != nil {
+	if err := s.redis.Set(ctx, key, "1", fallbackExhaustedTTL).Err(); err != nil {
 		s.logger.Warn("failed to mark follower fallback exhausted", zap.String("key", key), zap.Error(err))
 	}
 }

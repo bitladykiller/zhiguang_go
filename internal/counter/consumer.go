@@ -50,6 +50,16 @@ type AggregationConsumer struct {
 	batches map[int]*counterBatch
 }
 
+// NewAggregationConsumer 创建 AggregationConsumer 实例。
+//
+// 参数:
+//   - reader: *kafka.Reader，Kafka 消息读取器
+//   - service: *CounterService，计数器服务，用于 flush 和 repair
+//   - logger: *zap.Logger，日志记录器
+//   - cfg: *config.CounterConfig，消费者配置（batchSize、flushInterval 等）
+//
+// 返回值:
+//   - *AggregationConsumer: 已初始化的聚合消费者；若 reader/service/redis 为 nil 则返回 nil
 func NewAggregationConsumer(
 	reader *kafka.Reader,
 	service *CounterService,
@@ -616,6 +626,14 @@ func (b *counterBatch) reset() {
 	clear(b.entities)
 }
 
+// parseCounterEvent 将 Kafka 消息的 Value (JSON bytes) 反序列化为 CounterEvent。
+//
+// 参数:
+//   - value: []byte，Kafka 消息 Body
+//
+// 返回值:
+//   - CounterEvent: 解析后的计数变更事件
+//   - error: JSON 解析失败时返回错误
 func parseCounterEvent(value []byte) (CounterEvent, error) {
 	var evt CounterEvent
 	if err := json.Unmarshal(value, &evt); err != nil {

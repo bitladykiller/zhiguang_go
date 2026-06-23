@@ -209,6 +209,14 @@ func (l *Lock) stopWatchdog() {
 	})
 }
 
+// sleepRetry 在 retryInterval 时间段内等待 ctx 取消或超时。
+//
+// 参数:
+//   - ctx: context.Context，用于取消等待
+//   - retryInterval: time.Duration，等待时长
+//
+// 返回值:
+//   - bool: true 表示等待完成未被取消；false 表示 ctx 已取消
 func sleepRetry(ctx context.Context, retryInterval time.Duration) bool {
 	timer := time.NewTimer(retryInterval)
 	defer timer.Stop()

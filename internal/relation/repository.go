@@ -12,6 +12,13 @@ type RelationRepository struct {
 	db sqlx.ExtContext
 }
 
+// NewRelationRepository 创建 RelationRepository 实例。
+//
+// 参数:
+//   - db: sqlx.ExtContext，支持 *sqlx.DB 或 *sqlx.Tx
+//
+// 返回值:
+//   - *RelationRepository: 已初始化的仓储实例
 func NewRelationRepository(db sqlx.ExtContext) *RelationRepository {
 	return &RelationRepository{db: db}
 }

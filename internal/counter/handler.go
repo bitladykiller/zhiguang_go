@@ -15,6 +15,13 @@ type CounterHandler struct {
 	svc CounterServiceInterface
 }
 
+// NewCounterHandler 创建 CounterHandler 实例。
+//
+// 参数:
+//   - svc: CounterServiceInterface 实现，负责计数器业务逻辑
+//
+// 返回值:
+//   - *CounterHandler: 已初始化的 Handler 实例
 func NewCounterHandler(svc CounterServiceInterface) *CounterHandler {
 	return &CounterHandler{svc: svc}
 }

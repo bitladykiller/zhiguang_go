@@ -254,56 +254,38 @@ func (s *SearchService) ensureCompatibleMappings() error {
 	return nil
 }
 
+const defaultSearchSize = 20
+
 // Search 执行全文检索，使用 function_score 融合 BM25 和相关指标权重，并通过 search_after 游标分页。
-//
-// 参数:
-//   - ctx: 上下文对象，用于链路追踪和请求超时控制
-//   - keyword: 搜索关键词，使用 multi_match 在 title(权重 3) 和 body 字段同时检索
-//   - size: 每页返回结果数量，<=0 时默认回退为 20
-//   - tagsCSV: 按逗号分隔的标签筛选条件（可选），非空时追加 terms 过滤器
-//   - after: base64 编码的游标值，由上一页响应的 next_after 字段提供
-//   - currentUserID: 当前登录用户 ID（可选），非空时查询用户对每篇结果的点赞/收藏状态
-//
-// 返回值:
-//   - *SearchResponse: 包含搜索结果列表、下一页游标 next_after、是否还有更多 has_more
-//   - error: ES 搜索失败或 JSON 编解码错误时返回
-//
-// 排序策略（与 Java 版对齐）:
-//   1. _score: BM25 相关性评分（降序）
-//   2. publish_time: 发布时间（降序）
-//   3. like_count: 点赞数（降序）
-//   4. view_count: 浏览数（降序）
-//   5. id: 文档 ID（降序），确保排序的确定性
-//
-// function_score 权重:
-//   - like_count 使用 log1p 修正器乘以权重 2.0
-//   - view_count 使用 log1p 修正器乘以权重 1.0
-//   - boost_mode 设为 "sum"，即 BM25 分值与函数分值相加
-//
-// 分页机制:
-//   使用 search_after 代替传统的 from/size 深分页
-//   原因：深分页场景下 ES 需要在每个分片维持全局排序状态，
-//   导致集群内存消耗线性增长。search_after 利用上一页最后一个文档的排序值
-//   作为起点，避免了该问题，适合搜索结果翻页场景。
-//
-// 高亮:
-//   对 title 和 body 字段使用 ES 默认高亮配置（<em> 标签包裹匹配片段），
-//   如果高亮片段存在，则用它替换原 description 返回给客户端。
-//
-// 边界情况:
-//   - keyword 为空时 ES 会返回空结果而非错误
-//   - after 解码失败时视作第一页，不返回错误
-//   - 结果数为 0 时 has_more 为 false, next_after 为 nil
-//   - currentUserID 为 nil 时 liked/faved 返回 nil
 func (s *SearchService) Search(ctx context.Context, keyword string, size int, tagsCSV, after string, currentUserID *uint64) (*SearchResponse, error) {
 	if size <= 0 {
-		size = 20
+		size = defaultSearchSize
 	}
 
 	tags := parseCSV(tagsCSV)
 	afterValues := parseAfter(after)
 
-	// 与 Java 版对齐：function_score + search_after + 高亮
+	query := s.buildSearchQuery(keyword, tags, afterValues, size)
+
+	raw, err := s.executeSearch(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	items, likedMap, favedMap := s.decodeAndEnrich(ctx, raw, currentUserID)
+	nextAfter, hasMore := s.buildCursor(raw, size)
+
+	items = s.applyLikedFaved(items, likedMap, favedMap)
+
+	return &SearchResponse{
+		Items:     items,
+		NextAfter: nextAfter,
+		HasMore:   hasMore,
+	}, nil
+}
+
+// buildSearchQuery 构造 ES 搜索请求体 JSON。
+func (s *SearchService) buildSearchQuery(keyword string, tags []string, afterValues []interface{}, size int) map[string]interface{} {
 	query := map[string]interface{}{
 		"query": map[string]interface{}{
 			"function_score": map[string]interface{}{
@@ -322,20 +304,8 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 					},
 				},
 				"functions": []map[string]interface{}{
-					{
-						"field_value_factor": map[string]interface{}{
-							"field":    "like_count",
-							"modifier": "log1p",
-						},
-						"weight": 2.0,
-					},
-					{
-						"field_value_factor": map[string]interface{}{
-							"field":    "view_count",
-							"modifier": "log1p",
-						},
-						"weight": 1.0,
-					},
+					{"field_value_factor": map[string]interface{}{"field": "like_count", "modifier": "log1p"}, "weight": 2.0},
+					{"field_value_factor": map[string]interface{}{"field": "view_count", "modifier": "log1p"}, "weight": 1.0},
 				},
 				"boost_mode": "sum",
 			},
@@ -357,15 +327,26 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 	}
 
 	if len(tags) > 0 {
-		query["query"].(map[string]interface{})["function_score"].(map[string]interface{})["query"].(map[string]interface{})["bool"].(map[string]interface{})["filter"] = append(
-			query["query"].(map[string]interface{})["function_score"].(map[string]interface{})["query"].(map[string]interface{})["bool"].(map[string]interface{})["filter"].([]map[string]interface{}),
-			map[string]interface{}{"terms": map[string]interface{}{"tags": tags}},
-		)
+		filter := query["query"].(map[string]interface{})["function_score"].(map[string]interface{})["query"].(map[string]interface{})["bool"].(map[string]interface{})["filter"].([]map[string]interface{})
+		filter = append(filter, map[string]interface{}{"terms": map[string]interface{}{"tags": tags}})
+		query["query"].(map[string]interface{})["function_score"].(map[string]interface{})["query"].(map[string]interface{})["bool"].(map[string]interface{})["filter"] = filter
 	}
 	if len(afterValues) > 0 {
 		query["search_after"] = afterValues
 	}
+	return query
+}
 
+// searchHit 表示 ES 搜索结果中的单个 hit。
+type searchHit struct {
+	Source    SearchIndexDoc      `json:"_source"`
+	Score     float64             `json:"_score"`
+	Sort      []interface{}       `json:"sort"`
+	Highlight map[string][]string `json:"highlight"`
+}
+
+// executeSearch 发送 ES 搜索请求并返回原始响应。
+func (s *SearchService) executeSearch(ctx context.Context, query map[string]interface{}) ([]searchHit, error) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(query); err != nil {
 		return nil, fmt.Errorf("search: encode query: %w", err)
@@ -391,33 +372,30 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 
 	var result struct {
 		Hits struct {
-			Hits []struct {
-				Source    SearchIndexDoc      `json:"_source"`
-				Score     float64             `json:"_score"`
-				Sort      []interface{}       `json:"sort"`
-				Highlight map[string][]string `json:"highlight"`
-			} `json:"hits"`
+			Hits []searchHit `json:"hits"`
 		} `json:"hits"`
 	}
-
 	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("search: decode response: %w", err)
 	}
+	return result.Hits.Hits, nil
+}
 
-	items := make([]knowpost.FeedItemResponse, 0, len(result.Hits.Hits))
+// decodeAndEnrich 将 ES 结果解析为 FeedItemResponse 列表，并返回 liked/faved 状态映射。
+func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, currentUserID *uint64) ([]knowpost.FeedItemResponse, map[string]bool, map[string]bool) {
+	items := make([]knowpost.FeedItemResponse, 0, len(hits))
 
-	// 批量查询当前用户的点赞/收藏状态
 	var likedMap, favedMap map[string]bool
-	if currentUserID != nil && s.counter != nil && len(result.Hits.Hits) > 0 {
-		hitIDs := make([]string, len(result.Hits.Hits))
-		for i, hit := range result.Hits.Hits {
+	if currentUserID != nil && s.counter != nil && len(hits) > 0 {
+		hitIDs := make([]string, len(hits))
+		for i, hit := range hits {
 			hitIDs[i] = hit.Source.ID
 		}
 		likedMap, _ = s.counter.BatchIsLiked(ctx, *currentUserID, "knowpost", hitIDs)
 		favedMap, _ = s.counter.BatchIsFaved(ctx, *currentUserID, "knowpost", hitIDs)
 	}
 
-	for _, hit := range result.Hits.Hits {
+	for _, hit := range hits {
 		source := hit.Source
 		description := source.Description
 		if snippet := buildSnippet(hit.Highlight); snippet != "" {
@@ -425,19 +403,7 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 		}
 		var coverImage *string
 		if len(source.ImgURLs) > 0 {
-			first := source.ImgURLs[0]
-			coverImage = &first
-		}
-		var liked, faved *bool
-		if likedMap != nil {
-			if l, ok := likedMap[source.ID]; ok {
-				liked = &l
-			}
-		}
-		if favedMap != nil {
-			if f, ok := favedMap[source.ID]; ok {
-				faved = &f
-			}
+			coverImage = &source.ImgURLs[0]
 		}
 		items = append(items, knowpost.FeedItemResponse{
 			ID:             source.ID,
@@ -450,27 +416,44 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 			TagJson:        source.AuthorTagJSON,
 			LikeCount:      source.LikeCount,
 			FavoriteCount:  source.FavCount,
-			Liked:          liked,
-			Faved:          faved,
 			IsTop:          boolPtr(source.IsTop),
 		})
 	}
+	return items, likedMap, favedMap
+}
 
+// applyLikedFaved 为每篇结果填充当前用户的点赞/收藏状态。
+func (s *SearchService) applyLikedFaved(items []knowpost.FeedItemResponse, likedMap, favedMap map[string]bool) []knowpost.FeedItemResponse {
+	if likedMap == nil && favedMap == nil {
+		return items
+	}
+	for i, item := range items {
+		if likedMap != nil {
+			if l, ok := likedMap[item.ID]; ok {
+				items[i].Liked = &l
+			}
+		}
+		if favedMap != nil {
+			if f, ok := favedMap[item.ID]; ok {
+				items[i].Faved = &f
+			}
+		}
+	}
+	return items
+}
+
+// buildCursor 根据 ES 结果构建翻页游标和 hasMore 标记。
+func (s *SearchService) buildCursor(hits []searchHit, size int) (*string, bool) {
+	hasMore := len(hits) >= size
 	var nextAfter *string
-	hasMore := len(items) >= size
-	if len(result.Hits.Hits) > 0 {
-		lastSort := result.Hits.Hits[len(result.Hits.Hits)-1].Sort
+	if len(hits) > 0 {
+		lastSort := hits[len(hits)-1].Sort
 		if len(lastSort) > 0 {
 			cursor := encodeAfter(lastSort)
 			nextAfter = &cursor
 		}
 	}
-
-	return &SearchResponse{
-		Items:     items,
-		NextAfter: nextAfter,
-		HasMore:   hasMore,
-	}, nil
+	return nextAfter, hasMore
 }
 
 // Suggest 根据用户输入的前缀返回自动补全建议列表。
