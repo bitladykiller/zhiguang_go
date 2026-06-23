@@ -37,9 +37,9 @@ clean:
 	rm -f coverage.out
 	rm -rf .gocache/
 
-# Lint with go vet
+# Lint with golangci-lint
 lint:
-	$(GO) vet ./...
+	golangci-lint run ./...
 
 # Tidy Go module dependencies
 mod:

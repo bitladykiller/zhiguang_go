@@ -33,7 +33,6 @@ linters:
     - prealloc
     - bodyclose
   disable:
-    - errcheck
 
 run:
   timeout: 5m

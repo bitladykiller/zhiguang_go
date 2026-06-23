@@ -41,6 +41,7 @@ func initCounter(
 		counter.NewCounterFailedMessageRepository(db),
 		cfg.Kafka.Topics.CounterEvents,
 		idGen,
+		logger,
 	)
 	counterAggConsumer := counter.NewAggregationConsumer(
 		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, cfg.Kafka.Topics.CounterEvents, cfg.Kafka.ConsumerGroup),

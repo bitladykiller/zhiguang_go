@@ -54,6 +54,7 @@ type DatabaseConfig struct {
 	MaxOpenConns    int    `yaml:"max_open_conns"`    // max open connections
 	MaxIdleConns    int    `yaml:"max_idle_conns"`    // max idle connections
 	ConnMaxLifetime int    `yaml:"conn_max_lifetime"` // max connection lifetime in seconds
+	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"` // max idle connection time in seconds
 	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`   // 连接超时（毫秒）
 	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`   // 读超时（毫秒）
 	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`  // 写超时（毫秒）

@@ -72,34 +72,39 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 
 // bitCountShards 统计指定指标的所有位图片段的 SETBIT 总数量。
 //
-// 使用 Redis KEYS 命令匹配模式 `bm:{metric}:{entityType}:{entityID}:*`，
+// 使用 Redis SCAN 命令迭代匹配模式 `bm:{metric}:{entityType}:{entityID}:*`，
 // 对每个匹配的位图键执行 BITCOUNT，通过 Pipeline 批量发送并汇总。
-//
-// 注意：使用 KEYS 而非 SCAN 是因为 SDS 重建是低频操作，简化实现比性能优化更重要。
 func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType, entityID string) (int64, error) {
 	pattern := fmt.Sprintf("bm:%s:%s:%s:*", metric, entityType, entityID)
-	keys, err := s.redis.Keys(ctx, pattern).Result()
-	if err != nil {
-		return 0, err
-	}
-	if len(keys) == 0 {
-		return 0, nil
-	}
-
-	pipe := s.redis.Pipeline()
-	cmds := make([]*redis.IntCmd, len(keys))
-	for i, k := range keys {
-		cmds[i] = pipe.BitCount(ctx, k, nil)
-	}
-	pipe.Exec(ctx)
 
 	var total int64
-	for _, cmd := range cmds {
-		val, err := cmd.Result()
+	var cursor uint64
+	for {
+		keys, next, err := s.redis.Scan(ctx, cursor, pattern, 100).Result()
 		if err != nil {
-			continue
+			return 0, err
 		}
-		total += val
+		if len(keys) > 0 {
+			pipe := s.redis.Pipeline()
+			cmds := make([]*redis.IntCmd, len(keys))
+			for i, k := range keys {
+				cmds[i] = pipe.BitCount(ctx, k, nil)
+			}
+			if _, err := pipe.Exec(ctx); err != nil {
+				return 0, err
+			}
+			for _, cmd := range cmds {
+				val, err := cmd.Result()
+				if err != nil {
+					continue
+				}
+				total += val
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
 	}
 	return total, nil
 }

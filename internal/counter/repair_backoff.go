@@ -78,9 +78,11 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 	}
 	until := time.Now().UnixMilli() + ms
 
-	s.redis.Set(ctx, s.backoffKey(entityType, entityID), until, 0)
-	s.redis.Set(ctx, expKey, exp+1, 0)
-	s.redis.Del(ctx, s.rateLimiterKey(entityType, entityID))
+	pipe := s.redis.Pipeline()
+	pipe.Set(ctx, s.backoffKey(entityType, entityID), until, 0)
+	pipe.Set(ctx, expKey, exp+1, 0)
+	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
+	pipe.Exec(ctx)
 }
 
 // resetBackoff 重置指定实体的退避状态。
@@ -98,7 +100,9 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 //   - entityType: 实体类型
 //   - entityID:   实体 ID
 func (s *CounterService) resetBackoff(ctx context.Context, entityType, entityID string) {
-	s.redis.Del(ctx, s.backoffKey(entityType, entityID))
-	s.redis.Del(ctx, s.backoffExpKey(entityType, entityID))
-	s.redis.Del(ctx, s.rateLimiterKey(entityType, entityID))
+	pipe := s.redis.Pipeline()
+	pipe.Del(ctx, s.backoffKey(entityType, entityID))
+	pipe.Del(ctx, s.backoffExpKey(entityType, entityID))
+	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
+	pipe.Exec(ctx)
 }

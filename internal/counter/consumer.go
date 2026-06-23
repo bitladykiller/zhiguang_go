@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -44,6 +45,9 @@ type AggregationConsumer struct {
 	repairEnabled    bool
 	repairInterval   time.Duration
 	repairBatch      int
+
+	mu      sync.Mutex
+	batches map[int]*counterBatch
 }
 
 func NewAggregationConsumer(
@@ -94,6 +98,7 @@ func NewAggregationConsumer(
 		repairEnabled:    repairEnabled,
 		repairInterval:   repairInterval,
 		repairBatch:      repairBatch,
+		batches:          make(map[int]*counterBatch),
 	}
 }
 
@@ -111,17 +116,18 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 }
 
 func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
-	batches := make(map[int]*counterBatch)
-
 	for {
-		if flushed := c.flushExpiredBatches(ctx, batches, time.Now()); flushed {
+		c.mu.Lock()
+		if flushed := c.flushExpiredBatches(ctx, c.batches, time.Now()); flushed {
+			c.mu.Unlock()
 			continue
 		}
 
 		fetchCtx := ctx
-		if deadline, ok := nextBatchDeadline(batches, c.flushInterval); ok {
+		if deadline, ok := nextBatchDeadline(c.batches, c.flushInterval); ok {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
+				c.mu.Unlock()
 				continue
 			}
 			var cancel context.CancelFunc
@@ -129,6 +135,7 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 			msg, err := c.reader.FetchMessage(fetchCtx)
 			cancel()
 			if err != nil {
+				c.mu.Unlock()
 				if ctx.Err() != nil {
 					return
 				}
@@ -141,11 +148,13 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 				}
 				continue
 			}
-			if err := c.acceptMessage(ctx, batches, msg); err != nil {
+			if err := c.acceptMessage(ctx, c.batches, msg); err != nil {
 				c.logWarn("accept counter kafka message failed", err)
 			}
+			c.mu.Unlock()
 			continue
 		}
+		c.mu.Unlock()
 
 		msg, err := c.reader.FetchMessage(fetchCtx)
 		if err != nil {
@@ -158,9 +167,11 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 			}
 			continue
 		}
-		if err := c.acceptMessage(ctx, batches, msg); err != nil {
+		c.mu.Lock()
+		if err := c.acceptMessage(ctx, c.batches, msg); err != nil {
 			c.logWarn("accept counter kafka message failed", err)
 		}
+		c.mu.Unlock()
 	}
 }
 

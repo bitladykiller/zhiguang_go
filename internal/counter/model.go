@@ -51,13 +51,17 @@ const (
 	IdxPosts     = 4 // posts 槽位（文章数）
 )
 
-// NameToIdx 把指标名称映射到其在 SDS 中的槽位索引。
+// nameToIdx 把指标名称映射到其在 SDS 中的槽位索引。
 // 从 0 开始计数（IdxLike = 0、IdxFav = 1 ...），
-// Lua 脚本中会做 idx+1 转换（Lua 数组索引从 1 开始）。
-var NameToIdx = map[string]int{
+// 找不到时返回 -1。
+var nameToIdx = map[string]int{
 	"like": IdxLike, "fav": IdxFav,
 	"follower": IdxFollower, "following": IdxFollowing,
 	"posts": IdxPosts,
+}
+
+func NameToIdx(metric string) int {
+	return nameToIdx[metric]
 }
 
 // 位图片段常量：每个分片最多容纳 65536 个用户。

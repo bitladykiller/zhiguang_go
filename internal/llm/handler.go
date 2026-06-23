@@ -70,7 +70,7 @@ func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 		return
 	}
 
-	desc, err := h.descSvc.SuggestDescription(req.Title, req.Content)
+	desc, err := h.descSvc.SuggestDescription(c.Request.Context(), req.Title, req.Content)
 	if err != nil {
 		middleware.RecordError(c, err)
 		response.Fail(c, 500, "internal server error")

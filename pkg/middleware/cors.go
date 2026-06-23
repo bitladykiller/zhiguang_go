@@ -49,7 +49,7 @@ func CorsMiddleware() gin.HandlerFunc {
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With"},
 		ExposeHeaders:    []string{"Content-Length", "Content-Type"},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           12 * time.Hour,
 	})
 }

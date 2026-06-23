@@ -58,7 +58,7 @@ func NewKnowPostDescriptionService(cfg *config.LLMConfig) *KnowPostDescriptionSe
 //   - json.Unmarshal(body, &result):
 //     解析 DeepSeek 兼容的 OpenAI 格式响应。
 //     标准格式：{"choices": [{"message": {"content": "..."}}]}
-func (s *KnowPostDescriptionService) SuggestDescription(title, content string) (string, error) {
+func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, title, content string) (string, error) {
 	// 截断正文，避免超过模型 token 限制
 	if len(content) > 2000 {
 		content = content[:2000]
@@ -91,11 +91,16 @@ func (s *KnowPostDescriptionService) SuggestDescription(title, content string) (
 		timeout = time.Duration(s.cfg.TimeoutMs) * time.Millisecond
 	}
 	client := &http.Client{Timeout: timeout}
-	resp, err := client.Post(
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		s.cfg.DeepSeek.BaseURL+"/v1/chat/completions",
-		"application/json",
 		bytes.NewReader(jsonBody),
 	)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("deepseek api: %w", err)
 	}

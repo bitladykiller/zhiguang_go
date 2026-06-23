@@ -36,20 +36,32 @@ type RowHandler interface {
 	HandleRow(ctx context.Context, row Row) error
 }
 
+// FailedMessageRecorder 抽象死信记录能力，用于持久化处理失败的消息供排障和补偿使用。
+type FailedMessageRecorder interface {
+	Create(ctx context.Context, topic string, messageKey string, payload []byte, cause error) error
+}
+
 // Consumer 是 outbox 消费端的通用框架。
 //
 // 封装了完整的消费循环：拉取消息 → 解析 CanalEnvelope → 提取行 →
 // 调用 RowHandler → 提交 offset。所有错误处理、重试和日志记录
 // 都在框架内统一完成。
 //
+// 提供了死信记录能力：当消息处理重试耗尽后，会将失败消息持久化到数据库，
+// 然后跳过该消息继续消费后续消息，避免因单条格式错误消息阻塞整个消费流程。
+//
 // 使用方式：
 //
 //	consumer := outbox.NewConsumer(reader, handler, logger)
+//	consumer.SetFailedMessageRecorder(recorder)
 //	go consumer.Start(ctx)
 type Consumer struct {
-	reader  *kafka.Reader
-	handler RowHandler
-	logger  *zap.Logger
+	reader             *kafka.Reader
+	handler            RowHandler
+	logger             *zap.Logger
+	failureRecorder    FailedMessageRecorder
+	maxRetries         int
+	retryDelay         time.Duration
 }
 
 // NewConsumer 创建 outbox 消费者实例。
@@ -64,7 +76,18 @@ func NewConsumer(reader *kafka.Reader, handler RowHandler, logger *zap.Logger) *
 	if reader == nil || handler == nil {
 		return nil
 	}
-	return &Consumer{reader: reader, handler: handler, logger: logger}
+	return &Consumer{
+		reader:     reader,
+		handler:    handler,
+		logger:     logger,
+		maxRetries: 3,
+		retryDelay: time.Second,
+	}
+}
+
+// SetFailedMessageRecorder 注入死信记录能力。同一个 Consumer 可被多个消费链路复用。
+func (c *Consumer) SetFailedMessageRecorder(recorder FailedMessageRecorder) {
+	c.failureRecorder = recorder
 }
 
 // Start 启动消费循环，阻塞直到 ctx 取消。
@@ -75,7 +98,8 @@ func NewConsumer(reader *kafka.Reader, handler RowHandler, logger *zap.Logger) *
 //  3. 提取 outbox 行（过滤非 outbox 表、非 INSERT/UPDATE 的变更）
 //  4. 逐行调用 handler.HandleRow
 //  5. 全部行处理成功后 CommitMessages
-//  6. 任何步骤失败都等待 1 秒后重试
+//  6. 如果处理失败，重试最多 3 次；耗尽后将消息写入死信记录并 CommitMessages 跳过
+//  7. 任何步骤失败都等待 1 秒后重试
 func (c *Consumer) Start(ctx context.Context) {
 	if c == nil {
 		return
@@ -95,10 +119,11 @@ func (c *Consumer) Start(ctx context.Context) {
 			continue
 		}
 
-		if err := c.handleMessage(ctx, msg.Value); err != nil {
-			c.logWarn("process outbox kafka message failed", err)
-			if !contextutil.Sleep(ctx, time.Second) {
-				return
+		if err := c.handleMessageWithRetry(ctx, msg); err != nil {
+			c.logWarn("process outbox kafka message exhausted retries, will skip", err)
+			c.recordFailedMessage(msg.Value, err)
+			if err := c.reader.CommitMessages(ctx, msg); err != nil {
+				c.logWarn("commit skipped outbox kafka message failed", err)
 			}
 			continue
 		}
@@ -107,6 +132,32 @@ func (c *Consumer) Start(ctx context.Context) {
 			c.logWarn("commit outbox kafka message failed", err)
 		}
 	}
+}
+
+// handleMessageWithRetry 对一条消息的重试包装，最多重试 c.maxRetries 次。
+func (c *Consumer) handleMessageWithRetry(ctx context.Context, msg kafka.Message) error {
+	for attempt := 1; attempt <= c.maxRetries; attempt++ {
+		if err := c.handleMessage(ctx, msg.Value); err != nil {
+			if attempt == c.maxRetries {
+				return err
+			}
+			c.logWarn("process outbox kafka message failed, retrying", err)
+			if !contextutil.Sleep(ctx, c.retryDelay) {
+				return err
+			}
+			continue
+		}
+		return nil
+	}
+	return nil
+}
+
+// recordFailedMessage 将失败消息写入死信记录。
+func (c *Consumer) recordFailedMessage(value []byte, cause error) {
+	if c.failureRecorder == nil {
+		return
+	}
+	_ = c.failureRecorder.Create(context.WithoutCancel(context.Background()), CanalOutboxTopic, "", value, cause)
 }
 
 // handleMessage 解析一条 Kafka 消息，提取 outbox 行并逐行处理。

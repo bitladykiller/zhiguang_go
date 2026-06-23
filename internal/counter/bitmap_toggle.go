@@ -53,12 +53,12 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 			EntityType: entityType,
 			EntityID:   entityID,
 			Metric:     metric,
-			Index:      NameToIdx[metric],
+			Index:      nameToIdx[metric],
 			UserID:     userID,
 			Delta:      delta,
 		}
 		if s.producer != nil {
-			go func() {
+			go func(evt *CounterEvent) {
 				defer func() {
 					if r := recover(); r != nil {
 						// fire-and-forget goroutine 的 panic 不应该导致进程崩溃。
@@ -67,8 +67,8 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 				}()
 				pubCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 				defer cancel()
-				s.publishCounterEvent(pubCtx, event)
-			}()
+				s.publishCounterEvent(pubCtx, evt)
+			}(event)
 		}
 		return true, nil
 	}

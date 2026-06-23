@@ -38,7 +38,7 @@ func (u *UserCounter) IncrementFollowers(ctx context.Context, userID uint64, del
 
 // incrementUserMetric 增量更新用户维度的计数指标。
 func (u *UserCounter) incrementUserMetric(ctx context.Context, userID uint64, metric string, delta int) error {
-	idx, ok := NameToIdx[metric]
+	idx, ok := nameToIdx[metric]
 	if !ok {
 		return fmt.Errorf("unknown metric: %s", metric)
 	}

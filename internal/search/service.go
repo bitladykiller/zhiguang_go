@@ -136,9 +136,12 @@ type SearchService struct {
 func NewSearchService(cfg struct {
 	URIs      []string
 	IndexName string
+	MaxRetries int
 }, counter SearchCounterClient) (*SearchService, error) {
 	client, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: cfg.URIs,
+		Addresses:     cfg.URIs,
+		MaxRetries:    cfg.MaxRetries,
+		RetryOnStatus: []int{502, 503, 504, 429},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create es client: %w", err)
@@ -794,5 +797,13 @@ func (s *SearchService) DeleteDocument(ctx context.Context, id string) error {
 		return err
 	}
 	defer res.Body.Close()
+
+	if res.IsError() {
+		body, readErr := io.ReadAll(res.Body)
+		if readErr != nil {
+			return fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
+		}
+		return fmt.Errorf("delete failed: %s", string(body))
+	}
 	return nil
 }

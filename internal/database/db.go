@@ -58,6 +58,9 @@ func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
 	db.SetMaxOpenConns(cfg.MaxOpenConns)
 	db.SetMaxIdleConns(cfg.MaxIdleConns)
 	db.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetime) * time.Second)
+	if cfg.ConnMaxIdleTime > 0 {
+		db.SetConnMaxIdleTime(time.Duration(cfg.ConnMaxIdleTime) * time.Second)
+	}
 
 	return db, nil
 }

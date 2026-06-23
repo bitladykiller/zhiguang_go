@@ -53,7 +53,7 @@ func (s *CounterService) GetCounts(ctx context.Context, entityType, entityID str
 
 	result := make(map[string]int32, len(metrics))
 	for _, m := range metrics {
-		idx, ok := NameToIdx[m]
+		idx, ok := nameToIdx[m]
 		if !ok {
 			continue
 		}
@@ -105,7 +105,9 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 	for i, k := range keys {
 		cmds[i] = pipe.Get(ctx, k)
 	}
-	pipe.Exec(ctx)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, fmt.Errorf("pipeline exec: %w", err)
+	}
 
 	result := make(map[string]map[string]int32, len(entityIDs))
 	for i, cmd := range cmds {
@@ -115,7 +117,7 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 		}
 		counts := make(map[string]int32, len(metrics))
 		for _, m := range metrics {
-			idx, ok := NameToIdx[m]
+			idx, ok := nameToIdx[m]
 			if !ok {
 				continue
 			}
