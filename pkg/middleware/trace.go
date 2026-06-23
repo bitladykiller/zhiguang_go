@@ -9,8 +9,6 @@ import (
 	"github.com/google/uuid"
 )
 
-type traceIDKey struct{}
-
 // TraceIDHeader 是向下游服务传递 trace id 的 HTTP 头名称。
 const TraceIDHeader = "X-Trace-ID"
 
@@ -83,31 +81,4 @@ func GetTraceID(c *gin.Context) string {
 		return ""
 	}
 	return traceID
-}
-
-// TraceContext 返回包含 trace id 的 context.Context。
-//
-// 用于将 trace id 从 Gin 上下文传递到 service 层、repository 层。
-//
-// 使用方式：
-//
-//	ctx := middleware.TraceContext(c)
-//	svc.DoSomething(ctx, ...)
-func TraceContext(c *gin.Context) context.Context {
-	traceID := GetTraceID(c)
-	if traceID == "" {
-		return c.Request.Context()
-	}
-	return context.WithValue(c.Request.Context(), traceIDKey{}, traceID)
-}
-
-// TraceIDFromContext 从 context.Context 中提取 trace id。
-//
-// 用于在 service 层或 repository 层获取 trace id。
-func TraceIDFromContext(ctx context.Context) string {
-	val, ok := ctx.Value(traceIDKey{}).(string)
-	if !ok {
-		return ""
-	}
-	return val
 }

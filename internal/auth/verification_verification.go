@@ -104,7 +104,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 		s.sendLockRetryWait,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("send code: acquire lock: %w", err)
 	}
 	defer lock.Release()
 
@@ -112,7 +112,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	intervalKey := fmt.Sprintf("%s%s:%s", prefixInterval, scene, identifier)
 	exists, err := s.redis.Exists(ctx, intervalKey).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("send code: check interval: %w", err)
 	}
 	if exists > 0 {
 		// 对调用方保持正常返回，避免暴露限流细节
@@ -123,7 +123,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	dailyKey := fmt.Sprintf("%s%s:%s:%s", prefixDaily, scene, identifier, time.Now().Format("20060102"))
 	dailyCount, err := s.redis.Get(ctx, dailyKey).Int()
 	if err != nil && err != redis.Nil {
-		return nil, err
+		return nil, fmt.Errorf("send code: get daily count: %w", err)
 	}
 	if dailyCount >= s.config.DailyLimit {
 		return nil, fmt.Errorf("daily limit exceeded")
@@ -139,12 +139,12 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	pipe.Set(ctx, intervalKey, "1", s.config.SendInterval)
 
 	if _, err = pipe.Exec(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("send code: pipeline exec: %w", err)
 	}
 
 	// 日计数使用 Lua 脚本原子递增 + 首次设置过期，避免 INCR + EXPIRE 竞态
 	if _, err = incrAndExpireScript.Run(ctx, s.redis, []string{dailyKey}, int(24*time.Hour/time.Second)).Result(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("send code: incr daily: %w", err)
 	}
 
 	// 重置尝试次数计数器（新验证码意味着新的尝试配额）

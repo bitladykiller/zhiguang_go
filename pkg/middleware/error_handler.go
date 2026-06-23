@@ -17,7 +17,7 @@ import (
 //
 //      if err != nil {
 //          _ = c.Error(err)  // 将错误传递给日志中间件
-//          response.Fail(c, 500, "internal server error")
+//          response.Error(c, errcode.ErrInternal)
 //          return
 //      }
 func ErrorLogMiddleware(logger *zap.Logger) gin.HandlerFunc {
@@ -46,7 +46,7 @@ func ErrorLogMiddleware(logger *zap.Logger) gin.HandlerFunc {
 //
 //      if err != nil {
 //          middleware.RecordError(c, err)
-//          response.Fail(c, 500, "internal server error")
+//          response.Error(c, errcode.ErrInternal)
 //          return
 //      }
 //

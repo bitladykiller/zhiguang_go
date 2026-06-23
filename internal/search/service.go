@@ -368,7 +368,7 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(query); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("search: encode query: %w", err)
 	}
 
 	res, err := s.client.Search(
@@ -377,7 +377,7 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 		s.client.Search.WithBody(&buf),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("search: es request: %w", err)
 	}
 	defer res.Body.Close()
 
@@ -401,7 +401,7 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 	}
 
 	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("search: decode response: %w", err)
 	}
 
 	items := make([]knowpost.FeedItemResponse, 0, len(result.Hits.Hits))
@@ -518,7 +518,7 @@ func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(query); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("suggest: encode query: %w", err)
 	}
 
 	res, err := s.client.Search(
@@ -527,7 +527,7 @@ func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([
 		s.client.Search.WithBody(&buf),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("suggest: es request: %w", err)
 	}
 	defer res.Body.Close()
 
@@ -547,7 +547,7 @@ func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([
 		} `json:"suggest"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("suggest: decode response: %w", err)
 	}
 
 	options := result.Suggest["title-suggest"]
@@ -744,7 +744,7 @@ func boolPtr(value bool) *bool {
 func (s *SearchService) IndexDocument(ctx context.Context, doc *SearchIndexDoc) error {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(doc); err != nil {
-		return err
+		return fmt.Errorf("index document: encode: %w", err)
 	}
 
 	res, err := s.client.Index(
@@ -754,7 +754,7 @@ func (s *SearchService) IndexDocument(ctx context.Context, doc *SearchIndexDoc) 
 		s.client.Index.WithDocumentID(doc.ID),
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("index document: es request: %w", err)
 	}
 	defer res.Body.Close()
 
@@ -794,7 +794,7 @@ func (s *SearchService) DeleteDocument(ctx context.Context, id string) error {
 		s.client.Delete.WithContext(ctx),
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("delete document: es request: %w", err)
 	}
 	defer res.Body.Close()
 

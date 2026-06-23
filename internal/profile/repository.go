@@ -5,29 +5,8 @@ import (
 	"strings"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/zhiguang/app/internal/model"
 )
-
-// userRow 是 users 表的数据库行映射，仅供本包内部使用。
-//
-// 与 auth.User 的区别：
-//   - 这是一个纯数据库行结构，不带 json tag，不会泄露到 API 层。
-//   - profile 包完全自治，不依赖 auth 包。
-type userRow struct {
-	ID           uint64  `db:"id"`
-	Phone        *string `db:"phone"`
-	Email        *string `db:"email"`
-	PasswordHash *string `db:"password_hash"`
-	Nickname     string  `db:"nickname"`
-	Avatar       *string `db:"avatar"`
-	Bio          *string `db:"bio"`
-	ZgID         *string `db:"zg_id"`
-	Gender       *string `db:"gender"`
-	Birthday     *string `db:"birthday"`
-	School       *string `db:"school"`
-	TagsJSON     *string `db:"tags_json"`
-	CreatedAt    *string `db:"created_at"`
-	UpdatedAt    *string `db:"updated_at"`
-}
 
 // Repository 封装资料领域的数据访问逻辑。
 type Repository struct {
@@ -46,7 +25,7 @@ func (r *Repository) WithDB(db sqlx.ExtContext) *Repository {
 
 // FindByID 根据用户 ID 查询用户公开资料。
 func (r *Repository) FindByID(ctx context.Context, id uint64) (*UserProfile, error) {
-	var row userRow
+	var row model.User
 	if err := sqlx.GetContext(ctx, r.db, &row, `
 	SELECT id, phone, email, nickname, avatar, bio, zg_id, gender, birthday, school, tags_json, created_at, updated_at
 	FROM users
@@ -99,8 +78,8 @@ func (r *Repository) Update(ctx context.Context, id uint64, req *ProfilePatchReq
 	return err
 }
 
-// toUserProfile 将内部行映射为对外 DTO，过滤敏感字段。
-func toUserProfile(row *userRow) *UserProfile {
+// toUserProfile 将 model.User 映射为对外 DTO，过滤敏感字段。
+func toUserProfile(row *model.User) *UserProfile {
 	return &UserProfile{
 		ID:       row.ID,
 		Nickname: row.Nickname,
@@ -108,10 +87,12 @@ func toUserProfile(row *userRow) *UserProfile {
 		Phone:    row.Phone,
 		Email:    row.Email,
 		ZgID:     row.ZgID,
-		Birthday: parseTimePtr(row.Birthday),
+		Birthday: row.Birthday,
 		School:   row.School,
 		Bio:      row.Bio,
 		Gender:   row.Gender,
 		TagsJSON: row.TagsJSON,
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
 	}
 }

@@ -58,12 +58,12 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 	raw, err = s.buildSnapshotFromBitmap(ctx, entityType, entityID)
 	if err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
-		return nil, err
+		return nil, fmt.Errorf("rebuild sds: build snapshot: %w", err)
 	}
 
 	if err := s.redis.Set(ctx, sdsKey, raw, 0).Err(); err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
-		return nil, err
+		return nil, fmt.Errorf("rebuild sds: set: %w", err)
 	}
 
 	s.resetBackoff(ctx, entityType, entityID)
@@ -82,7 +82,7 @@ func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType,
 	for {
 		keys, next, err := s.redis.Scan(ctx, cursor, pattern, 100).Result()
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("bit count shards: scan: %w", err)
 		}
 		if len(keys) > 0 {
 			pipe := s.redis.Pipeline()
@@ -91,7 +91,7 @@ func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType,
 				cmds[i] = pipe.BitCount(ctx, k, nil)
 			}
 			if _, err := pipe.Exec(ctx); err != nil {
-				return 0, err
+				return 0, fmt.Errorf("bit count shards: pipeline exec: %w", err)
 			}
 			for _, cmd := range cmds {
 				val, err := cmd.Result()
@@ -116,7 +116,7 @@ func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType
 	for i, metric := range metrics {
 		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("build snapshot: bit count: %w", err)
 		}
 		writeInt32BE(raw, i*FieldSize, int32(total))
 	}

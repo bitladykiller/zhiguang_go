@@ -193,7 +193,7 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 			offset := (page - 1) * size
 			rows, err := s.repo.ListFeedPublic(ctx, size+1, offset)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("get public feed: list: %w", err)
 			}
 
 			hasMore := len(rows) > size
@@ -280,7 +280,7 @@ func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64,
 	offset := (safePage - 1) * safeSize
 	rows, err := s.repo.ListMyPublished(ctx, userID, safeSize+1, offset)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get my published: list: %w", err)
 	}
 
 	hasMore := len(rows) > safeSize
@@ -670,7 +670,7 @@ func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, 
 func (s *KnowPostFeedService) parseFeedPage(data []byte) (*FeedPageResponse, error) {
 	var resp FeedPageResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("map rows to items: %w", err)
 	}
 	return &resp, nil
 }

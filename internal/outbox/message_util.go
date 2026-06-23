@@ -59,7 +59,7 @@ type CanalRow struct {
 func ExtractRows(message []byte) ([]CanalRow, error) {
 	var envelope CanalEnvelope
 	if err := json.Unmarshal(message, &envelope); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("extract rows: unmarshal: %w", err)
 	}
 	if envelope.Table != outboxTableName {
 		return []CanalRow{}, nil

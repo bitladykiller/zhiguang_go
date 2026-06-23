@@ -2,6 +2,7 @@ package counter
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -33,7 +34,7 @@ func (s *CounterService) batchGetBit(ctx context.Context, userID uint64, entityT
 		cmds[i] = pipe.GetBit(ctx, bmKey, offset)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("batch get bit: pipeline exec: %w", err)
 	}
 
 	result := make(map[string]bool, len(entityIDs))

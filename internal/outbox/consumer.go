@@ -8,6 +8,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -188,7 +189,7 @@ func (c *Consumer) handleMessage(ctx context.Context, value []byte) error {
 func extractRows(value []byte) ([]Row, error) {
 	var envelope CanalEnvelope
 	if err := json.Unmarshal(value, &envelope); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("extract rows: unmarshal: %w", err)
 	}
 	if envelope.Table != outboxTableName {
 		return nil, nil

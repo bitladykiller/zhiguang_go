@@ -69,7 +69,7 @@ func (s *CounterService) IsLiked(ctx context.Context, userID uint64, entityType,
 	bmKey := BitmapKey("like", entityType, entityID, chunk)
 	val, err := s.redis.GetBit(ctx, bmKey, int64(offset)).Result()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("is liked: getbit: %w", err)
 	}
 	return val == 1, nil
 }
@@ -81,7 +81,7 @@ func (s *CounterService) IsFaved(ctx context.Context, userID uint64, entityType,
 	bmKey := BitmapKey("fav", entityType, entityID, chunk)
 	val, err := s.redis.GetBit(ctx, bmKey, int64(offset)).Result()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("is faved: getbit: %w", err)
 	}
 	return val == 1, nil
 }

@@ -82,7 +82,7 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("suggest description: marshal request: %w", err)
 	}
 
 	// 使用配置的超时，未配置则默认 30 秒
@@ -108,7 +108,7 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("suggest description: read response: %w", err)
 	}
 
 	var result struct {

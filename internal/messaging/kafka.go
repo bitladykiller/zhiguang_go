@@ -1,7 +1,8 @@
 // Package messaging 提供 Kafka 生产者与消费者的创建工厂。
 //
-// 封装 segmentio/kafka-go 库的初始化逻辑，确保所有模块都能以一致的方式
-// 创建 Writer 和 Reader。同一模块内的多个 writer 可以共享同一个 KafkaConfig。
+// 封装 segmentio/kafka-go 库的初始化逻辑，确保所有模块都能以一致的
+// 方式创建 Writer 和 Reader。同一模块内的多个 writer 可以共享同一个
+// KafkaConfig。
 //
 // 设计决策：
 //   - 计数事件写入使用“同步 writer + 调用方异步 goroutine”的组合，
@@ -33,7 +34,8 @@ const (
 // 功能：
 //
 //	创建一个配置了计数事件 topic 的 Kafka 生产者。
-//	Writer 自身使用同步写入，由调用方决定是否在请求链路外异步调用。
+//	Writer 自身使用同步写入，由调用方决定是否在请求链路外异步
+//	调用。
 //
 // 参数：
 //   - cfg: Kafka 全局配置（Broker 地址列表、topic 名称映射等）

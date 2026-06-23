@@ -166,7 +166,7 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 		EventType:     "FollowCreated",
 		Payload:       event,
 	}}); err != nil {
-		return false, err
+		return false, fmt.Errorf("follow: run tx: %w", err)
 	}
 
 	// 失效相关缓存
@@ -229,7 +229,7 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 		if errors.Is(err, errNothingToCancel) {
 			return false, nil
 		}
-		return false, err
+		return false, fmt.Errorf("unfollow: run tx: %w", err)
 	}
 
 	s.invalidateCaches(ctx, fromUserID, toUserID)
@@ -253,7 +253,7 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 func (s *RelationService) IsFollowing(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	cnt, err := s.repo.ExistsFollowing(ctx, fromUserID, toUserID)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("is following: %w", err)
 	}
 	return cnt > 0, nil
 }
@@ -429,7 +429,7 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 	if exists == 0 {
 		warmed, err := s.ensureListCacheWarm(ctx, listType, userID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("get list with offset: ensure cache warm: %w", err)
 		}
 		if !warmed {
 			return []uint64{}, nil
@@ -450,7 +450,7 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 	// 回退到 L3：处理超出缓存预热上限的深页请求。
 	rows, err := s.readFromDB(ctx, listType, userID, limit+offset, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get list with offset: read from db: %w", err)
 	}
 	ids := make([]uint64, 0, len(rows))
 	for _, entry := range rows {
@@ -563,7 +563,7 @@ func (s *RelationService) fillZSet(ctx context.Context, listType string, userID 
 	zsetKey := s.zsetKey(listType, userID)
 	entries, err := s.readFromDB(ctx, listType, userID, relationListCacheWarmLimit, 0)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("fill zset: read from db: %w", err)
 	}
 	if len(entries) == 0 {
 		return false, nil
@@ -578,7 +578,7 @@ func (s *RelationService) fillZSet(ctx context.Context, listType string, userID 
 	}
 
 	if err := s.redis.ZAdd(ctx, zsetKey, members...).Err(); err != nil {
-		return false, err
+		return false, fmt.Errorf("fill zset: redis zadd: %w", err)
 	}
 	s.redis.Expire(ctx, zsetKey, relationListCacheTTL)
 	return true, nil
@@ -641,7 +641,7 @@ func (s *RelationService) readFromDB(ctx context.Context, listType string, userI
 		}
 		rows, err := s.repo.ListFollowingRows(ctx, userID, limit, offset)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read from db: list following rows: %w", err)
 		}
 		entries := make([]listEntry, len(rows))
 		for i, r := range rows {
@@ -651,7 +651,7 @@ func (s *RelationService) readFromDB(ctx context.Context, listType string, userI
 	}
 	rows, err := s.repo.ListFollowerRows(ctx, userID, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read from db: list follower rows: %w", err)
 	}
 	if len(rows) == 0 {
 		// 向后兼容：旧版本写入只填充了正向索引。
@@ -659,7 +659,7 @@ func (s *RelationService) readFromDB(ctx context.Context, listType string, userI
 		if s.shouldFallbackToFollowing(ctx, userID) {
 			rows, err = s.repo.ListFollowerRowsFromFollowing(ctx, userID, limit, offset)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("read from db: list follower rows from following: %w", err)
 			}
 			if len(rows) == 0 {
 				s.markFollowerFallbackExhausted(ctx, userID)
@@ -858,7 +858,7 @@ func (s *RelationService) ensureListCacheWarm(ctx context.Context, listType stri
 
 	lock, err := s.acquireListCacheLock(ctx, listType, userID)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("ensure list cache warm: %w", err)
 	}
 	defer lock.Release()
 

@@ -3,6 +3,7 @@ package canal
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	pbe "github.com/withlin/canal-go/protocol/entry"
@@ -35,7 +36,7 @@ func parseEntries(entries []pbe.Entry) ([][]byte, error) {
 
 		rowChange := new(pbe.RowChange)
 		if err := proto.Unmarshal(entry.GetStoreValue(), rowChange); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parse entries: unmarshal row change: %w", err)
 		}
 
 		eventType := rowChange.GetEventType()
@@ -55,7 +56,7 @@ func parseEntries(entries []pbe.Entry) ([][]byte, error) {
 			}
 			body, err := json.Marshal(envelope)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("parse entries: marshal envelope: %w", err)
 			}
 			payloads = append(payloads, body)
 		}

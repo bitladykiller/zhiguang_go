@@ -65,7 +65,7 @@ func (s *RelationService) acquireListCacheLocks(ctx context.Context, targets []r
 			for i := len(locks) - 1; i >= 0; i-- {
 				locks[i].Release()
 			}
-			return nil, err
+			return nil, fmt.Errorf("acquire list cache locks: %w", err)
 		}
 		locks = append(locks, lock)
 	}

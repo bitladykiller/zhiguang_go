@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -92,7 +93,7 @@ func (p *KnowPostProjector) ProjectPayload(ctx context.Context, raw []byte) erro
 
 	var payload payloadEnvelope
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
+		return fmt.Errorf("project payload: unmarshal: %w", err)
 	}
 	if payload.Entity != "knowpost" || payload.ID == 0 {
 		return nil
@@ -168,7 +169,7 @@ LEFT JOIN users ON know_posts.creator_id = users.id
 WHERE know_posts.id = ?
 `, postID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build search document: db query: %w", err)
 	}
 
 	metrics := map[string]int32{}

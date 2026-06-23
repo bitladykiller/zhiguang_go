@@ -87,12 +87,12 @@ func (s *JwtService) IssueTokenPair(user *User) (*TokenPair, error) {
 
 	accessToken, err := s.encode(user, now, accessExpiresAt, "access", uuid.New().String())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("issue token pair: encode access token: %w", err)
 	}
 
 	refreshToken, err := s.encode(user, now, refreshExpiresAt, "refresh", refreshTokenID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("issue token pair: encode refresh token: %w", err)
 	}
 
 	return &TokenPair{
@@ -131,7 +131,7 @@ func (s *JwtService) ValidateToken(tokenStr string) (middleware.TokenClaims, err
 		return s.publicKey, nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validate token: parse: %w", err)
 	}
 
 	if claims, ok := token.Claims.(*JwtClaims); ok && token.Valid {
@@ -204,9 +204,9 @@ func (s *JwtService) encode(user *User, issuedAt, expiresAt time.Time, tokenType
 //     这是 RSA 私钥的传统格式，只支持 RSA。
 //     如果 PKCS#8 解析失败，会回退尝试此格式。
 func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
-	data, err := os.ReadFile(path)
+data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load private key: read file: %w", err)
 	}
 
 	block, _ := pem.Decode(data)

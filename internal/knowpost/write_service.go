@@ -2,6 +2,7 @@ package knowpost
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -28,7 +29,7 @@ func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64) (ui
 		UpdateTime: now,
 	}
 	if err := s.repo.InsertDraft(ctx, post); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("create draft: insert: %w", err)
 	}
 	return id, nil
 }
@@ -52,7 +53,7 @@ func (s *KnowPostService) ConfirmContent(ctx context.Context, creatorID, id uint
 
 	affected, err := s.repo.UpdateContent(ctx, post)
 	if err != nil {
-		return err
+		return fmt.Errorf("confirm content: update: %w", err)
 	}
 	if affected == 0 {
 		return errcode.ErrNotFound.WithMsg("draft not found or permission denied")

@@ -246,7 +246,7 @@ func (s *KnowPostService) enrichDetail(ctx context.Context, base *KnowPostDetail
 func (s *KnowPostService) parseDetail(data []byte) (*KnowPostDetailResponse, error) {
 	var resp KnowPostDetailResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse detail: unmarshal: %w", err)
 	}
 	return &resp, nil
 }

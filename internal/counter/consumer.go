@@ -445,7 +445,7 @@ func (c *AggregationConsumer) listDirtyMembers(ctx context.Context, limit int) (
 	for len(members) < limit {
 		items, next, err := c.service.redis.SScan(ctx, DirtySetKey(), cursor, "", int64(limit-len(members))).Result()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan dirty members: %w", err)
 		}
 		members = append(members, items...)
 		cursor = next
@@ -468,7 +468,7 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 	lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
 	lock, locked, err := redislock.TryAcquire(ctx, c.service.redis, lockKey, c.service.rebuildLockOptions)
 	if err != nil {
-		return err
+		return fmt.Errorf("repair dirty member: acquire lock: %w", err)
 	}
 	if !locked {
 		return nil
@@ -477,13 +477,13 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 
 	raw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)
 	if err != nil {
-		return err
+		return fmt.Errorf("repair dirty member: build snapshot: %w", err)
 	}
 	if err := c.service.redis.Set(ctx, SdsKey(entityType, entityID), raw, 0).Err(); err != nil {
-		return err
+		return fmt.Errorf("repair dirty member: set sds: %w", err)
 	}
 	if err := c.service.clearDirtyMembers(ctx, []string{member}); err != nil {
-		return err
+		return fmt.Errorf("repair dirty member: clear dirty: %w", err)
 	}
 	c.service.resetBackoff(ctx, entityType, entityID)
 	return nil
