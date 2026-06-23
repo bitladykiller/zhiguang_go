@@ -116,7 +116,7 @@ func NoContent(c *gin.Context) {
 //   使用 c.AbortWithStatusJSON 而非 c.JSON，确保后续中间件（如日志记录）
 //   能感知到请求已被中止（Aborted 状态），不会继续执行后续 handler 链。
 func Error(c *gin.Context, appErr *errcode.AppError) {
-	httpStatus := httpStatusFromCode(appErr.Code)
+	httpStatus := errcode.HTTPStatusFromCode(appErr.Code)
 	c.AbortWithStatusJSON(httpStatus, ApiResponse[any]{
 		Code:    int(appErr.Code),
 		Message: appErr.Message,
@@ -181,29 +181,7 @@ func Fail(c *gin.Context, httpStatus int, msg string) {
 // 设计决策:
 //   错误码的号段（4xxxx 表示客户端错误、5xxxx 表示服务端错误）决定了大致的 HTTP 状态类别。
 //   这样客户端才能区分"可自行修复的请求错误"与"需要重试的服务端错误"。
+// httpStatusFromCode is deprecated, use errcode.HTTPStatusFromCode instead.
 func httpStatusFromCode(code errcode.ErrorCode) int {
-	if code >= 1000 {
-		code = code / 100
-	}
-
-	switch {
-	case code == errcode.CodeSuccess:
-		return http.StatusOK
-	case code == errcode.CodeUnauthorized:
-		return http.StatusUnauthorized
-	case code == errcode.CodeForbidden:
-		return http.StatusForbidden
-	case code == errcode.CodeNotFound:
-		return http.StatusNotFound
-	case code == errcode.CodeConflict:
-		return http.StatusConflict
-	case code == errcode.CodeTooManyRequests:
-		return http.StatusTooManyRequests
-	case code >= 500:
-		return http.StatusInternalServerError
-	case code >= 400:
-		return http.StatusBadRequest
-	default:
-		return http.StatusInternalServerError
-	}
+	return errcode.HTTPStatusFromCode(code)
 }

@@ -1,3 +1,8 @@
+# See the Governance file for Docs maintainer info.
+# https://github.com/golang/go/blob/master/doc/go1.17#go-modules-changes
+# https://go.dev/ref/mod#go-mod-file
+
+## Windows
 *.exe
 *.dll
 *.so
@@ -14,10 +19,13 @@ tmp/
 .tmp/
 .tools/
 .gopath/
+.gocache/
 config/config-local.yaml
 *.pem
 *.key
 coverage.out
-.gocache/
 frontend/.git.embedded-backup/
 server
+nul
+# Linux: dotfile settings
+.vscode/

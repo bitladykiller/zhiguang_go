@@ -16,7 +16,19 @@ run:
 
 # Run tests with coverage
 test:
-	$(GO) test ./... -v -cover -coverprofile=coverage.out
+	$(GO) test ./... -v -cover -coverprofile=coverage.out -timeout 120s
+
+# Run unit tests only (packages without external dependencies)
+test-unit:
+	$(GO) test ./pkg/... ./internal/server/... -count=1 -timeout 60s
+
+# Run short tests (fast, no external dependencies)
+test-short:
+	$(GO) test ./... -short -count=1 -timeout 60s
+
+# Show test coverage in browser
+test-cover:
+	$(GO) tool cover -html=coverage.out
 
 
 # Clean build artifacts

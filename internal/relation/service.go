@@ -636,6 +636,9 @@ type listEntry struct {
 //   - error: 数据库查询错误。
 func (s *RelationService) readFromDB(ctx context.Context, listType string, userID uint64, limit, offset int) ([]listEntry, error) {
 	if listType == "following" {
+		if s.repo == nil {
+			return nil, fmt.Errorf("relation: repository is nil")
+		}
 		rows, err := s.repo.ListFollowingRows(ctx, userID, limit, offset)
 		if err != nil {
 			return nil, err

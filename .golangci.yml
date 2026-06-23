@@ -1,0 +1,53 @@
+linters-settings:
+  govet:
+    check-shadowing: true
+  gocyclo:
+    min-complexity: 15
+  dupl:
+    threshold: 100
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  misspell:
+    locale: US
+  lll:
+    line-length: 140
+  goimports:
+    local-prefixes: github.com/zhiguang/app
+
+linters:
+  enable:
+    - gofmt
+    - goimports
+    - govet
+    - staticcheck
+    - gosimple
+    - ineffassign
+    - typecheck
+    - unconvert
+    - misspell
+    - gocyclo
+    - dupl
+    - goconst
+    - gocritic
+    - prealloc
+    - bodyclose
+  disable:
+    - errcheck
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - dupl
+        - goconst
+    - text: "should have comment"
+      linters:
+        - golint
+  max-per-linter: 0
+  max-same-issues: 0
