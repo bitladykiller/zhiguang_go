@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/redislock"
+	"go.uber.org/zap"
 )
 
 // 验证码相关 Redis 键前缀。
@@ -149,7 +150,9 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 
 	// 重置尝试次数计数器（新验证码意味着新的尝试配额）
 	attemptKey := fmt.Sprintf("%s%s:%s", prefixAttempts, scene, identifier)
-	s.redis.Del(ctx, attemptKey)
+	if err := s.redis.Del(ctx, attemptKey).Err(); err != nil {
+		zap.L().Warn("failed to reset attempt counter", zap.String("attemptKey", attemptKey), zap.Error(err))
+	}
 
 	// 生产环境应走短信/邮件渠道；当前先输出到标准输出便于联调。
 	// fmt.Printf("[VERIFICATION] Scene=%s Identifier=%s Code=%s\n", scene, identifier, code)
@@ -241,7 +244,9 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 	}
 
 	// 成功后清理验证码和尝试次数
-	s.redis.Del(ctx, codeKey, attemptKey)
+	if err := s.redis.Del(ctx, codeKey, attemptKey).Err(); err != nil {
+		zap.L().Warn("failed to delete code/attempt keys after successful verification", zap.String("codeKey", codeKey), zap.String("attemptKey", attemptKey), zap.Error(err))
+	}
 	return success()
 }
 
@@ -264,8 +269,12 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 func generateCode(length int) string {
 	code := make([]byte, length)
 	for i := range code {
-		n, _ := rand.Int(rand.Reader, big.NewInt(10))
-		code[i] = byte('0' + n.Int64())
+		n, err := rand.Int(rand.Reader, big.NewInt(10))
+	if err != nil {
+		zap.L().Warn("failed to generate secure random code digit", zap.Error(err))
+		n = big.NewInt(0)
+	}
+	code[i] = byte('0' + n.Int64())
 	}
 	return string(code)
 }

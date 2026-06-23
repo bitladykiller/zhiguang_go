@@ -68,6 +68,9 @@ func RecordError(c *gin.Context, err error) {
 //   也可能返回普通的 error（如数据库连接错误）。在转换成 HTTP 响应时，
 //   handler 通过 ToAppErr 统一处理，确保非业务错误不会泄露内部细节。
 func ToAppErr(err error) *errcode.AppError {
+	if err == nil {
+		return errcode.ErrInternal.WithMsg("nil error")
+	}
 	if appErr, ok := err.(*errcode.AppError); ok {
 		return appErr
 	}

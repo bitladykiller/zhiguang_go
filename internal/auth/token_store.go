@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // RefreshTokenStore 定义刷新令牌白名单管理接口。
@@ -71,7 +72,10 @@ func (s *RedisRefreshTokenStore) StoreToken(ctx context.Context, userID uint64, 
 //   - Redis 连接异常时 s.redis.Exists 返回 error，代码忽略后 exists 为 0，返回 false（fail-closed 策略）
 func (s *RedisRefreshTokenStore) IsTokenValid(ctx context.Context, userID uint64, tokenID string) bool {
 	key := fmt.Sprintf("rt:%d:%s", userID, tokenID)
-	exists, _ := s.redis.Exists(ctx, key).Result()
+	exists, err := s.redis.Exists(ctx, key).Result()
+	if err != nil {
+		zap.L().Warn("failed to check token existence", zap.String("key", key), zap.Error(err))
+	}
 	return exists > 0
 }
 
@@ -120,7 +124,9 @@ func (s *RedisRefreshTokenStore) RevokeAll(ctx context.Context, userID uint64) e
 	pattern := fmt.Sprintf("rt:%d:*", userID)
 	iter := s.redis.Scan(ctx, 0, pattern, 100).Iterator()
 	for iter.Next(ctx) {
-		s.redis.Del(ctx, iter.Val())
+		if err := s.redis.Del(ctx, iter.Val()).Err(); err != nil {
+			zap.L().Warn("failed to delete refresh token during RevokeAll", zap.String("key", iter.Val()), zap.Error(err))
+		}
 	}
 	return iter.Err()
 }

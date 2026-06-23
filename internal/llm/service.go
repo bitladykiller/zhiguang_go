@@ -176,8 +176,10 @@ func NewRagQueryService(llmCfg *config.LLMConfig, esURL string) *RagQueryService
 func (s *RagQueryService) Query(ctx context.Context, postID uint64, question string, streamChan chan<- string) error {
 	defer close(streamChan)
 
-	// 当前仍是占位实现。
-	// 这里先返回一个简单流式响应，用来验证 SSE 链路与交互模式。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

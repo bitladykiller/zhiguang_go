@@ -10,6 +10,7 @@ import (
 
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/jsonutil"
+	"go.uber.org/zap"
 )
 
 // --- [详情读取链路] --- //
@@ -157,11 +158,15 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 				PublishTime:    row.PublishTime,
 			}
 
-			if s.counter != nil {
-				counts, _ := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
+if s.counter != nil {
+			counts, err := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
+			if err != nil {
+				zap.L().Warn("failed to get detail counts", zap.Uint64("knowpostID", id), zap.Error(err))
+			} else {
 				resp.LikeCount = int64(counts["like"])
 				resp.FavoriteCount = int64(counts["fav"])
 			}
+		}
 
 			jsonBytes, err := json.Marshal(resp)
 			if err != nil {
@@ -211,18 +216,28 @@ func (s *KnowPostService) enrichDetail(ctx context.Context, base *KnowPostDetail
 	}
 
 	if refreshCounts {
-		counts, _ := s.counter.GetCounts(ctx, "knowpost", base.ID, []string{"like", "fav"})
-		if counts != nil {
+		counts, err := s.counter.GetCounts(ctx, "knowpost", base.ID, []string{"like", "fav"})
+		if err != nil {
+			zap.L().Warn("failed to enrich detail counts", zap.String("knowpostID", base.ID), zap.Error(err))
+		} else if counts != nil {
 			base.LikeCount = int64(counts["like"])
 			base.FavoriteCount = int64(counts["fav"])
 		}
 	}
 
 	if currentUserID != nil {
-		liked, _ := s.counter.IsLiked(ctx, *currentUserID, "knowpost", base.ID)
-		faved, _ := s.counter.IsFaved(ctx, *currentUserID, "knowpost", base.ID)
-		base.Liked = &liked
-		base.Faved = &faved
+		liked, err := s.counter.IsLiked(ctx, *currentUserID, "knowpost", base.ID)
+		if err != nil {
+			zap.L().Warn("failed to check IsLiked in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
+		} else {
+			base.Liked = &liked
+		}
+		faved, err := s.counter.IsFaved(ctx, *currentUserID, "knowpost", base.ID)
+		if err != nil {
+			zap.L().Warn("failed to check IsFaved in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
+		} else {
+			base.Faved = &faved
+		}
 	}
 
 	return base

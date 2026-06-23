@@ -20,7 +20,6 @@ import "time"
 //   - 便于单元测试（可注入 mock 实现）
 type ObjectStorage interface {
 	GeneratePresignedPutURL(objectKey string, expiry time.Duration) (string, error)
-	GeneratePresignedGetURL(objectKey string, expiry time.Duration) (string, error)
 	GenerateObjectKey(folder, fileName string) string
 	PublicURL(objectKey string) string
 	PresignExpiry() time.Duration

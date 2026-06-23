@@ -34,7 +34,7 @@ type Config struct {
 	Counter       CounterConfig       `yaml:"counter"`
 	Cache         CacheConfig         `yaml:"cache"`
 	LLM           LLMConfig           `yaml:"llm"`
-	Timeouts      TimeoutsConfig      `yaml:"timeouts"` // 全局超时配置
+	Relation  RelationConfig  `yaml:"relation"`
 }
 
 // ServerConfig 控制 HTTP 服务监听配置。
@@ -299,6 +299,7 @@ type L2CacheConfig struct {
 type CacheItemConfig struct {
 	TTLSeconds int `yaml:"ttl_seconds"`
 	MaxSize    int `yaml:"max_size"`
+	FreeCacheDefaultMB int `yaml:"free_cache_default_mb"`
 }
 
 // HotKeyConfig 控制热点键识别与 TTL 延长行为。
@@ -359,6 +360,19 @@ type OpenAIConfig struct {
 	APIKey         string `yaml:"api_key"`
 	EmbeddingModel string `yaml:"embedding_model"`
 	Dimensions     int    `yaml:"dimensions"`
+}
+
+// RelationConfig 配置关系服务。
+type RelationConfig struct {
+	BigVThreshold int                     `yaml:"big_v_threshold"`
+	TokenBucket   RelationTokenBucketConfig `yaml:"token_bucket"`
+	CacheTTL      int                     `yaml:"cache_ttl"`
+}
+
+// RelationTokenBucketConfig 配置令牌桶限流。
+type RelationTokenBucketConfig struct {
+	Capacity int `yaml:"capacity"`
+	Rate     int `yaml:"rate"`
 }
 
 // TimeoutsConfig 配置全局超时参数。

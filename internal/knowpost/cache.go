@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // --- [缓存协调] ---
@@ -30,7 +31,9 @@ import (
 //   - id: uint64，知文 ID。
 func (s *KnowPostService) invalidateCache(ctx context.Context, id uint64) {
 	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
-	s.redis.Del(ctx, pageKey)
+	if err := s.redis.Del(ctx, pageKey).Err(); err != nil {
+		zap.L().Warn("failed to delete L2 detail cache", zap.String("pageKey", pageKey), zap.Error(err))
+	}
 	s.l1Cache.Del([]byte(pageKey))
 }
 
@@ -102,10 +105,14 @@ func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint6
 	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 
 	// EXPIRE GT：只有当新 TTL 大于当前 TTL 时才更新，保证不缩短
-	extendTTL(ctx, s.redis, pageKey, target)
+	if !extendTTL(ctx, s.redis, pageKey, target) {
+		zap.L().Debug("extendTTL skipped for pageKey", zap.String("pageKey", pageKey), zap.Int("targetTTL", target))
+	}
 
 	itemKey := fmt.Sprintf("feed:item:%d", id)
-	extendTTL(ctx, s.redis, itemKey, target)
+	if !extendTTL(ctx, s.redis, itemKey, target) {
+		zap.L().Debug("extendTTL skipped for itemKey", zap.String("itemKey", itemKey), zap.Int("targetTTL", target))
+	}
 }
 
 // extendTTLScript 是 Redis Lua 脚本，原子性地延长缓存 TTL（只增不减）。

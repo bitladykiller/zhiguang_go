@@ -178,21 +178,21 @@ func (s *SearchService) EnsureIndex() error {
 	defer res.Body.Close()
 
 	if res.StatusCode == 200 {
-		return s.ensureCompatibleMappings() // 索引已存在时，补齐兼容字段
+		return s.ensureCompatibleMappings()
 	}
 
-	res, err = s.client.Indices.Create(s.indexName, s.client.Indices.Create.WithBody(
+	createRes, err := s.client.Indices.Create(s.indexName, s.client.Indices.Create.WithBody(
 		bytes.NewReader([]byte(indexMapping)),
 	))
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer createRes.Body.Close()
 
-	if res.IsError() {
-		body, readErr := io.ReadAll(res.Body)
+	if createRes.IsError() {
+		body, readErr := io.ReadAll(createRes.Body)
 		if readErr != nil {
-			return fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
+			return fmt.Errorf("search error (status=%d, failed to read body: %w)", createRes.StatusCode, readErr)
 		}
 		return fmt.Errorf("create index failed: %s", string(body))
 	}

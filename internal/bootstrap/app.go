@@ -166,7 +166,11 @@ func InitializeApp(configPath string) (*server.App, error) {
 func newFreeCacheWithConfig(cfg *config.Config) *freecache.Cache {
 	totalMB := cfg.Cache.L2.PublicCfg.MaxSize + cfg.Cache.L2.MineCfg.MaxSize
 	if totalMB <= 0 {
-		totalMB = 32 // 默认 32MB
+		if cfg.Cache.L2.PublicCfg.FreeCacheDefaultMB > 0 {
+			totalMB = cfg.Cache.L2.PublicCfg.FreeCacheDefaultMB
+		} else {
+			totalMB = 32 // 默认 32MB
+		}
 	}
 	return freecache.NewCache(totalMB * 1024 * 1024)
 }

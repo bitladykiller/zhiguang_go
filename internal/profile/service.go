@@ -3,16 +3,24 @@ package profile
 import (
 	"context"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/zhiguang/app/pkg/errcode"
 )
 
+// Repo 是数据访问接口，使 Service 可被 mock。
+type Repo interface {
+	FindByID(ctx context.Context, id uint64) (*UserProfile, error)
+	Update(ctx context.Context, id uint64, req *ProfilePatchRequest) error
+	WithDB(db sqlx.ExtContext) *Repository
+}
+
 // Service 负责资料领域的业务编排。
 type Service struct {
-	repo *Repository
+	repo Repo
 }
 
 // NewProfileService 创建资料服务实例。
-func NewProfileService(repo *Repository) *Service {
+func NewProfileService(repo Repo) *Service {
 	return &Service{repo: repo}
 }
 

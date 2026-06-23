@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/cache"
 	"github.com/zhiguang/app/pkg/jsonutil"
@@ -49,6 +50,7 @@ type KnowPostFeedService struct {
 	l1Mine   *PrefixCache
 	hotKey   *cache.HotKeyDetector
 	counter  CounterClient
+	logger   *zap.Logger
 }
 
 // FeedCacheInvalidator 暴露知文写操作所需的 feed 缓存失效能力。
@@ -80,6 +82,7 @@ func NewKnowPostFeedService(
 		l1Mine:   l1Mine,
 		hotKey:   hotKey,
 		counter:  counter,
+		logger:   zap.L(),
 	}
 }
 
@@ -361,6 +364,7 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 	}
 	itemJsons, err := s.redis.MGet(ctx, itemKeys...).Result()
 	if err != nil {
+		s.logger.Warn("failed to MGet feed item cache entries", zap.Strings("itemKeys", itemKeys), zap.Error(err))
 		return nil
 	}
 
@@ -431,13 +435,19 @@ func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, h
 		idVals[i] = strconv.FormatUint(r.ID, 10)
 	}
 	if len(idVals) > 0 {
-		s.redis.LPush(ctx, idsKey, idVals...)
+		if err := s.redis.LPush(ctx, idsKey, idVals...).Err(); err != nil {
+			s.logger.Warn("failed to LPush feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
+		}
 		ttl := time.Duration(60+rand.Intn(31)) * time.Second
-		s.redis.Expire(ctx, idsKey, ttl)
+		if err := s.redis.Expire(ctx, idsKey, ttl).Err(); err != nil {
+			s.logger.Warn("failed to set expire on feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
+		}
 
 		// hasMore 软缓存
 		hasMoreTTL := time.Duration(10+rand.Intn(11)) * time.Second
-		s.redis.Set(ctx, hasMoreKey, boolToStr(hasMore), hasMoreTTL)
+		if err := s.redis.Set(ctx, hasMoreKey, boolToStr(hasMore), hasMoreTTL).Err(); err != nil {
+			s.logger.Warn("failed to set hasMore cache", zap.String("hasMoreKey", hasMoreKey), zap.Error(err))
+		}
 	}
 
 	// 写入条目碎片
@@ -445,14 +455,19 @@ func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, h
 		itemKey := "feed:item:" + item.ID
 		jsonBytes, err := json.Marshal(item)
 		if err != nil {
+			s.logger.Warn("failed to marshal feed item for cache", zap.String("itemID", item.ID), zap.Error(err))
 			continue
 		}
 		ttl := time.Duration(60+rand.Intn(31)) * time.Second
-		s.redis.Set(ctx, itemKey, string(jsonBytes), ttl)
+		if err := s.redis.Set(ctx, itemKey, string(jsonBytes), ttl).Err(); err != nil {
+			s.logger.Warn("failed to cache feed item", zap.String("itemKey", itemKey), zap.Error(err))
+		}
 	}
 
 	// 把页键注册到 pages 集合中，便于后续批量失效
-	s.redis.SAdd(ctx, "feed:public:pages", idsKey)
+	if err := s.redis.SAdd(ctx, "feed:public:pages", idsKey).Err(); err != nil {
+		s.logger.Warn("failed to register feed page key", zap.String("idsKey", idsKey), zap.Error(err))
+	}
 }
 
 // InvalidateAfterPostMutation 在知文发生变更后失效相关 feed 缓存。
@@ -486,9 +501,15 @@ func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, h
 //     所以是 O(1)。
 //   - s.redis.Incr 递增版本号，复杂度 O(1)。
 func (s *KnowPostFeedService) InvalidateAfterPostMutation(ctx context.Context, postID, creatorID uint64) {
-	s.redis.Del(ctx, "feed:item:"+strconv.FormatUint(postID, 10))
-	s.redis.Incr(ctx, publicFeedVersionKey)
-	s.redis.Incr(ctx, fmt.Sprintf(mineFeedVersionKey, creatorID))
+	if err := s.redis.Del(ctx, "feed:item:"+strconv.FormatUint(postID, 10)).Err(); err != nil {
+		s.logger.Warn("failed to invalidate feed item cache", zap.Uint64("postID", postID), zap.Error(err))
+	}
+	if err := s.redis.Incr(ctx, publicFeedVersionKey).Err(); err != nil {
+		s.logger.Warn("failed to increment public feed version", zap.Error(err))
+	}
+	if err := s.redis.Incr(ctx, fmt.Sprintf(mineFeedVersionKey, creatorID)).Err(); err != nil {
+		s.logger.Warn("failed to increment mine feed version", zap.Uint64("creatorID", creatorID), zap.Error(err))
+	}
 }
 
 // ============================================================================
@@ -652,6 +673,7 @@ func (s *KnowPostFeedService) recordItemHotKey(ctx context.Context, itemID strin
 func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, cache *PrefixCache) {
 	jsonBytes, err := json.Marshal(resp)
 	if err != nil {
+		s.logger.Warn("failed to marshal feed page for cache", zap.String("key", key), zap.Error(err))
 		return
 	}
 	cache.Set([]byte(key), jsonBytes, 15) // 15s for L1 feed cache

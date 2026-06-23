@@ -83,30 +83,6 @@ func (s *OssStorageService) GeneratePresignedPutURL(objectKey string, expiry tim
 	return s.bucket.SignURL(objectKey, oss.HTTPPut, int64(expiry.Seconds()))
 }
 
-// GeneratePresignedGetURL 生成一个限时有效的 GET 预签名 URL。
-// 客户端可用此 URL 直接下载 OSS 对象。
-//
-// 参数:
-//   - objectKey: OSS 对象完整路径
-//   - expiry: URL 有效期时长
-//
-// 返回值:
-//   - string: 预签名 GET URL
-//   - error: 签名失败时返回
-//
-// OSS SDK 调用说明:
-//   与 GeneratePresignedPutURL 使用同一 SignURL 方法，区别仅在于 HTTP 方法参数：
-//   - oss.HTTPPut → 生成上传 URL（客户端 PUT 文件到 OSS）
-//   - oss.HTTPGet → 生成下载 URL（客户端从 OSS GET 文件）
-//   SDK 内部根据不同的 HTTP 方法生成不同的签名串，确保请求类型与签名一致。
-//
-// 使用场景:
-//   私有文件（如用户头像、私密内容图片）的临时下载，
-//   结合权限校验后分发限时 URL。
-func (s *OssStorageService) GeneratePresignedGetURL(objectKey string, expiry time.Duration) (string, error) {
-	return s.bucket.SignURL(objectKey, oss.HTTPGet, int64(expiry.Seconds()))
-}
-
 // PublicURL 生成 OSS 对象的公开访问 URL。
 // 如果配置了自定义域名（CDN）则优先使用，否则退回 OSS 默认域名。
 //
@@ -164,44 +140,6 @@ func (s *OssStorageService) GenerateObjectKey(folder, fileName string) string {
 		f = "uploads"
 	}
 	return fmt.Sprintf("%s/%s_%s", f, uuid.New().String()[:8], fileName)
-}
-
-// GetObjectMeta 获取 OSS 对象的 ETag 和内容长度。
-//
-// 参数:
-//   - objectKey: OSS 对象完整路径
-//
-// 返回值:
-//   - etag: 对象的 ETag 值（通常是 MD5 哈希的十六进制表示，带引号包裹）
-//   - size: 对象的内容长度（字节数）
-//   - err: 对象不存在或网络错误时返回
-//
-// OSS SDK 调用说明:
-//   s.bucket.GetObjectDetailedMeta(objectKey):
-//   阿里云 OSS SDK 的 GetObjectDetailedMeta 方法发起 HEAD 请求，
-//   获取对象元数据而不下载对象内容。返回的结果是 http.Header 类型，
-//   可以通过 Get("ETag")、Get("Content-Length") 等获取响应头。
-//
-// 使用场景:
-//   - 上传完成后确认文件大小，验证上传完整性
-//   - 检查对象是否已存在（返回非 nil error 表示不存在）
-//   - 获取 ETag 做缓存校验
-//
-// 边界情况:
-//   - Content-Length 解析失败（Sscanf 返回 0）时 size 保持为 0，不返回错误
-//   - ETag 值带双引号（如 "\"abc123\""），调用方需自行去除
-//   - 存储桶为私有权限时，HEAD 请求需要签名（SDK 已自动处理）
-func (s *OssStorageService) GetObjectMeta(objectKey string) (etag string, size int64, err error) {
-	props, err := s.bucket.GetObjectDetailedMeta(objectKey)
-	if err != nil {
-		return "", 0, err
-	}
-	etag = props.Get("ETag")
-	contentLength := props.Get("Content-Length")
-	if contentLength != "" {
-		fmt.Sscanf(contentLength, "%d", &size)
-	}
-	return etag, size, nil
 }
 
 // PresignExpiry 返回预签名 URL 过期时间。

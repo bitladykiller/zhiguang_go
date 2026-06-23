@@ -143,25 +143,18 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.WriteHeader(200)
 
+	ctx := c.Request.Context()
 	streamChan := make(chan string, 10)
 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				// 即使 ragSvc.Query 内部 panic，也要保证客户端收到终止信号，
-				// 避免 SSE 连接永久挂起。
-				select {
-				case streamChan <- fmt.Sprintf("data: {\"error\": \"internal server error\"}\n\n"):
-				default:
-				}
-				select {
-				case streamChan <- "data: [DONE]\n\n":
-				default:
-				}
+				streamChan <- fmt.Sprintf("data: {\"error\": \"internal server error\"}\n\n")
+				streamChan <- "data: [DONE]\n\n"
+				close(streamChan)
 			}
-			close(streamChan)
 		}()
-		h.ragSvc.Query(c.Request.Context(), postID, req.Question, streamChan)
+		h.ragSvc.Query(ctx, postID, req.Question, streamChan)
 	}()
 
 	flusher, _ := c.Writer.(interface{ Flush() })

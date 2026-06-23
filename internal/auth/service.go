@@ -14,6 +14,7 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/redislock"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -363,7 +364,9 @@ func (s *AuthService) Logout(ctx context.Context, req *TokenRefreshRequest) {
 		return
 	}
 	if jwtClaims, ok := claims.(*JwtClaims); ok {
-		s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID)
+		if err := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); err != nil {
+			zap.L().Warn("failed to revoke refresh token during logout", zap.Uint64("userID", jwtClaims.UID), zap.String("tokenID", jwtClaims.ID), zap.Error(err))
+		}
 	}
 }
 
@@ -619,8 +622,12 @@ func generateNickname() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	suffix := make([]byte, 8)
 	for i := range suffix {
-		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		suffix[i] = charset[n.Int64()]
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+	if err != nil {
+		zap.L().Warn("failed to generate secure random number for nickname", zap.Error(err))
+		n = big.NewInt(0)
+	}
+	suffix[i] = charset[n.Int64()]
 	}
 	return "知光用户" + string(suffix)
 }
