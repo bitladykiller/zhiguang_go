@@ -10,7 +10,11 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.uber.org/zap"
 )
+
+const publishTimeout = 3 * time.Second
 
 // Like 为指定用户对指定实体打开点赞状态。
 func (s *CounterService) Like(ctx context.Context, userID uint64, entityType, entityID string) (bool, error) {
@@ -32,7 +36,8 @@ func (s *CounterService) Unfav(ctx context.Context, userID uint64, entityType, e
 	return s.toggle(ctx, userID, entityType, entityID, "fav", "remove")
 }
 
-// toggle 执行原子 Lua 脚本；如果状态发生变化，则发布 CounterEvent 到 Kafka。
+// toggle 执行原子 Lua 脚本；如果状态发生变化，异步发布 CounterEvent 到 Kafka。
+// Kafka 发布使用后台 goroutine + recover + 3s 超时，避免阻塞主请求返回。
 func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, entityID, metric, op string) (bool, error) {
 	chunk := ChunkOf(userID)
 	offset := BitOf(userID)
@@ -58,17 +63,15 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 			Delta:      delta,
 		}
 		if s.producer != nil {
-			go func(evt *CounterEvent) {
-				defer func() {
-					if r := recover(); r != nil {
-						// fire-and-forget goroutine 的 panic 不应该导致进程崩溃。
-						// 如果发布失败，dirty set 修复任务会兜底。
-					}
-				}()
-				pubCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				defer cancel()
-				s.publishCounterEvent(pubCtx, evt)
-			}(event)
+			select {
+			case s.workerCh <- event:
+			default:
+				zap.L().Warn("counter worker channel full, dropping event",
+					zap.String("entity_type", entityType),
+					zap.String("entity_id", entityID),
+					zap.String("metric", metric),
+				)
+			}
 		}
 		return true, nil
 	}

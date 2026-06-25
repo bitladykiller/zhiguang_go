@@ -3,6 +3,7 @@ package relation
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/zhiguang/app/internal/outbox"
 )
@@ -26,7 +27,7 @@ func (h *RelationRowHandler) HandleRow(ctx context.Context, row outbox.Row) erro
 
 	var evt RelationEvent
 	if err := json.Unmarshal(row.Payload, &evt); err != nil {
-		return err
+		return fmt.Errorf("row handler: unmarshal event: %w", err)
 	}
 	return h.Processor.Process(ctx, evt)
 }

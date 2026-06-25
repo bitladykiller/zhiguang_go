@@ -2,10 +2,11 @@ package profile
 
 import (
 	"context"
-	"strings"
+	"fmt"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/zhiguang/app/internal/model"
+	"github.com/zhiguang/app/pkg/sqlutil"
 )
 
 // Repository 封装资料领域的数据访问逻辑。
@@ -38,60 +39,42 @@ func (r *Repository) FindByID(ctx context.Context, id uint64) (*UserProfile, err
 
 // Update 动态更新用户资料的部分字段（PATCH 语义）。
 func (r *Repository) Update(ctx context.Context, id uint64, req *ProfilePatchRequest) error {
-	sets := make([]string, 0, 7)
-	args := make([]interface{}, 0, 8)
-	if req.Nickname != nil {
-		sets = append(sets, "nickname = ?")
-		args = append(args, *req.Nickname)
-	}
-	if req.Avatar != nil {
-		sets = append(sets, "avatar = ?")
-		args = append(args, *req.Avatar)
-	}
-	if req.Bio != nil {
-		sets = append(sets, "bio = ?")
-		args = append(args, *req.Bio)
-	}
-	if req.Gender != nil {
-		sets = append(sets, "gender = ?")
-		args = append(args, *req.Gender)
-	}
-	if req.School != nil {
-		sets = append(sets, "school = ?")
-		args = append(args, *req.School)
-	}
-	if req.TagsJson != nil {
-		sets = append(sets, "tags_json = ?")
-		args = append(args, *req.TagsJson)
-	}
-	if req.Birthday != nil {
-		sets = append(sets, "birthday = ?")
-		args = append(args, *req.Birthday)
-	}
+	sets, args := sqlutil.BuildSetClause(
+		sqlutil.SetIf(req.Nickname != nil, "nickname = ?", *req.Nickname),
+		sqlutil.SetIf(req.Avatar != nil, "avatar = ?", *req.Avatar),
+		sqlutil.SetIf(req.Bio != nil, "bio = ?", *req.Bio),
+		sqlutil.SetIf(req.Gender != nil, "gender = ?", *req.Gender),
+		sqlutil.SetIf(req.School != nil, "school = ?", *req.School),
+		sqlutil.SetIf(req.TagsJson != nil, "tags_json = ?", *req.TagsJson),
+		sqlutil.SetIf(req.Birthday != nil, "birthday = ?", *req.Birthday),
+	)
 	if len(sets) == 0 {
 		return nil
 	}
 
 	args = append(args, id)
-	query := "UPDATE users SET " + strings.Join(sets, ", ") + " WHERE id = ?"
+	query := "UPDATE users SET " + sets + " WHERE id = ?"
 	_, err := r.db.ExecContext(ctx, query, args...)
-	return err
+	if err != nil {
+		return fmt.Errorf("profile repository: update user: %w", err)
+	}
+	return nil
 }
 
 // toUserProfile 将 model.User 映射为对外 DTO，过滤敏感字段。
 func toUserProfile(row *model.User) *UserProfile {
 	return &UserProfile{
-		ID:       row.ID,
-		Nickname: row.Nickname,
-		Avatar:   row.Avatar,
-		Phone:    row.Phone,
-		Email:    row.Email,
-		ZgID:     row.ZgID,
-		Birthday: row.Birthday,
-		School:   row.School,
-		Bio:      row.Bio,
-		Gender:   row.Gender,
-		TagsJSON: row.TagsJSON,
+		ID:        row.ID,
+		Nickname:  row.Nickname,
+		Avatar:    row.Avatar,
+		Phone:     row.Phone,
+		Email:     row.Email,
+		ZgID:      row.ZgID,
+		Birthday:  row.Birthday,
+		School:    row.School,
+		Bio:       row.Bio,
+		Gender:    row.Gender,
+		TagsJSON:  row.TagsJSON,
 		CreatedAt: row.CreatedAt,
 		UpdatedAt: row.UpdatedAt,
 	}

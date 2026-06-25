@@ -29,7 +29,7 @@ type KnowPostFeedServiceInterface interface {
 
 // 编译期断言。
 var (
-	_ KnowPostWriteService       = (*KnowPostService)(nil)
-	_ KnowPostReadService        = (*KnowPostService)(nil)
+	_ KnowPostWriteService         = (*KnowPostService)(nil)
+	_ KnowPostReadService          = (*KnowPostService)(nil)
 	_ KnowPostFeedServiceInterface = (*KnowPostFeedService)(nil)
 )

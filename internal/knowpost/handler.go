@@ -53,17 +53,7 @@ func (h *KnowPostHandler) RegisterRoutes(r *gin.RouterGroup) {
 
 // --- [处理函数] ---
 
-// CreateDraft 处理 POST /knowposts/draft。
-//
-// 功能：从 JWT token 中解析用户 ID，调用 CreateDraft 服务创建草稿，
-// 然后返回 HTTP 201 Created 响应，body 中包含新的知文 ID。
-//
-// 请求：POST /knowposts/draft（无需请求体）
-// 响应：HTTP 201，{ "code": 0, "message": "created", "data": { "id": "{雪花ID}" } }
-//
-// 边界情况：
-//   - 未提供 JWT token：返回 401 Unauthorized。
-//   - 创建失败：返回 500 Internal Server Error。
+// CreateDraft 创建草稿（POST /knowposts/draft）。
 func (h *KnowPostHandler) CreateDraft(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -78,17 +68,8 @@ func (h *KnowPostHandler) CreateDraft(c *gin.Context) {
 	response.Created(c, gin.H{"id": strconv.FormatUint(id, 10)})
 }
 
-// ConfirmContent 处理 PUT /knowposts/:id/content。
-//
-// 功能：接收客户端在 OSS 直传完成后返回的对象元数据，
-// 更新知文的内容记录。
-//
-// 请求：PUT /knowposts/:id/content
-// Body：{"object_key": "...", "etag": "...", "sha256": "...", "size": 12345}
-//
-// 参数来源：
-//   - :id：URL 路径参数，知文 ID。
-//   - Body：OSS 对象的元数据（对象键、ETag、SHA256、大小）。
+// ConfirmContent 确认内容上传完成（PUT /knowposts/:id/content）。
+// 接收 OSS 直传后的对象元数据，更新知文内容记录。
 func (h *KnowPostHandler) ConfirmContent(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -112,13 +93,8 @@ func (h *KnowPostHandler) ConfirmContent(c *gin.Context) {
 	response.Success(c, gin.H{"success": true})
 }
 
-// UpdateMetadata 处理 PUT /knowposts/:id/metadata。
-//
-// 功能：接收知文元数据的部分更新请求，传递给服务层。
-// 使用 PATCH 语义（只更新请求中包含的字段）。
-//
-// 请求：PUT /knowposts/:id/metadata
-// Body：KnowPostPatchRequest，含 Title、TagID、Tags、ImgUrls、Description、Visible 等。
+// UpdateMetadata 更新元数据（PUT /knowposts/:id/metadata）。
+// PATCH 语义：仅更新请求中包含的字段。
 func (h *KnowPostHandler) UpdateMetadata(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -142,14 +118,7 @@ func (h *KnowPostHandler) UpdateMetadata(c *gin.Context) {
 	response.Success(c, gin.H{"success": true})
 }
 
-// Publish 处理 POST /knowposts/:id/publish。
-//
-// 功能：将指定知文从草稿状态发布为已发布状态。
-//
-// 请求：POST /knowposts/:id/publish（无需请求体）。
-//
-// 边界情况：
-//   - 知文不存在、非草稿状态或无权操作：返回 404 给客户端（经由 toAppErr 转换）。
+// Publish 发布知文（POST /knowposts/:id/publish）。
 func (h *KnowPostHandler) Publish(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -168,12 +137,7 @@ func (h *KnowPostHandler) Publish(c *gin.Context) {
 	response.Success(c, gin.H{"success": true})
 }
 
-// UpdateTop 处理 PUT /knowposts/:id/top。
-//
-// 功能：切换知文的置顶状态。
-//
-// 请求：PUT /knowposts/:id/top
-// Body：{"isTop": true} 或 {"isTop": false}
+// UpdateTop 切换置顶状态（PUT /knowposts/:id/top）。
 func (h *KnowPostHandler) UpdateTop(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -197,12 +161,7 @@ func (h *KnowPostHandler) UpdateTop(c *gin.Context) {
 	response.Success(c, gin.H{"success": true})
 }
 
-// UpdateVisibility 处理 PUT /knowposts/:id/visibility。
-//
-// 功能：更新知文的可见性设置。
-//
-// 请求：PUT /knowposts/:id/visibility
-// Body：{"visible": "public"}，可见性值由 isValidVisible 校验。
+// UpdateVisibility 更新可见性（PUT /knowposts/:id/visibility）。
 func (h *KnowPostHandler) UpdateVisibility(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -226,14 +185,7 @@ func (h *KnowPostHandler) UpdateVisibility(c *gin.Context) {
 	response.Success(c, gin.H{"success": true})
 }
 
-// Delete 处理 DELETE /knowposts/:id。
-//
-// 功能：对指定知文执行软删除。
-//
-// 请求：DELETE /knowposts/:id（无需请求体）。
-//
-// 边界情况：
-//   - 知文已被删除或不存在：返回 404。
+// Delete 软删除（DELETE /knowposts/:id）。
 func (h *KnowPostHandler) Delete(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -252,12 +204,8 @@ func (h *KnowPostHandler) Delete(c *gin.Context) {
 	response.Success(c, gin.H{"success": true})
 }
 
-// GetDetail 处理 GET /knowposts/:id。
-//
-// 功能：返回知文详情。当前用户可登录也可不登录。
-// 登录用户会额外获得点赞/收藏状态。
-//
-// 请求：GET /knowposts/:id
+// GetDetail 获取知文详情（GET /knowposts/:id）。
+// 可选登录，登录用户额外获得点赞/收藏状态。
 func (h *KnowPostHandler) GetDetail(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -276,15 +224,8 @@ func (h *KnowPostHandler) GetDetail(c *gin.Context) {
 	response.Success(c, resp)
 }
 
-// GetPublicFeed 处理 GET /knowposts/feed/public。
-//
-// 功能：返回公共 Feed（已发布且公开的知文列表），支持分页，可选附带当前用户的点赞/收藏状态。
-//
-// 请求：GET /knowposts/feed/public?page=1&size=20
-//
-// 用户状态：
-//   - 携带 JWT token：在 Feed 条目中附加 Liked/Faved 状态。
-//   - 不携带 JWT token：Feed 条目中 Liked/Faved 为 nil。
+// GetPublicFeed 获取公共 Feed（GET /knowposts/feed/public）。
+// 可选附带当前用户的点赞/收藏状态。
 func (h *KnowPostHandler) GetPublicFeed(c *gin.Context) {
 	page := httputil.QueryInt(c, "page", 1)
 	size := httputil.QueryInt(c, "size", 20)
@@ -300,15 +241,8 @@ func (h *KnowPostHandler) GetPublicFeed(c *gin.Context) {
 	response.Success(c, resp)
 }
 
-// GetMyPublished 处理 GET /knowposts/feed/mine。
-//
-// 功能：返回当前登录用户自己的已发布知文列表。
-// 与 GetPublicFeed 不同，此接口必须要求用户已登录。
-//
-// 请求：GET /knowposts/feed/mine?page=1&size=20
-//
-// 边界情况：
-//   - 未提供 JWT token（未登录）：返回 401 Unauthorized。
+// GetMyPublished 获取我的已发布列表（GET /knowposts/feed/mine）。
+// 必须登录。
 func (h *KnowPostHandler) GetMyPublished(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -325,23 +259,11 @@ func (h *KnowPostHandler) GetMyPublished(c *gin.Context) {
 	response.Success(c, resp)
 }
 
-// toAppErr 将任意 error 转换为 *errcode.AppError。
-//
-// 功能：如果原始错误已经是 AppError 类型，直接原样返回。
-// 如果是其他类型的 error（如数据库查询错误），包装为 ErrInternal。
-//
-// 这样设计的原因：
-//   服务层的业务逻辑可能返回 *errcode.AppError（如 ErrNotFound、ErrForbidden），
-//   也可能返回普通的 error（如数据库连接错误）。在转换成 HTTP 响应时，
-//   handler 通过 toAppErr 统一处理，确保非业务错误不会泄露内部细节。
-//
-// 参数：
-//   - err: error，原始错误。
-//
-// 返回值：*errcode.AppError，始终非 nil。
+// toAppErr 将 error 统一转换为 *errcode.AppError。
+// 已是 AppError 类型直接返回；其他类型包装为 ErrInternal 避免泄露内部细节。
 func toAppErr(err error) *errcode.AppError {
 	if appErr, ok := err.(*errcode.AppError); ok {
 		return appErr
 	}
-	return errcode.ErrInternal.WithMsg(err.Error())
+	return errcode.ErrInternal
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // UserCounterUpdater 定义关系事件处理所需的用户维度计数更新接口。
@@ -95,36 +96,44 @@ func (p *EventProcessor) Process(ctx context.Context, evt RelationEvent) error {
 	case "FollowCreated":
 		now := float64(time.Now().UnixMilli())
 		if err := p.redis.ZAdd(ctx, followingZSetKey(evt.FromUserID), redis.Z{Score: now, Member: strconv.FormatUint(evt.ToUserID, 10)}).Err(); err != nil {
-			return err
+			return fmt.Errorf("event processor: zadd following: %w", err)
 		}
 		if err := p.redis.ZAdd(ctx, followersZSetKey(evt.ToUserID), redis.Z{Score: now, Member: strconv.FormatUint(evt.FromUserID, 10)}).Err(); err != nil {
-			return err
+			return fmt.Errorf("event processor: zadd followers: %w", err)
 		}
-		p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour)
-		p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour)
+		if err := p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour).Err(); err != nil {
+			zap.L().Warn("event processor: expire following zset", zap.Error(err))
+		}
+		if err := p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour).Err(); err != nil {
+			zap.L().Warn("event processor: expire followers zset", zap.Error(err))
+		}
 		if p.counter != nil {
 			if err := p.counter.IncrementFollowings(ctx, evt.FromUserID, 1); err != nil {
-				return err
+				return fmt.Errorf("event processor: increment followings: %w", err)
 			}
 			if err := p.counter.IncrementFollowers(ctx, evt.ToUserID, 1); err != nil {
-				return err
+				return fmt.Errorf("event processor: increment followers: %w", err)
 			}
 		}
 	case "FollowCanceled":
 		if err := p.redis.ZRem(ctx, followingZSetKey(evt.FromUserID), strconv.FormatUint(evt.ToUserID, 10)).Err(); err != nil {
-			return err
+			return fmt.Errorf("event processor: zrem following: %w", err)
 		}
 		if err := p.redis.ZRem(ctx, followersZSetKey(evt.ToUserID), strconv.FormatUint(evt.FromUserID, 10)).Err(); err != nil {
-			return err
+			return fmt.Errorf("event processor: zrem followers: %w", err)
 		}
-		p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour)
-		p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour)
+		if err := p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour).Err(); err != nil {
+			zap.L().Warn("event processor: expire following zset", zap.Error(err))
+		}
+		if err := p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour).Err(); err != nil {
+			zap.L().Warn("event processor: expire followers zset", zap.Error(err))
+		}
 		if p.counter != nil {
 			if err := p.counter.IncrementFollowings(ctx, evt.FromUserID, -1); err != nil {
-				return err
+				return fmt.Errorf("event processor: decrement followings: %w", err)
 			}
 			if err := p.counter.IncrementFollowers(ctx, evt.ToUserID, -1); err != nil {
-				return err
+				return fmt.Errorf("event processor: decrement followers: %w", err)
 			}
 		}
 	}

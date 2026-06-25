@@ -3,13 +3,12 @@ package relation
 import (
 	"context"
 	"encoding/json"
-	"time"
+	"fmt"
 
 	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/outbox"
-	"github.com/zhiguang/app/pkg/contextutil"
 )
 
 // OutboxConsumer 消费 canal-outbox 主题中的关系事件。
@@ -27,6 +26,7 @@ type OutboxConsumer struct {
 	reader    *kafka.Reader
 	processor *EventProcessor
 	logger    *zap.Logger
+	component string
 }
 
 // NewOutboxConsumer 创建 Kafka outbox 消费者实例，负责消费关系事件。
@@ -50,6 +50,7 @@ func NewOutboxConsumer(reader *kafka.Reader, processor *EventProcessor, logger *
 		reader:    reader,
 		processor: processor,
 		logger:    logger,
+		component: "relation",
 	}
 }
 
@@ -75,37 +76,7 @@ func (c *OutboxConsumer) Start(ctx context.Context) {
 	if c == nil {
 		return
 	}
-	defer c.reader.Close()
-
-	for {
-		msg, err := c.reader.FetchMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			if c.logger != nil {
-				c.logger.Warn("fetch relation outbox kafka message failed", zap.Error(err))
-			}
-			if !contextutil.Sleep(ctx, time.Second) {
-				return
-			}
-			continue
-		}
-
-		if err := c.handleMessage(ctx, msg.Value); err != nil {
-			if c.logger != nil {
-				c.logger.Warn("process relation outbox kafka message failed", zap.Error(err))
-			}
-			if !contextutil.Sleep(ctx, time.Second) {
-				return
-			}
-			continue
-		}
-
-		if err := c.reader.CommitMessages(ctx, msg); err != nil && c.logger != nil {
-			c.logger.Warn("commit relation outbox kafka message failed", zap.Error(err))
-		}
-	}
+	outbox.StartConsumerLoop(ctx, c.reader, c.handleMessage, c.logger, c.component)
 }
 
 // handleMessage 解析一条 Kafka 消息中的 outbox 事件行，并依次处理。
@@ -127,7 +98,7 @@ func (c *OutboxConsumer) Start(ctx context.Context) {
 func (c *OutboxConsumer) handleMessage(ctx context.Context, value []byte) error {
 	rows, err := outbox.ExtractRows(value)
 	if err != nil {
-		return err
+		return fmt.Errorf("outbox consumer: extract rows: %w", err)
 	}
 
 	for _, row := range rows {
@@ -140,13 +111,12 @@ func (c *OutboxConsumer) handleMessage(ctx context.Context, value []byte) error 
 
 		var evt RelationEvent
 		if err := json.Unmarshal([]byte(row.Payload), &evt); err != nil {
-			return err
+			return fmt.Errorf("outbox consumer: unmarshal event: %w", err)
 		}
 		if err := c.processor.Process(ctx, evt); err != nil {
-			return err
+			return fmt.Errorf("outbox consumer: process event: %w", err)
 		}
 	}
 
 	return nil
 }
-

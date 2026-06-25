@@ -11,6 +11,8 @@
 package database
 
 import (
+	"fmt"
+	"log"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -48,11 +50,13 @@ import (
 func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
 	db, err := sqlx.Open("mysql", cfg.DSN())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlx.Open: %w", err)
 	}
 	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, err
+		if closeErr := db.Close(); closeErr != nil {
+			log.Printf("close db after ping failure: %v", closeErr)
+		}
+		return nil, fmt.Errorf("db.Ping: %w", err)
 	}
 
 	db.SetMaxOpenConns(cfg.MaxOpenConns)

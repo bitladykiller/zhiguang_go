@@ -7,14 +7,14 @@ import "fmt"
 type ErrorCode int
 
 const (
-	CodeSuccess                ErrorCode = 0
-	CodeBadRequest             ErrorCode = 400
-	CodeUnauthorized           ErrorCode = 401
-	CodeForbidden              ErrorCode = 403
-	CodeNotFound               ErrorCode = 404
-	CodeConflict               ErrorCode = 409
-	CodeTooManyRequests        ErrorCode = 429
-	CodeInternalError          ErrorCode = 500
+	CodeSuccess         ErrorCode = 0
+	CodeBadRequest      ErrorCode = 400
+	CodeUnauthorized    ErrorCode = 401
+	CodeForbidden       ErrorCode = 403
+	CodeNotFound        ErrorCode = 404
+	CodeConflict        ErrorCode = 409
+	CodeTooManyRequests ErrorCode = 429
+	CodeInternalError   ErrorCode = 500
 
 	ErrCodeIdentifierExists            ErrorCode = 40901
 	ErrCodeIdentifierNotFound          ErrorCode = 40401
@@ -43,13 +43,13 @@ func (e *AppError) WithMsg(msg string) *AppError {
 }
 
 var (
-	ErrBadRequest      = &AppError{Code: CodeBadRequest, Message: "bad request"}
-	ErrUnauthorized    = &AppError{Code: CodeUnauthorized, Message: "unauthorized"}
-	ErrForbidden       = &AppError{Code: CodeForbidden, Message: "forbidden"}
-	ErrNotFound        = &AppError{Code: CodeNotFound, Message: "not found"}
-	ErrInternal        = &AppError{Code: CodeInternalError, Message: "internal server error"}
-	ErrConflict        = &AppError{Code: CodeConflict, Message: "conflict"}
-	ErrTooManyRequests = &AppError{Code: CodeTooManyRequests, Message: "too many requests"}
+	ErrBadRequest         = &AppError{Code: CodeBadRequest, Message: "bad request"}
+	ErrUnauthorized       = &AppError{Code: CodeUnauthorized, Message: "unauthorized"}
+	ErrForbidden          = &AppError{Code: CodeForbidden, Message: "forbidden"}
+	ErrNotFound           = &AppError{Code: CodeNotFound, Message: "not found"}
+	ErrInternal           = &AppError{Code: CodeInternalError, Message: "internal server error"}
+	ErrConflict           = &AppError{Code: CodeConflict, Message: "conflict"}
+	ErrTooManyRequests    = &AppError{Code: CodeTooManyRequests, Message: "too many requests"}
 	ErrServiceUnavailable = &AppError{Code: ErrCodeServiceUnavailable, Message: "service unavailable"}
 
 	ErrIdentifierExists            = &AppError{Code: ErrCodeIdentifierExists, Message: "identifier already exists"}

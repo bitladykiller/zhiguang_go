@@ -94,10 +94,13 @@ func InitializeApp(configPath string) (*server.App, error) {
 	}
 
 	// counter 先于 knowpost 创建（knowpost 需要 counter 读接口）
-	counterHandler, counterSvc, counterAggConsumer, err := initCounter(db, redisClient, kafkaWriter, idGen, cfg, logger)
+	counterComponents, err := initCounter(db, redisClient, kafkaWriter, idGen, cfg, logger)
 	if err != nil {
 		return nil, err
 	}
+	counterHandler := counterComponents.Handler
+	counterSvc := counterComponents.Service
+	counterAggConsumer := counterComponents.AggConsumer
 
 	// knowpost 构造时注入 counterSvc 和 feedSvc
 	kpHandler, _, _ := initKnowPost(db, redisClient, sharedFreeCache, hotKeyDetector, cfg, idGen, counterSvc)
@@ -111,6 +114,9 @@ func InitializeApp(configPath string) (*server.App, error) {
 	profileHandler := initProfile(db)
 
 	// ── 路由与后台消费者 ──
+	// 处理器在配置不完整时可能为 nil（如 ES/OSS/DeepSeek 不可用）。
+	// Router 层通过 nil 检查决定是否注册对应路由组，
+	// 在缺失特定服务时其他模块仍可正常响应。
 	handlerSet := &server.HandlerSet{
 		Auth:     authHandler,
 		KnowPost: kpHandler,
@@ -148,6 +154,8 @@ func InitializeApp(configPath string) (*server.App, error) {
 	return app, nil
 }
 
+const defaultFreeCacheSizeMB = 32
+
 // newFreeCacheWithConfig 根据配置创建统一的 freecache 实例。
 //
 // 使用单一缓存池替代之前的 3 个独立实例（detailCache、feedPublicCache、feedMineCache），
@@ -169,7 +177,7 @@ func newFreeCacheWithConfig(cfg *config.Config) *freecache.Cache {
 		if cfg.Cache.L2.PublicCfg.FreeCacheDefaultMB > 0 {
 			totalMB = cfg.Cache.L2.PublicCfg.FreeCacheDefaultMB
 		} else {
-			totalMB = 32 // 默认 32MB
+			totalMB = defaultFreeCacheSizeMB // 默认 32MB
 		}
 	}
 	return freecache.NewCache(totalMB * 1024 * 1024)

@@ -89,7 +89,7 @@ func (s *KnowPostService) UpdateMetadata(ctx context.Context, creatorID, id uint
 	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostMetadataUpdated, func(txRepo *KnowPostRepository) error {
 		affected, err := txRepo.UpdateMetadata(ctx, post)
 		if err != nil {
-			return err
+			return fmt.Errorf("update metadata: %w", err)
 		}
 		if affected == 0 {
 			return errcode.ErrNotFound.WithMsg("draft not found or permission denied")
@@ -109,7 +109,7 @@ func (s *KnowPostService) Publish(ctx context.Context, creatorID, id uint64) err
 	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostPublished, func(txRepo *KnowPostRepository) error {
 		affected, err := txRepo.Publish(ctx, id, creatorID)
 		if err != nil {
-			return err
+			return fmt.Errorf("publish: %w", err)
 		}
 		if affected == 0 {
 			return errcode.ErrNotFound.WithMsg("draft not found or permission denied")
@@ -129,7 +129,7 @@ func (s *KnowPostService) UpdateTop(ctx context.Context, creatorID, id uint64, i
 	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostTopUpdated, func(txRepo *KnowPostRepository) error {
 		affected, err := txRepo.UpdateTop(ctx, id, creatorID, isTop)
 		if err != nil {
-			return err
+			return fmt.Errorf("update top: %w", err)
 		}
 		if affected == 0 {
 			return errcode.ErrNotFound.WithMsg("draft not found or permission denied")
@@ -151,7 +151,7 @@ func (s *KnowPostService) UpdateVisibility(ctx context.Context, creatorID, id ui
 	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostVisibilityUpdated, func(txRepo *KnowPostRepository) error {
 		affected, err := txRepo.UpdateVisibility(ctx, id, creatorID, visible)
 		if err != nil {
-			return err
+			return fmt.Errorf("update visibility: %w", err)
 		}
 		if affected == 0 {
 			return errcode.ErrNotFound.WithMsg("draft not found or permission denied")
@@ -170,7 +170,7 @@ func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) erro
 	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostDeleted, func(txRepo *KnowPostRepository) error {
 		affected, err := txRepo.SoftDelete(ctx, id, creatorID)
 		if err != nil {
-			return err
+			return fmt.Errorf("soft delete: %w", err)
 		}
 		if affected == 0 {
 			return errcode.ErrNotFound.WithMsg("draft not found or permission denied")

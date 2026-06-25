@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // BatchIsLiked checks if a user liked multiple entities in one pipeline.
@@ -41,6 +42,7 @@ func (s *CounterService) batchGetBit(ctx context.Context, userID uint64, entityT
 	for i, cmd := range cmds {
 		val, err := cmd.Result()
 		if err != nil {
+			zap.L().Warn("batch get bit: getbit failed for entity", zap.String("entityID", entityIDs[i]), zap.Error(err))
 			continue
 		}
 		result[entityIDs[i]] = val == 1

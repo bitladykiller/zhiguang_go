@@ -48,6 +48,7 @@ func (s *Service) UpdateProfile(ctx context.Context, callerID, targetID uint64, 
 }
 
 // isNoOp 判断资料更新请求是否所有字段都为空（无实际操作）。
+// 注意：新增 ProfilePatchRequest 字段时需要同步更新此函数。
 func isNoOp(req *ProfilePatchRequest) bool {
 	return req.Nickname == nil && req.Avatar == nil && req.Bio == nil && req.Gender == nil &&
 		req.Birthday == nil && req.School == nil && req.TagsJson == nil

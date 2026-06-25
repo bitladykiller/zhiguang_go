@@ -1,8 +1,17 @@
+// Package counter — 限流与退避辅助函数。
+//
+// 本文件包含 SDS 重建场景下的限流器实现，基于 Redis 原子计数限制单实体
+// 每分钟的最大重建次数，防止失败重建请求过度消耗 Redis 资源。
 package counter
 
 import (
 	"context"
 	"fmt"
+)
+
+const (
+	maxRebuildsPerMinute   = 5
+	rateLimitWindowSeconds = 60
 )
 
 // ============================================================================
@@ -13,34 +22,14 @@ func (s *CounterService) rateLimiterKey(entityType, entityID string) string {
 	return fmt.Sprintf("rl:sds-rebuild:%s:%s", entityType, entityID)
 }
 
-// allowedByRateLimiter 检查当前是否允许触发 SDS 重建（基于 Redis 的简单限流器）。
-//
-// 功能：
-//  1. 使用 Lua 脚本原子递增限流器计数。
-//  2. 如果这是该时间窗口内的第一次递增（val==1），原子设置 60 秒过期时间。
-//  3. 如果当前计数 <= 5（允许的每分钟最大重建次数），返回 true。
-//
-// 参数：
-//   - ctx:        context.Context
-//   - entityType: 实体类型
-//   - entityID:   实体 ID
-//
-// 返回值：
-//   - bool: true=允许重建，false=已超过限流阈值
-//
-// 函数调用说明：
-//   - rateLimitScript.Run(ctx, redis, []string{key}, 60):
-//     执行 RATE_LIMIT_LUA 脚本，原子执行 INCR + 条件 EXPIRE。
-//     当 val == 1（第一次请求）时自动设置 60 秒过期时间。
-//     后续请求只递增计数，不再重复设置过期时间。
-//
-// 边界情况：
-//   - Lua 脚本执行失败时返回 0，视为允许（降级策略：宁可多重建也不拒绝）
+// allowedByRateLimiter 检查是否允许触发 SDS 重建。
+// 使用 Lua 脚本原子递增计数，首次设置 60s 过期，阈值 5 次/分钟。
+// Lua 执行失败时降级为允许（宁可多重建也不拒绝）。
 func (s *CounterService) allowedByRateLimiter(ctx context.Context, entityType, entityID string) bool {
 	key := s.rateLimiterKey(entityType, entityID)
-	val, err := rateLimitScript.Run(ctx, s.redis, []string{key}, 60).Int()
+	val, err := rateLimitScript.Run(ctx, s.redis, []string{key}, rateLimitWindowSeconds).Int()
 	if err != nil {
 		return true
 	}
-	return val <= 5
+	return val <= maxRebuildsPerMinute
 }

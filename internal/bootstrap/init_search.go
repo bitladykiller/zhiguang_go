@@ -41,8 +41,8 @@ func initSearch(
 	if hasElasticsearchConfig(cfg) {
 		var err error
 		searchSvc, err = search.NewSearchService(struct {
-			URIs      []string
-			IndexName string
+			URIs       []string
+			IndexName  string
 			MaxRetries int
 		}{URIs: cfg.Elasticsearch.URIs, IndexName: cfg.Elasticsearch.IndexName, MaxRetries: cfg.Elasticsearch.MaxRetries}, counterSvc)
 		if err != nil {

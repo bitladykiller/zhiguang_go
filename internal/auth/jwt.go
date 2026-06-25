@@ -204,7 +204,7 @@ func (s *JwtService) encode(user *User, issuedAt, expiresAt time.Time, tokenType
 //     这是 RSA 私钥的传统格式，只支持 RSA。
 //     如果 PKCS#8 解析失败，会回退尝试此格式。
 func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
-data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("load private key: read file: %w", err)
 	}

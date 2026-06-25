@@ -62,28 +62,26 @@ func (s *CounterService) GetCounts(ctx context.Context, entityType, entityID str
 	return result, nil
 }
 
-// IsLiked 判断指定用户是否已给该实体点赞。
-func (s *CounterService) IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error) {
+// isBitSet 判断 Redis 位图中指定用户的位是否为 1。
+func (s *CounterService) isBitSet(ctx context.Context, userID uint64, entityType, entityID, metric string) (bool, error) {
 	chunk := ChunkOf(userID)
 	offset := BitOf(userID)
-	bmKey := BitmapKey("like", entityType, entityID, chunk)
+	bmKey := BitmapKey(metric, entityType, entityID, chunk)
 	val, err := s.redis.GetBit(ctx, bmKey, int64(offset)).Result()
 	if err != nil {
-		return false, fmt.Errorf("is liked: getbit: %w", err)
+		return false, fmt.Errorf("%s: getbit: %w", metric, err)
 	}
 	return val == 1, nil
 }
 
+// IsLiked 判断指定用户是否已给该实体点赞。
+func (s *CounterService) IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error) {
+	return s.isBitSet(ctx, userID, entityType, entityID, "like")
+}
+
 // IsFaved 判断指定用户是否已收藏该实体。
 func (s *CounterService) IsFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, error) {
-	chunk := ChunkOf(userID)
-	offset := BitOf(userID)
-	bmKey := BitmapKey("fav", entityType, entityID, chunk)
-	val, err := s.redis.GetBit(ctx, bmKey, int64(offset)).Result()
-	if err != nil {
-		return false, fmt.Errorf("is faved: getbit: %w", err)
-	}
-	return val == 1, nil
+	return s.isBitSet(ctx, userID, entityType, entityID, "fav")
 }
 
 // GetCountsBatch 使用 Redis Pipeline 批量获取多个实体的 SDS 计数。

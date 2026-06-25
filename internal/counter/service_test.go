@@ -20,7 +20,10 @@ func TestTogglePublishFailureMarksDirty(t *testing.T) {
 	defer shutdown()
 
 	recorder := &stubCounterFailureRecorder{}
-	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")}, nil, recorder, "counter-events", nil, nil)
+	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")},
+		WithFailureRecorder(recorder),
+		WithFailureTopic("counter-events"),
+	)
 	ctx := context.Background()
 	entityType := "knowpost"
 	entityID := "42"
@@ -60,7 +63,9 @@ func TestTogglePublishesSnowflakeMessageID(t *testing.T) {
 	defer shutdown()
 
 	publisher := &stubCapturingCounterPublisher{published: make(chan *CounterEvent, 1)}
-	svc := NewCounterService(rdb, publisher, nil, nil, "", stubMessageIDGenerator{next: 987654321}, nil)
+	svc := NewCounterService(rdb, publisher,
+		WithMessageIDGenerator(stubMessageIDGenerator{next: 987654321}),
+	)
 
 	changed, err := svc.Like(context.Background(), 1001, "knowpost", "66")
 	if err != nil {
@@ -98,8 +103,8 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 		t.Fatalf("seed sds: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
-	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
+	svc := NewCounterService(rdb, nil)
+	consumer := &AggregationConsumer{service: svc, cfg: &consumerConfig{groupID: "counter-group", topic: "counter-events"}}
 	batch := newCounterBatch(2)
 	if err := batch.add(mustCounterMessageAt(t, 3, 10, CounterEvent{
 		EntityType: entityType,
@@ -159,8 +164,8 @@ func TestApplyBatchSkipsAlreadyAppliedPrefix(t *testing.T) {
 		t.Fatalf("seed applied offset: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
-	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
+	svc := NewCounterService(rdb, nil)
+	consumer := &AggregationConsumer{service: svc, cfg: &consumerConfig{groupID: "counter-group", topic: "counter-events"}}
 	batch := newCounterBatch(4)
 	for offset := int64(9); offset <= 12; offset++ {
 		if err := batch.add(mustCounterMessageAt(t, 2, offset, CounterEvent{
@@ -205,7 +210,7 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 	entityType := "knowpost"
 	entityID := "77"
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	if _, err := svc.Like(ctx, 1001, entityType, entityID); err != nil {
 		t.Fatalf("like first user: %v", err)
 	}
@@ -262,14 +267,19 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 	}
 
 	recorder := &stubCounterFailureRecorder{}
-	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil)
+	svc := NewCounterService(rdb, nil,
+		WithFailureRecorder(recorder),
+		WithFailureTopic("counter-events"),
+	)
 	commitCalls := 0
 	consumer := &AggregationConsumer{
-		service:          svc,
-		groupID:          "counter-group",
-		topic:            "counter-events",
-		flushMaxAttempts: 3,
-		flushRetryDelay:  time.Millisecond,
+		service: svc,
+		cfg: &consumerConfig{
+			groupID:          "counter-group",
+			topic:            "counter-events",
+			flushMaxAttempts: 3,
+			flushRetryDelay:  time.Millisecond,
+		},
 		commitFn: func(ctx context.Context, msgs ...kafka.Message) error {
 			commitCalls++
 			if commitCalls < 3 {
@@ -337,15 +347,20 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 	}
 
 	recorder := &stubCounterFailureRecorder{}
-	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil)
+	svc := NewCounterService(rdb, nil,
+		WithFailureRecorder(recorder),
+		WithFailureTopic("counter-events"),
+	)
 
 	commitCalls := 0
 	consumer := &AggregationConsumer{
-		service:          svc,
-		groupID:          "counter-group",
-		topic:            "counter-events",
-		flushMaxAttempts: 3,
-		flushRetryDelay:  time.Millisecond,
+		service: svc,
+		cfg: &consumerConfig{
+			groupID:          "counter-group",
+			topic:            "counter-events",
+			flushMaxAttempts: 3,
+			flushRetryDelay:  time.Millisecond,
+		},
 		commitFn: func(ctx context.Context, msgs ...kafka.Message) error {
 			commitCalls++
 			return errors.New("commit failed")

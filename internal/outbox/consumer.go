@@ -31,6 +31,10 @@ type Row struct {
 //   - Kafka 消息的拉取和提交
 //   - CanalEnvelope 的解析和行提取
 //   - 重试和错误处理
+//
+// 注意：HandleRow 必须在实现上幂等。当单条消息中的某行处理失败时，
+// 整条消息会重试，已成功处理的行会重复调用 HandleRow。
+// 实现者应在 HandleRow 内部通过 SETNX 或业务主键保证重复调用安全。
 type RowHandler interface {
 	// HandleRow 处理单条 outbox 行。
 	// 返回 nil 表示处理成功，非 nil 表示处理失败（会触发重试）。
@@ -41,6 +45,11 @@ type RowHandler interface {
 type FailedMessageRecorder interface {
 	Create(ctx context.Context, topic string, messageKey string, payload []byte, cause error) error
 }
+
+const (
+	defaultOutboxMaxRetries = 3
+	defaultOutboxRetryDelay = time.Second
+)
 
 // Consumer 是 outbox 消费端的通用框架。
 //
@@ -57,12 +66,12 @@ type FailedMessageRecorder interface {
 //	consumer.SetFailedMessageRecorder(recorder)
 //	go consumer.Start(ctx)
 type Consumer struct {
-	reader             *kafka.Reader
-	handler            RowHandler
-	logger             *zap.Logger
-	failureRecorder    FailedMessageRecorder
-	maxRetries         int
-	retryDelay         time.Duration
+	reader          *kafka.Reader
+	handler         RowHandler
+	logger          *zap.Logger
+	failureRecorder FailedMessageRecorder
+	maxRetries      int
+	retryDelay      time.Duration
 }
 
 // NewConsumer 创建 outbox 消费者实例。
@@ -81,8 +90,8 @@ func NewConsumer(reader *kafka.Reader, handler RowHandler, logger *zap.Logger) *
 		reader:     reader,
 		handler:    handler,
 		logger:     logger,
-		maxRetries: 3,
-		retryDelay: time.Second,
+		maxRetries: defaultOutboxMaxRetries,
+		retryDelay: defaultOutboxRetryDelay,
 	}
 }
 
@@ -140,11 +149,11 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, msg kafka.Message
 	for attempt := 1; attempt <= c.maxRetries; attempt++ {
 		if err := c.handleMessage(ctx, msg.Value); err != nil {
 			if attempt == c.maxRetries {
-				return err
+				return fmt.Errorf("outbox consumer: handle message after %d retries: %w", c.maxRetries, err)
 			}
 			c.logWarn("process outbox kafka message failed, retrying", err)
 			if !contextutil.Sleep(ctx, c.retryDelay) {
-				return err
+				return fmt.Errorf("outbox consumer: context done during retry: %w", err)
 			}
 			continue
 		}
@@ -158,14 +167,16 @@ func (c *Consumer) recordFailedMessage(value []byte, cause error) {
 	if c.failureRecorder == nil {
 		return
 	}
-	_ = c.failureRecorder.Create(context.WithoutCancel(context.Background()), CanalOutboxTopic, "", value, cause)
+	if err := c.failureRecorder.Create(context.WithoutCancel(context.Background()), CanalOutboxTopic, "", value, cause); err != nil {
+		c.logWarn("failed to record failed outbox message", err)
+	}
 }
 
 // handleMessage 解析一条 Kafka 消息，提取 outbox 行并逐行处理。
 func (c *Consumer) handleMessage(ctx context.Context, value []byte) error {
 	rows, err := extractRows(value)
 	if err != nil {
-		return err
+		return fmt.Errorf("outbox consumer: extract rows: %w", err)
 	}
 
 	for _, row := range rows {
@@ -173,7 +184,7 @@ func (c *Consumer) handleMessage(ctx context.Context, value []byte) error {
 			continue
 		}
 		if err := c.handler.HandleRow(ctx, row); err != nil {
-			return err
+			return fmt.Errorf("outbox consumer: handle row: %w", err)
 		}
 	}
 

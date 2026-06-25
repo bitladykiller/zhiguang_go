@@ -8,11 +8,13 @@ import (
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
+	"go.uber.org/zap"
 )
 
 // CounterHandler 暴露计数器模块的 HTTP 接口。
 type CounterHandler struct {
-	svc CounterServiceInterface
+	svc    CounterServiceInterface
+	logger *zap.Logger
 }
 
 // NewCounterHandler 创建 CounterHandler 实例。
@@ -23,7 +25,7 @@ type CounterHandler struct {
 // 返回值:
 //   - *CounterHandler: 已初始化的 Handler 实例
 func NewCounterHandler(svc CounterServiceInterface) *CounterHandler {
-	return &CounterHandler{svc: svc}
+	return &CounterHandler{svc: svc, logger: zap.L()}
 }
 
 // RegisterRoutes 注册计数器模块路由，所有接口都要求登录。
@@ -122,7 +124,7 @@ func (h *CounterHandler) handleToggle(
 	changed, err := toggleFn(c.Request.Context(), userID, req.EntityType, req.EntityID)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 	response.Success(c, gin.H{"success": true, "changed": changed})
@@ -167,7 +169,7 @@ func (h *CounterHandler) GetCounts(c *gin.Context) {
 	counts, err := h.svc.GetCounts(c.Request.Context(), entityType, entityID, metrics)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 	response.Success(c, gin.H{"data": counts})
@@ -211,7 +213,13 @@ func (h *CounterHandler) Status(c *gin.Context) {
 		return
 	}
 
-	liked, _ := h.svc.IsLiked(c.Request.Context(), userID, entityType, entityID)
-	faved, _ := h.svc.IsFaved(c.Request.Context(), userID, entityType, entityID)
+	liked, err := h.svc.IsLiked(c.Request.Context(), userID, entityType, entityID)
+	if err != nil {
+		h.logger.Warn("Status: IsLiked failed", zap.Error(err))
+	}
+	faved, err := h.svc.IsFaved(c.Request.Context(), userID, entityType, entityID)
+	if err != nil {
+		h.logger.Warn("Status: IsFaved failed", zap.Error(err))
+	}
 	response.Success(c, gin.H{"is_liked": liked, "is_faved": faved})
 }

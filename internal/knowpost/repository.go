@@ -2,10 +2,11 @@ package knowpost
 
 import (
 	"context"
-	"strings"
+	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/zhiguang/app/pkg/sqlutil"
 )
 
 // KnowPostRepository 封装 know_posts 相关的全部数据库操作。
@@ -40,7 +41,10 @@ INSERT INTO know_posts (
     :id, :tag_id, :tags, :title, :description, :content_url, :content_object_key, :content_etag, :content_size, :content_sha256,
     :creator_id, :is_top, :type, :visible, :img_urls, :video_url, :status, :create_time, :update_time, :publish_time
 )`, post)
-	return err
+	if err != nil {
+		return fmt.Errorf("insert draft: %w", err)
+	}
+	return nil
 }
 
 // UpdateContent 更新内容元数据，WHERE id = ? AND creator_id = ? 确保权限。
@@ -59,40 +63,20 @@ func (r *KnowPostRepository) UpdateContent(ctx context.Context, post *KnowPost) 
 
 // UpdateMetadata 动态构建 SET 子句，仅更新非零/非空字段。
 func (r *KnowPostRepository) UpdateMetadata(ctx context.Context, post *KnowPost) (int64, error) {
-	sets := []string{"update_time = ?"}
-	args := []interface{}{time.Now()}
-	if post.Title != nil {
-		sets = append(sets, "title = ?")
-		args = append(args, *post.Title)
-	}
-	if post.TagID != nil {
-		sets = append(sets, "tag_id = ?")
-		args = append(args, *post.TagID)
-	}
-	if post.Tags != nil {
-		sets = append(sets, "tags = ?")
-		args = append(args, *post.Tags)
-	}
-	if post.ImgUrls != nil {
-		sets = append(sets, "img_urls = ?")
-		args = append(args, *post.ImgUrls)
-	}
-	if post.Visible != "" {
-		sets = append(sets, "visible = ?")
-		args = append(args, post.Visible)
-	}
-	if post.Description != nil {
-		sets = append(sets, "description = ?")
-		args = append(args, *post.Description)
-	}
-	if post.IsTop {
-		sets = append(sets, "is_top = ?")
-		args = append(args, 1)
-	}
+	sets, args := sqlutil.BuildSetClause(
+		sqlutil.Set("update_time = ?", time.Now()),
+		sqlutil.SetIf(post.Title != nil, "title = ?", *post.Title),
+		sqlutil.SetIf(post.TagID != nil, "tag_id = ?", *post.TagID),
+		sqlutil.SetIf(post.Tags != nil, "tags = ?", *post.Tags),
+		sqlutil.SetIf(post.ImgUrls != nil, "img_urls = ?", *post.ImgUrls),
+		sqlutil.SetIf(post.Visible != "", "visible = ?", post.Visible),
+		sqlutil.SetIf(post.Description != nil, "description = ?", *post.Description),
+		sqlutil.SetIf(post.IsTop, "is_top = ?", 1),
+	)
 
 	args = append(args, post.ID, post.CreatorID)
 	result, err := r.db.ExecContext(ctx,
-		"UPDATE know_posts SET "+strings.Join(sets, ", ")+" WHERE id = ? AND creator_id = ?",
+		"UPDATE know_posts SET "+sets+" WHERE id = ? AND creator_id = ?",
 		args...,
 	)
 	if err != nil {

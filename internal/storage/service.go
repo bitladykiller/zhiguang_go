@@ -10,6 +10,8 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 )
 
+const defaultPresignExpiry = 10 * time.Minute
+
 // OssStorageService 管理 OSS 对象存储相关操作，实现 ObjectStorage 接口。
 //
 // 它提供直传 OSS 的预签名 URL，以及对象公开访问地址的构造能力。
@@ -149,5 +151,5 @@ func (s *OssStorageService) PresignExpiry() time.Duration {
 	if s.cfg.PresignExpiryMs > 0 {
 		return time.Duration(s.cfg.PresignExpiryMs) * time.Millisecond
 	}
-	return 10 * time.Minute
+	return defaultPresignExpiry
 }

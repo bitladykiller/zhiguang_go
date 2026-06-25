@@ -128,8 +128,6 @@ func TestIdentifierExists_UnknownType(t *testing.T) {
 	}
 }
 
-
-
 func TestEnsureVerificationSuccess_UnknownStatus(t *testing.T) {
 	err := ensureVerificationSuccess(&VerificationCheckResult{Success: false, Status: "UNKNOWN"})
 	if err == nil {

@@ -12,6 +12,7 @@ package canal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -189,12 +190,12 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		b.idleTimeoutMs(),
 	)
 	if err := connector.Connect(); err != nil {
-		return err
+		return fmt.Errorf("canal bridge: connect: %w", err)
 	}
 	defer connector.DisConnection()
 
 	if err := connector.Subscribe(b.cfg.Filter); err != nil {
-		return err
+		return fmt.Errorf("canal bridge: subscribe: %w", err)
 	}
 
 	pollDelay := time.Duration(maxInt(b.cfg.IntervalMs, 100)) * time.Millisecond
@@ -207,23 +208,29 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 
 		message, err := connector.GetWithOutAck(int32(maxInt(b.cfg.BatchSize, 1)), nil, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("canal bridge: get with out ack: %w", err)
 		}
 
 		if message.Id == -1 || len(message.Entries) == 0 {
-			_ = contextutil.Sleep(ctx, pollDelay)
+			if !contextutil.Sleep(ctx, pollDelay) {
+				return ctx.Err()
+			}
 			continue
 		}
 
 		batchID := message.Id
 		payloads, err := parseEntries(message.Entries)
 		if err != nil {
-			_ = connector.RollBack(batchID)
-			return err
+			if rbErr := connector.RollBack(batchID); rbErr != nil {
+				b.logger.Error("canal rollback batch failed",
+					zap.Int64("batch_id", batchID),
+					zap.Error(rbErr))
+			}
+			return fmt.Errorf("canal bridge: parse entries: %w", err)
 		}
 		if len(payloads) == 0 {
 			if err := connector.Ack(batchID); err != nil {
-				return err
+				return fmt.Errorf("canal bridge: ack empty batch: %w", err)
 			}
 			continue
 		}
@@ -233,8 +240,12 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 			var key []byte
 			rows, err := outbox.ExtractRows(payload)
 			if err != nil {
-				_ = connector.RollBack(batchID)
-				return err
+				if rbErr := connector.RollBack(batchID); rbErr != nil {
+					b.logger.Error("canal rollback batch failed",
+						zap.Int64("batch_id", batchID),
+						zap.Error(rbErr))
+				}
+				return fmt.Errorf("canal bridge: extract rows: %w", err)
 			}
 			if len(rows) > 0 {
 				key = []byte(outbox.MessageKey(rows[0]))
@@ -242,11 +253,15 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 			messages = append(messages, kafka.Message{Key: key, Value: payload})
 		}
 		if err := b.writer.WriteMessages(ctx, messages...); err != nil {
-			_ = connector.RollBack(batchID)
-			return err
+			if rbErr := connector.RollBack(batchID); rbErr != nil {
+				b.logger.Error("canal rollback batch failed",
+					zap.Int64("batch_id", batchID),
+					zap.Error(rbErr))
+			}
+			return fmt.Errorf("canal bridge: write messages: %w", err)
 		}
 		if err := connector.Ack(batchID); err != nil {
-			return err
+			return fmt.Errorf("canal bridge: ack batch: %w", err)
 		}
 	}
 }
@@ -275,4 +290,3 @@ func maxInt(value, fallback int) int {
 	}
 	return fallback
 }
-

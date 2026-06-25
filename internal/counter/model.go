@@ -89,6 +89,7 @@ func BitOf(userID uint64) uint64 { return userID % ChunkSize }
 func BitmapKey(metric, entityType, entityID string, chunk uint64) string {
 	return fmt.Sprintf("bm:%s:%s:%s:%d", metric, entityType, entityID, chunk)
 }
+
 // SdsKey 生成实体在 Redis 中的 SDS 正式快照键。
 //
 // 格式: "cnt:{entityType}:{entityID}"

@@ -2,6 +2,7 @@ package counter
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -56,17 +57,22 @@ func NewCounterFailedMessageRepository(db *sqlx.DB) *CounterFailedMessageReposit
 	return &CounterFailedMessageRepository{db: db}
 }
 
-func (r *CounterFailedMessageRepository) Create(ctx context.Context, message *CounterFailedMessage) error {
-	if r == nil || r.db == nil || message == nil {
-		return nil
-	}
-	_, err := sqlx.NamedExecContext(ctx, r.db, `
+const insertFailureSQL = `
 INSERT INTO counter_failed_messages (
     stage, topic, message_key, entity_type, entity_id, metric, delta, payload, error_message, retry_count, status
 ) VALUES (
     :stage, :topic, :message_key, :entity_type, :entity_id, :metric, :delta, :payload, :error_message, :retry_count, :status
-)`, message)
-	return err
+)`
+
+func (r *CounterFailedMessageRepository) Create(ctx context.Context, message *CounterFailedMessage) error {
+	if r == nil || r.db == nil || message == nil {
+		return nil
+	}
+	_, err := sqlx.NamedExecContext(ctx, r.db, insertFailureSQL, message)
+	if err != nil {
+		return fmt.Errorf("record failed event: exec: %w", err)
+	}
+	return nil
 }
 
 func (r *CounterFailedMessageRepository) CreateBatch(ctx context.Context, messages []*CounterFailedMessage) error {
@@ -76,7 +82,7 @@ func (r *CounterFailedMessageRepository) CreateBatch(ctx context.Context, messag
 
 	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("record failed event: begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -84,13 +90,8 @@ func (r *CounterFailedMessageRepository) CreateBatch(ctx context.Context, messag
 		if message == nil {
 			continue
 		}
-		if _, err := sqlx.NamedExecContext(ctx, tx, `
-INSERT INTO counter_failed_messages (
-    stage, topic, message_key, entity_type, entity_id, metric, delta, payload, error_message, retry_count, status
-) VALUES (
-    :stage, :topic, :message_key, :entity_type, :entity_id, :metric, :delta, :payload, :error_message, :retry_count, :status
-)`, message); err != nil {
-			return err
+		if _, err := sqlx.NamedExecContext(ctx, tx, insertFailureSQL, message); err != nil {
+			return fmt.Errorf("record failed event: exec tx: %w", err)
 		}
 	}
 

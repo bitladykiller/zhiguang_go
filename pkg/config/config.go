@@ -34,7 +34,7 @@ type Config struct {
 	Counter       CounterConfig       `yaml:"counter"`
 	Cache         CacheConfig         `yaml:"cache"`
 	LLM           LLMConfig           `yaml:"llm"`
-	Relation  RelationConfig  `yaml:"relation"`
+	Relation      RelationConfig      `yaml:"relation"`
 }
 
 // ServerConfig 控制 HTTP 服务监听配置。
@@ -50,38 +50,21 @@ type DatabaseConfig struct {
 	User            string `yaml:"user"`
 	Password        string `yaml:"password"`
 	Name            string `yaml:"name"`
-	Charset         string `yaml:"charset"`           // default: utf8mb4
-	MaxOpenConns    int    `yaml:"max_open_conns"`    // max open connections
-	MaxIdleConns    int    `yaml:"max_idle_conns"`    // max idle connections
-	ConnMaxLifetime int    `yaml:"conn_max_lifetime"` // max connection lifetime in seconds
+	Charset         string `yaml:"charset"`            // default: utf8mb4
+	MaxOpenConns    int    `yaml:"max_open_conns"`     // max open connections
+	MaxIdleConns    int    `yaml:"max_idle_conns"`     // max idle connections
+	ConnMaxLifetime int    `yaml:"conn_max_lifetime"`  // max connection lifetime in seconds
 	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"` // max idle connection time in seconds
-	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`   // 连接超时（毫秒）
-	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`   // 读超时（毫秒）
-	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`  // 写超时（毫秒）
+	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`    // 连接超时（毫秒）
+	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`    // 读超时（毫秒）
+	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`   // 写超时（毫秒）
 }
 
 // DSN 根据配置字段拼装 MySQL 的数据源连接串。
-//
-// 功能：
-//
-//	将 DatabaseConfig 中的 Host、Port、User、Password、Name、Charset 等字段
-//	拼装为 MySQL DSN 格式的字符串。
-//
-// 返回值：
-//   - string: 格式为 "user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
-//
-// 注意：
-//   - 密码中包含特殊字符（如 @、: 等）可能造成连接串解析错误，
-//     但当前实现不做 URL 编码处理。
-//   - parseTime=True 告诉 MySQL 驱动程序将 DATE/DATETIME 类型自动解析为
-//     Go 的 time.Time 类型而非字符串。
-//   - loc=Local 使用本地时区解析时间。
-//   - 超时参数（dial_timeout_ms、read_timeout_ms、write_timeout_ms）会添加到 DSN 参数中。
 func (c *DatabaseConfig) DSN() string {
 	dsn := c.User + ":" + c.Password + "@tcp(" + c.Host + ":" +
 		itoa(c.Port) + ")/" + c.Name + "?charset=" + c.Charset + "&parseTime=True&loc=Local"
 
-	// 添加超时参数
 	if c.DialTimeoutMs > 0 {
 		dsn += "&timeout=" + itoa(c.DialTimeoutMs) + "ms"
 	}
@@ -123,18 +106,6 @@ type IDGeneratorConfig struct {
 }
 
 // Addr 返回 host:port 形式的 Redis 地址。
-//
-// 功能：
-//
-//	将 Host 和 Port 组合为标准 Redis 连接地址格式。
-//
-// 返回值：
-//   - string: 格式为 "host:port"
-//
-// 注意：
-//
-//	如果 Host 是域名（如 "redis.example.com"），直接拼接；
-//	如果 Host 是空字符串，返回 ":port"（go-redis 会尝试连接本地）。
 func (c *RedisConfig) Addr() string {
 	return c.Host + ":" + itoa(c.Port)
 }
@@ -156,7 +127,7 @@ type KafkaTopicsConfig struct {
 
 // ElasticsearchConfig 配置 Elasticsearch 集群连接信息。
 type ElasticsearchConfig struct {
-	Enabled    *bool    `yaml:"enabled"`    // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled    *bool    `yaml:"enabled"` // 显式功能开关，nil 表示跟随配置完整性判断
 	URIs       []string `yaml:"uris"`
 	IndexName  string   `yaml:"index_name"`  // primary search index
 	MaxRetries int      `yaml:"max_retries"` // 最大重试次数
@@ -182,13 +153,13 @@ type JwtConfig struct {
 
 // VerificationConfig 控制验证码相关行为。
 type VerificationConfig struct {
-	CodeLength        int            `yaml:"code_length"`
-	TTL               time.Duration  `yaml:"ttl"`
-	MaxAttempts       int            `yaml:"max_attempts"`
-	SendInterval      time.Duration  `yaml:"send_interval"`
-	DailyLimit        int            `yaml:"daily_limit"`
-	OperationTimeoutMs int           `yaml:"operation_timeout_ms"`
-	Lock              AuthLockConfig `yaml:"lock"`
+	CodeLength         int            `yaml:"code_length"`
+	TTL                time.Duration  `yaml:"ttl"`
+	MaxAttempts        int            `yaml:"max_attempts"`
+	SendInterval       time.Duration  `yaml:"send_interval"`
+	DailyLimit         int            `yaml:"daily_limit"`
+	OperationTimeoutMs int            `yaml:"operation_timeout_ms"`
+	Lock               AuthLockConfig `yaml:"lock"`
 }
 
 // PasswordConfig 约束密码强度策略。
@@ -212,7 +183,7 @@ type AuthLockConfig struct {
 
 // OssConfig 配置阿里云 OSS 对象存储。
 type OssConfig struct {
-	Enabled         *bool  `yaml:"enabled"`          // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled         *bool  `yaml:"enabled"` // 显式功能开关，nil 表示跟随配置完整性判断
 	Endpoint        string `yaml:"endpoint"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	AccessKeySecret string `yaml:"access_key_secret"`
@@ -297,50 +268,29 @@ type L2CacheConfig struct {
 
 // CacheItemConfig 定义单个缓存实例的 TTL 和最大容量。
 type CacheItemConfig struct {
-	TTLSeconds int `yaml:"ttl_seconds"`
-	MaxSize    int `yaml:"max_size"`
+	TTLSeconds         int `yaml:"ttl_seconds"`
+	MaxSize            int `yaml:"max_size"`
 	FreeCacheDefaultMB int `yaml:"free_cache_default_mb"`
 }
 
 // HotKeyConfig 控制热点键识别与 TTL 延长行为。
-//
-// 设计说明：
-// HotKeyDetector 使用本地 map + Redis Hash 实现滑动窗口热点检测。
-// 本地 map 在每次缓存访问时计数（无 Redis IO），
-// 每 BucketSizeSeconds 秒 flush 到 Redis Hash 完成跨实例聚合。
-// Redis Hash 的 field 是 6 秒窗口编号，value 是窗口内访问次数。
-// 判断 hotkey 时，HGETALL 该哈希并累加最近 BucketCount 个窗口的值。
-//
-// 建议配置（6s 窗口 × 10 = 60s 滑动窗口）：
-//
-//	BucketSizeSeconds: 6         # 每个窗口大小
-//	BucketCount: 10               # 窗口数量（总窗口 = 6s × 10 = 60s）
-//	FlushIntervalSeconds: 6       # flush 间隔，与 BucketSizeSeconds 一致
-//	StatTTLSeconds: 120           # Redis Hash 的 TTL（略大于窗口总时长）
-//	HotMarkTTLSeconds: 60         # hotkey:active 标记的 TTL
-//
-// 阈值说明（基于 60s 窗口的全局总访问次数）：
-//
-//	LevelLow(50):   0.83 QPS 以上 → TTL +20s
-//	LevelMedium(200):  3.3 QPS 以上 → TTL +60s
-//	LevelHigh(500):   8.3 QPS 以上 → TTL +120s
 type HotKeyConfig struct {
-	BucketSizeSeconds    int `yaml:"bucket_size_seconds"`    // 每个时间窗口的秒数（建议 6）
-	BucketCount          int `yaml:"bucket_count"`           // 窗口数量（建议 10，总窗口 = 6×10=60s）
-	FlushIntervalSeconds int `yaml:"flush_interval_seconds"` // flush 到 Redis 的间隔（建议 6）
-	StatTTLSeconds       int `yaml:"stat_ttl_seconds"`       // Redis Hash 的 TTL（建议 120）
-	LevelLow             int `yaml:"level_low"`              // LOW 热度阈值
-	LevelMedium          int `yaml:"level_medium"`           // MEDIUM 热度阈值
-	LevelHigh            int `yaml:"level_high"`             // HIGH 热度阈值
-	ExtendLowSeconds     int `yaml:"extend_low_seconds"`     // LOW 等级 TTL 延长量（秒）
-	ExtendMediumSeconds  int `yaml:"extend_medium_seconds"`  // MEDIUM 等级 TTL 延长量（秒）
-	ExtendHighSeconds    int `yaml:"extend_high_seconds"`    // HIGH 等级 TTL 延长量（秒）
-	HotMarkTTLSeconds    int `yaml:"hot_mark_ttl_seconds"`   // hotkey:active 标记的 TTL（建议 60）
+	BucketSizeSeconds    int `yaml:"bucket_size_seconds"`
+	BucketCount          int `yaml:"bucket_count"`
+	FlushIntervalSeconds int `yaml:"flush_interval_seconds"`
+	StatTTLSeconds       int `yaml:"stat_ttl_seconds"`
+	LevelLow             int `yaml:"level_low"`
+	LevelMedium          int `yaml:"level_medium"`
+	LevelHigh            int `yaml:"level_high"`
+	ExtendLowSeconds     int `yaml:"extend_low_seconds"`
+	ExtendMediumSeconds  int `yaml:"extend_medium_seconds"`
+	ExtendHighSeconds    int `yaml:"extend_high_seconds"`
+	HotMarkTTLSeconds    int `yaml:"hot_mark_ttl_seconds"`
 }
 
 // LLMConfig 配置 AI 模型连接信息。
 type LLMConfig struct {
-	Enabled   *bool          `yaml:"enabled"`   // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled   *bool          `yaml:"enabled"` // 显式功能开关，nil 表示跟随配置完整性判断
 	DeepSeek  DeepSeekConfig `yaml:"deepseek"`
 	OpenAI    OpenAIConfig   `yaml:"openai"`
 	TimeoutMs int            `yaml:"timeout_ms"` // HTTP 客户端超时（毫秒），默认 30000
@@ -364,9 +314,9 @@ type OpenAIConfig struct {
 
 // RelationConfig 配置关系服务。
 type RelationConfig struct {
-	BigVThreshold int                     `yaml:"big_v_threshold"`
+	BigVThreshold int                       `yaml:"big_v_threshold"`
 	TokenBucket   RelationTokenBucketConfig `yaml:"token_bucket"`
-	CacheTTL      int                     `yaml:"cache_ttl"`
+	CacheTTL      int                       `yaml:"cache_ttl"`
 }
 
 // RelationTokenBucketConfig 配置令牌桶限流。
@@ -375,42 +325,7 @@ type RelationTokenBucketConfig struct {
 	Rate     int `yaml:"rate"`
 }
 
-// TimeoutsConfig 配置全局超时参数。
-type TimeoutsConfig struct {
-	HTTPClientTimeoutMs  int `yaml:"http_client_timeout_ms"`  // LLM/OSS HTTP 客户端超时（毫秒）
-	OSSPresignExpiryMs   int `yaml:"oss_presign_expiry_ms"`   // OSS 预签名 URL 过期时间（毫秒）
-	CanalSocketTimeoutMs int `yaml:"canal_socket_timeout_ms"` // Canal Socket 超时（毫秒）
-	CanalIdleTimeoutMs   int `yaml:"canal_idle_timeout_ms"`   // Canal 空闲超时（毫秒）
-}
-
 // LoadConfig 从指定路径读取 YAML 配置文件并解析为 Config 结构体。
-//
-// 功能：
-//
-//	Step 1: 使用 os.ReadFile 读取 YAML 文件的完整内容。
-//	Step 2: 使用 yaml.Unmarshal 将 YAML 字节数据反序列化为 Config 结构体。
-//	Step 3: 返回解析后的 Config 指针。
-//
-// 参数：
-//   - path: YAML 配置文件的路径（如 "config/config-local.yaml"）
-//
-// 返回值：
-//   - *Config: 解析后的配置结构体
-//   - error: 文件读取失败或 YAML 格式非法时返回
-//
-// 函数调用说明：
-//   - os.ReadFile(path):
-//     Go 标准库函数，读取文件的完整内容为 []byte。
-//     在 Go 1.16 中引入，替代了旧的 ioutil.ReadFile。
-//   - yaml.Unmarshal(data, cfg):
-//     gopkg.in/yaml.v3 包的 YAML 反序列化函数。
-//     根据结构体上的 yaml tag 将 YAML 字段映射到结构体字段。
-//
-// 注意：
-//
-//	此函数不会校验配置中的字段值是否合理（如端口是否在有效范围、超时值是否为正等），
-//	调用方应在构造连接时自行检查或使用默认值。
-//	也不会设置默认值（如 charset 默认 utf8mb4），需要调用方自行处理。
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -426,34 +341,6 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // itoa 在不引入 strconv 的前提下把 int 转成字符串。
-//
-// 功能：
-//
-//	将整数 n 通过除 10 取余的方式逐位分解，然后拼接为字符串。
-//	支持负数和零。
-//
-// 参数：
-//   - n: 待转换的整数
-//
-// 返回值：
-//   - string: 整数的十进制字符串表示
-//
-// WHY 不使用 strconv.Itoa：
-//
-//	官方说明是在启动路径上减少一个标准库依赖能略微缩短编译时间。
-//	该函数仅在 DSN() 和 Addr() 中被调用，性能不敏感，
-//	因此自实现的开销可以忽略。
-//
-// 边界情况：
-//   - n == 0 → 返回 "0"
-//   - n < 0 → 返回 "-" + 绝对值的字符串（如 -42 → "-42"）
-//   - n == math.MinInt → 取绝对值会溢出，但该函数仅在端口号上使用，
-//     端口号始终为正数，因此不会有负值极端情况。
-//
-// 实现说明：
-//
-//	使用 [20]byte 固定长度数组作为缓冲区（最大 int64 十进制 19 位 + 负号），
-//	从尾部往前填充，最后切片转换为字符串。这比多次字符串拼接更高效。
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

@@ -93,7 +93,7 @@ func TestGetCounts_FetchSuccess(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	raw := make([]byte, SchemaLen*FieldSize)
@@ -116,7 +116,7 @@ func TestGetCounts_MissingKeyRebuilds(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	// Apply 2 likes and 1 fav before rebuilding
@@ -139,7 +139,7 @@ func TestGetCounts_InvalidMetricsFiltered(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	raw := make([]byte, SchemaLen*FieldSize)
@@ -163,7 +163,7 @@ func TestGetCounts_RedisError(t *testing.T) {
 	defer shutdown()
 
 	rdb.Close()
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 
 	_, err := svc.GetCounts(context.Background(), "post", "1", []string{"like"})
 	// After redis.Close(), the connection is closed.
@@ -183,7 +183,7 @@ func TestIsLiked_True(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	svc.Like(ctx, 1001, "post", "1")
@@ -201,7 +201,7 @@ func TestIsLiked_False(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	liked, err := svc.IsLiked(ctx, 1001, "post", "1")
@@ -217,7 +217,7 @@ func TestIsLiked_DifferentEntity(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	svc.Like(ctx, 1001, "post", "1")
@@ -232,7 +232,7 @@ func TestIsFaved_True(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	svc.Fav(ctx, 2002, "post", "1")
@@ -250,7 +250,7 @@ func TestIsFaved_False(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 
 	faved, err := svc.IsFaved(context.Background(), 2002, "post", "1")
 	if err != nil {
@@ -266,7 +266,7 @@ func TestIsLiked_RedisError(t *testing.T) {
 	defer shutdown()
 	rdb.Close()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	_, err := svc.IsLiked(context.Background(), 1, "post", "1")
 	if err == nil {
 		t.Fatal("expected error for closed redis")
@@ -281,7 +281,7 @@ func TestGetCountsBatch_Success(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	raw1 := make([]byte, SchemaLen*FieldSize)
@@ -316,7 +316,7 @@ func TestGetCountsBatch_SkipsMissingKeys(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	raw := make([]byte, SchemaLen*FieldSize)
@@ -343,7 +343,7 @@ func TestRebuildSds_FromScratch(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	svc.Like(ctx, 1001, "post", "1")
@@ -369,7 +369,7 @@ func TestRebuildSds_DoubleCheckSkipsRebuild(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	raw := make([]byte, SchemaLen*FieldSize)
@@ -389,7 +389,7 @@ func TestRebuildSds_BackoffBlocks(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	svc.escalateBackoff(ctx, "post", "1")
@@ -408,7 +408,7 @@ func TestBuildSnapshotFromBitmap_AllMetrics(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	for _, likeUser := range []uint64{1, 2, 3} {
@@ -447,7 +447,7 @@ func TestBitCountShards_Zero(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	total, err := svc.bitCountShards(context.Background(), "like", "post", "nonexistent")
 	if err != nil {
 		t.Fatalf("bitCountShards: %v", err)
@@ -461,7 +461,7 @@ func TestBitCountShards_CountsBits(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil)
 	ctx := context.Background()
 
 	svc.Like(ctx, 1001, "post", "1")

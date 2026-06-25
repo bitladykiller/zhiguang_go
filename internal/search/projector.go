@@ -120,7 +120,7 @@ func (p *KnowPostProjector) UpsertKnowPost(ctx context.Context, postID uint64) e
 		if err == sql.ErrNoRows {
 			return p.SoftDeleteKnowPost(ctx, postID)
 		}
-		return err
+		return fmt.Errorf("upsert know post: build document: %w", err)
 	}
 	return p.searchSvc.IndexDocument(ctx, doc)
 }

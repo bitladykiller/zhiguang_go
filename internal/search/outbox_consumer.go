@@ -2,13 +2,12 @@ package search
 
 import (
 	"context"
-	"time"
+	"fmt"
 
 	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/outbox"
-	"github.com/zhiguang/app/pkg/contextutil"
 )
 
 // OutboxConsumer 消费 canal-outbox 主题中的 search 事件，并驱动搜索索引更新。
@@ -25,6 +24,7 @@ type OutboxConsumer struct {
 	reader    *kafka.Reader
 	projector *KnowPostProjector
 	logger    *zap.Logger
+	component string
 }
 
 // NewOutboxConsumer 创建 OutboxConsumer 实例，消费 canal-outbox Kafka 主题中的搜索事件。
@@ -46,7 +46,7 @@ func NewOutboxConsumer(reader *kafka.Reader, projector *KnowPostProjector, logge
 	if reader == nil || projector == nil {
 		return nil
 	}
-	return &OutboxConsumer{reader: reader, projector: projector, logger: logger}
+	return &OutboxConsumer{reader: reader, projector: projector, logger: logger, component: "search"}
 }
 
 // Start 启动后台消费循环，持续从 Kafka 拉取消息并处理搜索索引的 outbox 事件。
@@ -73,37 +73,7 @@ func (c *OutboxConsumer) Start(ctx context.Context) {
 	if c == nil {
 		return
 	}
-	defer c.reader.Close()
-
-	for {
-		msg, err := c.reader.FetchMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			if c.logger != nil {
-				c.logger.Warn("fetch search outbox kafka message failed", zap.Error(err))
-			}
-			if !contextutil.Sleep(ctx, time.Second) {
-				return
-			}
-			continue
-		}
-
-		if err := c.handleMessage(ctx, msg.Value); err != nil {
-			if c.logger != nil {
-				c.logger.Warn("process search outbox kafka message failed", zap.Error(err))
-			}
-			if !contextutil.Sleep(ctx, time.Second) {
-				return
-			}
-			continue
-		}
-
-		if err := c.reader.CommitMessages(ctx, msg); err != nil && c.logger != nil {
-			c.logger.Warn("commit search outbox kafka message failed", zap.Error(err))
-		}
-	}
+	outbox.StartConsumerLoop(ctx, c.reader, c.handleMessage, c.logger, c.component)
 }
 
 // handleMessage 解析 Kafka 消息体中的 Canal outbox 事件数据，并调用 projector 执行索引更新。
@@ -127,16 +97,15 @@ func (c *OutboxConsumer) Start(ctx context.Context) {
 func (c *OutboxConsumer) handleMessage(ctx context.Context, value []byte) error {
 	rows, err := outbox.ExtractRows(value)
 	if err != nil {
-		return err
+		return fmt.Errorf("search outbox consumer: extract rows: %w", err)
 	}
 	for _, row := range rows {
 		if row.Payload == "" {
 			continue
 		}
 		if err := c.projector.ProjectPayload(ctx, []byte(row.Payload)); err != nil {
-			return err
+			return fmt.Errorf("search outbox consumer: project payload: %w", err)
 		}
 	}
 	return nil
 }
-

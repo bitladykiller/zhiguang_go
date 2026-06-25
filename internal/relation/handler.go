@@ -1,6 +1,7 @@
 package relation
 
 import (
+	"context"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -66,7 +67,7 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 	ok, err := h.svc.Follow(c.Request.Context(), userID, req.ToUserID)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 	if !ok {
@@ -95,7 +96,7 @@ func (h *RelationHandler) Unfollow(c *gin.Context) {
 	ok, err := h.svc.Unfollow(c.Request.Context(), userID, req.ToUserID)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 	response.Success(c, gin.H{"success": true, "changed": ok})
@@ -119,7 +120,7 @@ func (h *RelationHandler) Status(c *gin.Context) {
 	status, err := h.svc.RelationStatus(c.Request.Context(), userID, otherID)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 	response.Success(c, gin.H{"status": status})
@@ -136,7 +137,7 @@ func (h *RelationHandler) Following(c *gin.Context) {
 	data, err := h.svc.Following(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 	response.Success(c, gin.H{"data": data})
@@ -153,10 +154,24 @@ func (h *RelationHandler) Followers(c *gin.Context) {
 	data, err := h.svc.Followers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 	response.Success(c, gin.H{"data": data})
+}
+
+func (h *RelationHandler) cursorList(c *gin.Context, svcMethod func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)) {
+	userID := queryUint64(c, "user_id")
+	limit := httputil.QueryInt(c, "limit", 20)
+	cursor := queryInt64(c, "cursor")
+
+	data, nextCursor, err := svcMethod(c.Request.Context(), userID, limit, cursor)
+	if err != nil {
+		middleware.RecordError(c, err)
+		response.Error(c, errcode.ErrInternal)
+		return
+	}
+	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
 }
 
 // FollowingCursor 处理 GET /relations/following/cursor?user_id=12345&limit=20&cursor=0。
@@ -166,34 +181,14 @@ func (h *RelationHandler) Followers(c *gin.Context) {
 // 游标基于关注时间的毫秒时间戳。cursor=0 表示从头开始（获取最新关注）。
 // 响应中包含 next_cursor 可用于后续请求。
 func (h *RelationHandler) FollowingCursor(c *gin.Context) {
-	userID := queryUint64(c, "user_id")
-	limit := httputil.QueryInt(c, "limit", 20)
-	cursor := queryInt64(c, "cursor")
-
-	data, nextCursor, err := h.svc.FollowingCursor(c.Request.Context(), userID, limit, cursor)
-	if err != nil {
-		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
-		return
-	}
-	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
+	h.cursorList(c, h.svc.FollowingCursor)
 }
 
 // FollowersCursor 处理 GET /relations/followers/cursor?user_id=12345&limit=20&cursor=0。
 //
 // 功能：使用游标分页查询某用户的粉丝列表。
 func (h *RelationHandler) FollowersCursor(c *gin.Context) {
-	userID := queryUint64(c, "user_id")
-	limit := httputil.QueryInt(c, "limit", 20)
-	cursor := queryInt64(c, "cursor")
-
-	data, nextCursor, err := h.svc.FollowersCursor(c.Request.Context(), userID, limit, cursor)
-	if err != nil {
-		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
-		return
-	}
-	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
+	h.cursorList(c, h.svc.FollowersCursor)
 }
 
 // queryInt64 从查询参数中解析 int64 值，缺失或非法时返回 0。

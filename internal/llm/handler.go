@@ -2,9 +2,11 @@ package llm
 
 import (
 	"fmt"
+	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
@@ -53,11 +55,11 @@ func (h *LlmHandler) RegisterRoutes(r *gin.RouterGroup) {
 func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 	_, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Fail(c, 401, "unauthorized")
+		response.Fail(c, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	if h.descSvc == nil {
-		response.Fail(c, 503, "llm description service is unavailable")
+		response.Fail(c, http.StatusServiceUnavailable, "llm description service is unavailable")
 		return
 	}
 
@@ -66,14 +68,14 @@ func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 		Content string `json:"content" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Fail(c, http.StatusBadRequest, "invalid request")
 		return
 	}
 
 	desc, err := h.descSvc.SuggestDescription(c.Request.Context(), req.Title, req.Content)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 
@@ -115,17 +117,17 @@ func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 func (h *LlmHandler) RagQuery(c *gin.Context) {
 	_, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Fail(c, 401, "unauthorized")
+		response.Fail(c, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	if h.ragSvc == nil {
-		response.Fail(c, 503, "rag query service is unavailable")
+		response.Fail(c, http.StatusServiceUnavailable, "rag query service is unavailable")
 		return
 	}
 
 	postID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid post id")
+		response.Fail(c, http.StatusBadRequest, "invalid post id")
 		return
 	}
 
@@ -133,7 +135,7 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 		Question string `json:"question" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Fail(c, http.StatusBadRequest, "invalid request")
 		return
 	}
 
@@ -141,7 +143,7 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.WriteHeader(200)
+	c.Writer.WriteHeader(http.StatusOK)
 
 	ctx := c.Request.Context()
 	streamChan := make(chan string, 10)
@@ -149,7 +151,10 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				streamChan <- fmt.Sprintf("data: {\"error\": \"internal server error\"}\n\n")
+				select {
+				case streamChan <- fmt.Sprintf("data: {\"error\": \"internal server error\"}\n\n"):
+				default:
+				}
 				streamChan <- "data: [DONE]\n\n"
 				close(streamChan)
 			}
@@ -157,7 +162,10 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 		h.ragSvc.Query(ctx, postID, req.Question, streamChan)
 	}()
 
-	flusher, _ := c.Writer.(interface{ Flush() })
+	flusher, ok := c.Writer.(interface{ Flush() })
+	if !ok {
+		// ResponseWriter does not support Flush; SSE will work but without real-time push
+	}
 
 	for token := range streamChan {
 		fmt.Fprint(c.Writer, token)

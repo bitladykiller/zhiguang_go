@@ -133,7 +133,11 @@ func TestParseDetail_EmptySlice(t *testing.T) {
 // EnrichDetail 测试
 // ============================================================================
 
-type stubCounter struct{ counts map[string]int32; liked bool; faved bool }
+type stubCounter struct {
+	counts map[string]int32
+	liked  bool
+	faved  bool
+}
 
 func (s *stubCounter) GetCounts(_ context.Context, _, _ string, _ []string) (map[string]int32, error) {
 	if s.counts == nil {
@@ -225,8 +229,8 @@ func TestToAppErr_PlainError(t *testing.T) {
 	if result.Code != errcode.CodeInternalError {
 		t.Errorf("code = %d, want %d", result.Code, errcode.CodeInternalError)
 	}
-	if result.Message != "some db error" {
-		t.Errorf("message = %q, want %q", result.Message, "some db error")
+	if result.Message != "internal server error" {
+		t.Errorf("message = %q, want %q", result.Message, "internal server error")
 	}
 }
 

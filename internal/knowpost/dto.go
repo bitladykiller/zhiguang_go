@@ -25,8 +25,8 @@ type KnowPostDetailResponse struct {
 	AuthorTagJson  *string    `json:"author_tag_json"`
 	LikeCount      int64      `json:"like_count"`
 	FavoriteCount  int64      `json:"favorite_count"`
-	Liked          *bool      `json:"liked,omitempty"`    // 当前用户是否已点赞（动态补齐，不入缓存）
-	Faved          *bool      `json:"faved,omitempty"`    // 当前用户是否已收藏（动态补齐，不入缓存）
+	Liked          *bool      `json:"liked,omitempty"` // 当前用户是否已点赞（动态补齐，不入缓存）
+	Faved          *bool      `json:"faved,omitempty"` // 当前用户是否已收藏（动态补齐，不入缓存）
 	IsTop          bool       `json:"is_top"`
 	Visible        string     `json:"visible"`
 	Type           string     `json:"type"`
@@ -46,9 +46,24 @@ type FeedItemResponse struct {
 	TagJson        *string  `json:"tag_json"`
 	LikeCount      int64    `json:"like_count"`
 	FavoriteCount  int64    `json:"favorite_count"`
-	Liked          *bool    `json:"liked,omitempty"`     // 当前用户是否点赞（动态补齐）
-	Faved          *bool    `json:"faved,omitempty"`     // 当前用户是否收藏（动态补齐）
-	IsTop          *bool    `json:"is_top,omitempty"`    // 仅"我的已发布"列表包含此字段
+	Liked          *bool    `json:"liked,omitempty"`  // 当前用户是否点赞（动态补齐）
+	Faved          *bool    `json:"faved,omitempty"`  // 当前用户是否收藏（动态补齐）
+	IsTop          *bool    `json:"is_top,omitempty"` // 仅"我的已发布"列表包含此字段
+}
+
+// ApplyLikedFaved fills in the Liked and Faved pointer fields for this item
+// from the provided batch lookup maps. Nil maps are safely ignored.
+func (item *FeedItemResponse) ApplyLikedFaved(likedMap, favedMap map[string]bool) {
+	if likedMap != nil {
+		if l, ok := likedMap[item.ID]; ok {
+			item.Liked = &l
+		}
+	}
+	if favedMap != nil {
+		if f, ok := favedMap[item.ID]; ok {
+			item.Faved = &f
+		}
+	}
 }
 
 // FeedPageResponse 表示带分页信息的 feed 列表。

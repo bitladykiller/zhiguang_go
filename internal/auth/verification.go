@@ -91,73 +91,100 @@ func NewVerificationService(redisClient *redis.Client, cfg *config.VerificationC
 //   - 在发送间隔内调用时不会生成新验证码，但返回与成功相同的结果（避免暴露限流细节给调用方）
 //   - 每日上限计数键（prefixDaily）按日期后缀组织，每天凌晨自动重置
 func (s *VerificationService) SendCode(ctx context.Context, scene VerificationScene, identifier string) (*SendCodeResult, error) {
-	if s.operationTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.operationTimeout)
-		defer cancel()
+	ctx, cancel := s.applyOperationTimeout(ctx)
+	defer cancel()
+
+	lock, err := s.acquireSendDistributedLock(ctx, scene, identifier)
+	if err != nil {
+		return nil, fmt.Errorf("send code: acquire lock: %w", err)
+	}
+	defer lock.Release()
+
+	withinInterval, err := s.isWithinSendInterval(ctx, scene, identifier)
+	if err != nil {
+		return nil, fmt.Errorf("send code: check interval: %w", err)
+	}
+	if withinInterval {
+		return &SendCodeResult{Identifier: identifier, Scene: scene, ExpireSeconds: int(s.config.TTL.Seconds())}, nil
 	}
 
-	lock, err := redislock.AcquireWithRetry(
+	exceedingLimit, err := s.isDailyLimitExceeded(ctx, scene, identifier)
+	if err != nil {
+		return nil, fmt.Errorf("send code: get daily count: %w", err)
+	}
+	if exceedingLimit {
+		return nil, fmt.Errorf("daily limit exceeded")
+	}
+
+	code, err := generateCode(s.config.CodeLength)
+	if err != nil {
+		return nil, fmt.Errorf("send code: generate code: %w", err)
+	}
+	if err := s.storeCodeAndResetAttempts(ctx, scene, identifier, code); err != nil {
+		return nil, err
+	}
+
+	return &SendCodeResult{Identifier: identifier, Scene: scene, ExpireSeconds: int(s.config.TTL.Seconds())}, nil
+}
+
+func (s *VerificationService) applyOperationTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.operationTimeout > 0 {
+		return context.WithTimeout(ctx, s.operationTimeout)
+	}
+	return ctx, func() {}
+}
+
+func (s *VerificationService) acquireSendDistributedLock(ctx context.Context, scene VerificationScene, identifier string) (*redislock.Lock, error) {
+	return redislock.AcquireWithRetry(
 		ctx,
 		s.redis,
 		verificationFlowLockKey(scene, identifier),
 		s.sendLockOptions,
 		s.sendLockRetryWait,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("send code: acquire lock: %w", err)
-	}
-	defer lock.Release()
+}
 
-	// 检查发送间隔，防止短信轰炸
+func (s *VerificationService) isWithinSendInterval(ctx context.Context, scene VerificationScene, identifier string) (bool, error) {
 	intervalKey := fmt.Sprintf("%s%s:%s", prefixInterval, scene, identifier)
 	exists, err := s.redis.Exists(ctx, intervalKey).Result()
 	if err != nil {
-		return nil, fmt.Errorf("send code: check interval: %w", err)
+		return false, err
 	}
-	if exists > 0 {
-		// 对调用方保持正常返回，避免暴露限流细节
-		return &SendCodeResult{Identifier: identifier, Scene: scene, ExpireSeconds: int(s.config.TTL.Seconds())}, nil
-	}
+	return exists > 0, nil
+}
 
-	// 检查每日发送上限
+func (s *VerificationService) isDailyLimitExceeded(ctx context.Context, scene VerificationScene, identifier string) (bool, error) {
 	dailyKey := fmt.Sprintf("%s%s:%s:%s", prefixDaily, scene, identifier, time.Now().Format("20060102"))
 	dailyCount, err := s.redis.Get(ctx, dailyKey).Int()
 	if err != nil && err != redis.Nil {
-		return nil, fmt.Errorf("send code: get daily count: %w", err)
+		return false, err
 	}
-	if dailyCount >= s.config.DailyLimit {
-		return nil, fmt.Errorf("daily limit exceeded")
-	}
+	return dailyCount >= s.config.DailyLimit, nil
+}
 
-	// 生成验证码
-	code := generateCode(s.config.CodeLength)
-
-	// 通过 pipeline 批量写入 Redis（验证码 + 间隔锁 + 日计数原子递增）
+func (s *VerificationService) storeCodeAndResetAttempts(ctx context.Context, scene VerificationScene, identifier, code string) error {
 	codeKey := fmt.Sprintf("%s%s:%s", prefixCode, scene, identifier)
+	intervalKey := fmt.Sprintf("%s%s:%s", prefixInterval, scene, identifier)
+
 	pipe := s.redis.Pipeline()
 	pipe.Set(ctx, codeKey, code, s.config.TTL)
 	pipe.Set(ctx, intervalKey, "1", s.config.SendInterval)
 
-	if _, err = pipe.Exec(ctx); err != nil {
-		return nil, fmt.Errorf("send code: pipeline exec: %w", err)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("send code: pipeline exec: %w", err)
 	}
 
-	// 日计数使用 Lua 脚本原子递增 + 首次设置过期，避免 INCR + EXPIRE 竞态
-	if _, err = incrAndExpireScript.Run(ctx, s.redis, []string{dailyKey}, int(24*time.Hour/time.Second)).Result(); err != nil {
-		return nil, fmt.Errorf("send code: incr daily: %w", err)
+	dailyKey := fmt.Sprintf("%s%s:%s:%s", prefixDaily, scene, identifier, time.Now().Format("20060102"))
+	if _, err := incrAndExpireScript.Run(ctx, s.redis, []string{dailyKey}, int(24*time.Hour/time.Second)).Result(); err != nil {
+		return fmt.Errorf("send code: incr daily: %w", err)
 	}
 
-	// 重置尝试次数计数器（新验证码意味着新的尝试配额）
 	attemptKey := fmt.Sprintf("%s%s:%s", prefixAttempts, scene, identifier)
 	if err := s.redis.Del(ctx, attemptKey).Err(); err != nil {
 		zap.L().Warn("failed to reset attempt counter", zap.String("attemptKey", attemptKey), zap.Error(err))
 	}
 
-	// 生产环境应走短信/邮件渠道；当前先输出到标准输出便于联调。
-	// fmt.Printf("[VERIFICATION] Scene=%s Identifier=%s Code=%s\n", scene, identifier, code)
-
-	return &SendCodeResult{Identifier: identifier, Scene: scene, ExpireSeconds: int(s.config.TTL.Seconds())}, nil
+	return nil
 }
 
 // Verify 校验用户输入的验证码是否与 Redis 中保存的一致。
@@ -261,22 +288,24 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 //
 // 返回值:
 //   - string: 长度为 length 的纯数字字符串
-//
-// 边界情况:
-//   - length <= 0 时返回空字符串（调用方保证传入合法参数）
-//   - crypto/rand 读取失败时 n 为 0，极端情况下可能影响安全性，但 rand.Int 错误已被忽略
-//     （实际生产中 /dev/urandom 极少失败，忽略错误以简化代码）
-func generateCode(length int) string {
+//   - error: crypto/rand 连续失败 3 次后返回 error，由调用方决定降级策略
+func generateCode(length int) (string, error) {
 	code := make([]byte, length)
+	const maxRetries = 3
+	failures := 0
 	for i := range code {
 		n, err := rand.Int(rand.Reader, big.NewInt(10))
-	if err != nil {
-		zap.L().Warn("failed to generate secure random code digit", zap.Error(err))
-		n = big.NewInt(0)
+		if err != nil {
+			failures++
+			zap.L().Warn("failed to generate secure random code digit", zap.Error(err))
+			if failures > maxRetries {
+				return "", fmt.Errorf("crypto/rand repeatedly failed after %d attempts", failures)
+			}
+			n = big.NewInt(0)
+		}
+		code[i] = byte('0' + n.Int64())
 	}
-	code[i] = byte('0' + n.Int64())
-	}
-	return string(code)
+	return string(code), nil
 }
 
 // fail 构造一个失败状态的验证码检查结果。

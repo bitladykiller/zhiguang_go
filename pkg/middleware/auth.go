@@ -2,14 +2,6 @@
 //   - JWT 鉴权（提取并校验 Bearer Token）
 //   - CORS（跨域资源共享）
 //   - 请求日志（基于 zap 的结构化日志）
-//
-// 使用方式：
-//
-//	r.Use(middleware.LoggerMiddleware(logger))
-//	r.Use(middleware.CorsMiddleware())
-//	r.Use(middleware.OptionalAuthMiddleware(jwtSvc))
-//
-// GET /api/v1/me 这类要求登录的接口可以用 AuthMiddleware 单独包裹。
 package middleware
 
 import (

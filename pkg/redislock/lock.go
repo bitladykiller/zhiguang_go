@@ -9,6 +9,7 @@ package redislock
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -155,7 +156,9 @@ func (l *Lock) Release() {
 
 	releaseCtx, cancel := context.WithTimeout(context.Background(), l.options.OpTimeout)
 	defer cancel()
-	_, _ = releaseScript.Run(releaseCtx, l.client, []string{l.lockKey}, l.token).Result()
+	if _, err := releaseScript.Run(releaseCtx, l.client, []string{l.lockKey}, l.token).Result(); err != nil {
+		log.Printf("redislock: Release() failed to run release script for key %q: %v", l.lockKey, err)
+	}
 }
 
 // watchdog 在业务仍持有锁期间周期性续租。

@@ -82,7 +82,7 @@ func (p *CounterEventProducer) Publish(ctx context.Context, event *CounterEvent)
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
-		return err
+		return fmt.Errorf("counter event publisher: marshal: %w", err)
 	}
 	return p.writer.WriteMessages(ctx, kafka.Message{
 		Key:   []byte(event.EntityType + ":" + event.EntityID),

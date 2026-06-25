@@ -4,16 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jmoiron/sqlx"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/outbox"
+)
+
+const (
+	followTokenBucketCapacity = 10
+	followTokenBucketRate     = 1
 )
 
 // Follow 创建一条关注关系。
 func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	rlKey := fmt.Sprintf("rl:follow:%d", fromUserID)
-	allowed, err := s.redis.Eval(ctx, TOKEN_BUCKET_LUA, []string{rlKey}, 10, 1).Int()
+	allowed, err := s.redis.Eval(ctx, TOKEN_BUCKET_LUA, []string{rlKey}, followTokenBucketCapacity, followTokenBucketRate, time.Now().UnixMilli()).Int()
 	if err != nil || allowed == 0 {
 		return false, nil
 	}
@@ -27,10 +34,10 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 	if err := outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
 		txRepo := s.repo.WithDB(tx)
 		if err := txRepo.UpsertFollowing(ctx, id, fromUserID, toUserID, 1); err != nil {
-			return err
+			return fmt.Errorf("upsert following: %w", err)
 		}
 		if err := txRepo.UpsertFollower(ctx, reverseID, toUserID, fromUserID, 1); err != nil {
-			return err
+			return fmt.Errorf("upsert follower: %w", err)
 		}
 		return nil
 	}, []outbox.OutboxEvent{{
@@ -56,16 +63,19 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 		txRepo := s.repo.WithDB(tx)
 		affected, err := txRepo.CancelFollowing(ctx, fromUserID, toUserID)
 		if err != nil {
-			return err
+			return fmt.Errorf("cancel following: %w", err)
 		}
 		if affected == 0 {
 			return errNothingToCancel
 		}
 		reverseAffected, err := txRepo.CancelFollower(ctx, toUserID, fromUserID)
 		if err != nil {
-			return err
+			return fmt.Errorf("cancel follower: %w", err)
 		}
 		if reverseAffected == 0 {
+			s.logger.Warn("unfollow: cancel follower affected 0 rows",
+				zap.Uint64("toUserID", toUserID),
+				zap.Uint64("fromUserID", fromUserID))
 		}
 		return nil
 	}, []outbox.OutboxEvent{{

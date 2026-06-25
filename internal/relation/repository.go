@@ -2,6 +2,7 @@ package relation
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -36,7 +37,10 @@ INSERT INTO following (id, from_user_id, to_user_id, rel_status, created_at, upd
 VALUES (?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(updated_at)
 `, id, fromUserID, toUserID, status, now, now)
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert following: %w", err)
+	}
+	return nil
 }
 
 // UpsertFollower INSERT ... ON DUPLICATE KEY UPDATE，使用 ExecContext。
@@ -47,7 +51,10 @@ INSERT INTO follower (id, to_user_id, from_user_id, rel_status, created_at, upda
 VALUES (?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(updated_at)
 `, id, toUserID, fromUserID, status, now, now)
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert follower: %w", err)
+	}
+	return nil
 }
 
 // CancelFollowing 取消正向关注（rel_status → 0），使用 ExecContext。

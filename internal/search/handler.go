@@ -2,6 +2,7 @@ package search
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
@@ -90,7 +91,7 @@ func (h *SearchHandler) Search(c *gin.Context) {
 	result, err := h.svc.Search(c.Request.Context(), keyword, size, tags, after, currentUserID)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 	response.Success(c, result)
@@ -125,7 +126,7 @@ func (h *SearchHandler) Suggest(c *gin.Context) {
 	suggestions, err := h.svc.Suggest(c.Request.Context(), prefix, size)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, errcode.ErrInternal)
 		return
 	}
 	response.Success(c, gin.H{"items": suggestions})

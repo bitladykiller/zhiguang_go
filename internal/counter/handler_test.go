@@ -271,8 +271,8 @@ func TestGetCounts_MissingParams(t *testing.T) {
 	handler := NewCounterHandler(&stubHandlerCounter{})
 
 	tests := []struct {
-		name   string
-		query  string
+		name  string
+		query string
 	}{
 		{"no entity_type", "entity_id=1"},
 		{"no entity_id", "entity_type=post"},

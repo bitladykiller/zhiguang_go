@@ -14,14 +14,14 @@ import (
 
 // stubService implements RelationServiceInterface for handler testing.
 type stubService struct {
-	followFn           func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
-	unfollowFn         func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
-	followingFn        func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
-	followersFn        func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
-	followingCursorFn  func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
-	followersCursorFn  func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
-	relationStatusFn   func(ctx context.Context, fromUserID, toUserID uint64) (string, error)
-	isFollowingFn      func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
+	followFn          func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
+	unfollowFn        func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
+	followingFn       func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
+	followersFn       func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
+	followingCursorFn func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	followersCursorFn func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	relationStatusFn  func(ctx context.Context, fromUserID, toUserID uint64) (string, error)
+	isFollowingFn     func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
 }
 
 func (s *stubService) Follow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
@@ -88,489 +88,506 @@ func perform(r *gin.Engine, method, path string, body []byte) *httptest.Response
 	return w
 }
 
-// ============================================================================
-// Follow handler tests
-// ============================================================================
-
-func TestHandler_Follow_Success(t *testing.T) {
-	stub := &stubService{
-		followFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return true, nil
-		},
+// mustMarshal is a test helper that JSON-encodes v or panics.
+func mustMarshal(v interface{}) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
 	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	body, _ := json.Marshal(FollowRequest{ToUserID: 2})
-	w := perform(r, "POST", "/relations/follow", body)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandler_Follow_Unauthorized(t *testing.T) {
-	stub := &stubService{
-		followFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return true, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 0)
-
-	body, _ := json.Marshal(FollowRequest{ToUserID: 2})
-	w := perform(r, "POST", "/relations/follow", body)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
-}
-
-func TestHandler_Follow_Self(t *testing.T) {
-	stub := &stubService{
-		followFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return true, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	body, _ := json.Marshal(FollowRequest{ToUserID: 1001})
-	w := perform(r, "POST", "/relations/follow", body)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestHandler_Follow_RateLimited(t *testing.T) {
-	stub := &stubService{
-		followFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return false, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	body, _ := json.Marshal(FollowRequest{ToUserID: 2})
-	w := perform(r, "POST", "/relations/follow", body)
-
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %d", w.Code)
-	}
-}
-
-func TestHandler_Follow_InternalError(t *testing.T) {
-	stub := &stubService{
-		followFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return false, errors.New("db error")
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	body, _ := json.Marshal(FollowRequest{ToUserID: 2})
-	w := perform(r, "POST", "/relations/follow", body)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Code)
-	}
-}
-
-func TestHandler_Follow_InvalidBody(t *testing.T) {
-	stub := &stubService{
-		followFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return true, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "POST", "/relations/follow", []byte(`{invalid}`))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestHandler_Follow_EmptyBody(t *testing.T) {
-	stub := &stubService{
-		followFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return true, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "POST", "/relations/follow", nil)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
+	return b
 }
 
 // ============================================================================
-// Unfollow handler tests
+// Follow handler tests (table-driven)
 // ============================================================================
 
-func TestHandler_Unfollow_Success(t *testing.T) {
-	stub := &stubService{
-		unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return true, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	body, _ := json.Marshal(FollowRequest{ToUserID: 2})
-	w := perform(r, "POST", "/relations/unfollow", body)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
+// followTestCase 定义 Follow / Unfollow 测试的通用结构。
+type followTestCase struct {
+	name       string
+	stub       *stubService
+	userID     uint64
+	reqBody    []byte
+	wantStatus int
 }
 
-func TestHandler_Unfollow_AlreadyUnfollowed(t *testing.T) {
-	stub := &stubService{
-		unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return false, nil
+func TestHandler_Follow(t *testing.T) {
+	tests := []followTestCase{
+		{
+			name: "success",
+			stub: &stubService{
+				followFn: func(_ context.Context, _, _ uint64) (bool, error) { return true, nil },
+			},
+			userID:     1001,
+			reqBody:    mustMarshal(FollowRequest{ToUserID: 2}),
+			wantStatus: http.StatusOK,
 		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	body, _ := json.Marshal(FollowRequest{ToUserID: 2})
-	w := perform(r, "POST", "/relations/unfollow", body)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandler_Unfollow_Unauthorized(t *testing.T) {
-	stub := &stubService{
-		unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return true, nil
+		{
+			name: "unauthorized",
+			stub: &stubService{
+				followFn: func(_ context.Context, _, _ uint64) (bool, error) { return true, nil },
+			},
+			userID:     0,
+			reqBody:    mustMarshal(FollowRequest{ToUserID: 2}),
+			wantStatus: http.StatusUnauthorized,
 		},
-	}
-	_, r := setupHandlerTest(stub, 0)
-
-	body, _ := json.Marshal(FollowRequest{ToUserID: 2})
-	w := perform(r, "POST", "/relations/unfollow", body)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
-}
-
-func TestHandler_Unfollow_InternalError(t *testing.T) {
-	stub := &stubService{
-		unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return false, errors.New("db error")
+		{
+			name: "self",
+			stub: &stubService{
+				followFn: func(_ context.Context, _, _ uint64) (bool, error) { return true, nil },
+			},
+			userID:     1001,
+			reqBody:    mustMarshal(FollowRequest{ToUserID: 1001}),
+			wantStatus: http.StatusBadRequest,
 		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	body, _ := json.Marshal(FollowRequest{ToUserID: 2})
-	w := perform(r, "POST", "/relations/unfollow", body)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Code)
-	}
-}
-
-func TestHandler_Unfollow_InvalidBody(t *testing.T) {
-	stub := &stubService{
-		unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) {
-			return true, nil
+		{
+			name: "rate_limited",
+			stub: &stubService{
+				followFn: func(_ context.Context, _, _ uint64) (bool, error) { return false, nil },
+			},
+			userID:     1001,
+			reqBody:    mustMarshal(FollowRequest{ToUserID: 2}),
+			wantStatus: http.StatusTooManyRequests,
 		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "POST", "/relations/unfollow", []byte(`not json`))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-// ============================================================================
-// Status handler tests
-// ============================================================================
-
-func TestHandler_Status_Success(t *testing.T) {
-	tests := []struct {
-		name   string
-		status string
-	}{
-		{"mutual", "mutual"},
-		{"following", "following"},
-		{"followed", "followed"},
-		{"none", "none"},
+		{
+			name: "internal_error",
+			stub: &stubService{
+				followFn: func(_ context.Context, _, _ uint64) (bool, error) { return false, errors.New("db error") },
+			},
+			userID:     1001,
+			reqBody:    mustMarshal(FollowRequest{ToUserID: 2}),
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "invalid_body",
+			stub: &stubService{
+				followFn: func(_ context.Context, _, _ uint64) (bool, error) { return true, nil },
+			},
+			userID:     1001,
+			reqBody:    []byte(`{invalid}`),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "empty_body",
+			stub: &stubService{
+				followFn: func(_ context.Context, _, _ uint64) (bool, error) { return true, nil },
+			},
+			userID:     1001,
+			reqBody:    nil,
+			wantStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stub := &stubService{
-				relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) {
-					return tt.status, nil
-				},
-			}
-			_, r := setupHandlerTest(stub, 1001)
-
-			w := perform(r, "GET", "/relations/status?other_id=2", nil)
-
-			if w.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d", w.Code)
+			_, r := setupHandlerTest(tt.stub, tt.userID)
+			w := perform(r, "POST", "/relations/follow", tt.reqBody)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d", tt.wantStatus, w.Code)
 			}
 		})
 	}
 }
 
-func TestHandler_Status_Unauthorized(t *testing.T) {
-	stub := &stubService{
-		relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) {
-			return "none", nil
+// ============================================================================
+// Unfollow handler tests (table-driven)
+// ============================================================================
+
+func TestHandler_Unfollow(t *testing.T) {
+	tests := []followTestCase{
+		{
+			name: "success",
+			stub: &stubService{
+				unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) { return true, nil },
+			},
+			userID:     1001,
+			reqBody:    mustMarshal(FollowRequest{ToUserID: 2}),
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "already_unfollowed",
+			stub: &stubService{
+				unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) { return false, nil },
+			},
+			userID:     1001,
+			reqBody:    mustMarshal(FollowRequest{ToUserID: 2}),
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "unauthorized",
+			stub: &stubService{
+				unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) { return true, nil },
+			},
+			userID:     0,
+			reqBody:    mustMarshal(FollowRequest{ToUserID: 2}),
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "internal_error",
+			stub: &stubService{
+				unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) { return false, errors.New("db error") },
+			},
+			userID:     1001,
+			reqBody:    mustMarshal(FollowRequest{ToUserID: 2}),
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "invalid_body",
+			stub: &stubService{
+				unfollowFn: func(_ context.Context, _, _ uint64) (bool, error) { return true, nil },
+			},
+			userID:     1001,
+			reqBody:    []byte(`not json`),
+			wantStatus: http.StatusBadRequest,
 		},
 	}
-	_, r := setupHandlerTest(stub, 0)
 
-	w := perform(r, "GET", "/relations/status?other_id=2", nil)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
-}
-
-func TestHandler_Status_InvalidOtherID(t *testing.T) {
-	stub := &stubService{
-		relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) {
-			return "none", nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/status?other_id=abc", nil)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestHandler_Status_MissingOtherID(t *testing.T) {
-	stub := &stubService{
-		relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) {
-			return "none", nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/status", nil)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestHandler_Status_InternalError(t *testing.T) {
-	stub := &stubService{
-		relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) {
-			return "", errors.New("db error")
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/status?other_id=2", nil)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Code)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, r := setupHandlerTest(tt.stub, tt.userID)
+			w := perform(r, "POST", "/relations/unfollow", tt.reqBody)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
 	}
 }
 
 // ============================================================================
-// Following handler tests (offset-based)
+// Status handler tests (table-driven)
 // ============================================================================
 
-func TestHandler_Following_Success(t *testing.T) {
-	stub := &stubService{
-		followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
-			return []uint64{10, 20, 30}, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/following?user_id=1&limit=10&offset=0", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
+// statusTestCase 定义 Status 测试的结构。
+type statusTestCase struct {
+	name       string
+	stub       *stubService
+	userID     uint64
+	query      string
+	wantStatus int
 }
 
-func TestHandler_Following_DefaultParams(t *testing.T) {
-	stub := &stubService{
-		followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
-			return []uint64{}, nil
+func TestHandler_Status(t *testing.T) {
+	tests := []statusTestCase{
+		{
+			name: "mutual",
+			stub: &stubService{
+				relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) { return "mutual", nil },
+			},
+			userID:     1001,
+			query:      "?other_id=2",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "following",
+			stub: &stubService{
+				relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) { return "following", nil },
+			},
+			userID:     1001,
+			query:      "?other_id=2",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "followed",
+			stub: &stubService{
+				relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) { return "followed", nil },
+			},
+			userID:     1001,
+			query:      "?other_id=2",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "none",
+			stub: &stubService{
+				relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) { return "none", nil },
+			},
+			userID:     1001,
+			query:      "?other_id=2",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "unauthorized",
+			stub: &stubService{
+				relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) { return "none", nil },
+			},
+			userID:     0,
+			query:      "?other_id=2",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "invalid_other_id",
+			stub: &stubService{
+				relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) { return "none", nil },
+			},
+			userID:     1001,
+			query:      "?other_id=abc",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "missing_other_id",
+			stub: &stubService{
+				relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) { return "none", nil },
+			},
+			userID:     1001,
+			query:      "",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "internal_error",
+			stub: &stubService{
+				relationStatusFn: func(_ context.Context, _, _ uint64) (string, error) { return "", errors.New("db error") },
+			},
+			userID:     1001,
+			query:      "?other_id=2",
+			wantStatus: http.StatusInternalServerError,
 		},
 	}
-	_, r := setupHandlerTest(stub, 1001)
 
-	w := perform(r, "GET", "/relations/following?user_id=1", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandler_Following_Empty(t *testing.T) {
-	stub := &stubService{
-		followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
-			return []uint64{}, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/following?user_id=1", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandler_Following_InternalError(t *testing.T) {
-	stub := &stubService{
-		followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
-			return nil, errors.New("db error")
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/following?user_id=1", nil)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Code)
-	}
-}
-
-// ============================================================================
-// Followers handler tests (offset-based)
-// ============================================================================
-
-func TestHandler_Followers_Success(t *testing.T) {
-	stub := &stubService{
-		followersFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
-			return []uint64{100, 200}, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/followers?user_id=1", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandler_Followers_InternalError(t *testing.T) {
-	stub := &stubService{
-		followersFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
-			return nil, errors.New("db error")
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/followers?user_id=1", nil)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Code)
-	}
-}
-
-// ============================================================================
-// FollowingCursor handler tests
-// ============================================================================
-
-func TestHandler_FollowingCursor_Success(t *testing.T) {
-	stub := &stubService{
-		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{30, 20}, 1000, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/following/cursor?user_id=1&limit=2&cursor=0", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandler_FollowingCursor_LastPage(t *testing.T) {
-	stub := &stubService{
-		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{10}, 0, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/following/cursor?user_id=1&limit=10&cursor=500", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandler_FollowingCursor_Empty(t *testing.T) {
-	stub := &stubService{
-		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{}, 0, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/following/cursor?user_id=1", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandler_FollowingCursor_InternalError(t *testing.T) {
-	stub := &stubService{
-		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return nil, 0, errors.New("db error")
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/following/cursor?user_id=1", nil)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Code)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, r := setupHandlerTest(tt.stub, tt.userID)
+			w := perform(r, "GET", "/relations/status"+tt.query, nil)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
 	}
 }
 
 // ============================================================================
-// FollowersCursor handler tests
+// Following handler tests (offset-based, table-driven)
 // ============================================================================
 
-func TestHandler_FollowersCursor_Success(t *testing.T) {
-	stub := &stubService{
-		followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{50, 40}, 2000, nil
+// listTestCase 定义 Following / Followers / FollowingCursor / FollowersCursor 测试的通用结构。
+type listTestCase struct {
+	name       string
+	stub       *stubService
+	userID     uint64
+	path       string
+	wantStatus int
+}
+
+func TestHandler_Following(t *testing.T) {
+	tests := []listTestCase{
+		{
+			name: "success",
+			stub: &stubService{
+				followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
+					return []uint64{10, 20, 30}, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/following?user_id=1&limit=10&offset=0",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "default_params",
+			stub: &stubService{
+				followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
+					return []uint64{}, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/following?user_id=1",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "empty",
+			stub: &stubService{
+				followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
+					return []uint64{}, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/following?user_id=1",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "internal_error",
+			stub: &stubService{
+				followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
+					return nil, errors.New("db error")
+				},
+			},
+			userID:     1001,
+			path:       "/relations/following?user_id=1",
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "missing_user_id",
+			stub: &stubService{
+				followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
+					return []uint64{}, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/following",
+			wantStatus: http.StatusOK,
 		},
 	}
-	_, r := setupHandlerTest(stub, 1001)
 
-	w := perform(r, "GET", "/relations/followers/cursor?user_id=1&limit=2", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, r := setupHandlerTest(tt.stub, tt.userID)
+			w := perform(r, "GET", tt.path, nil)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
 	}
 }
 
-func TestHandler_FollowersCursor_InternalError(t *testing.T) {
-	stub := &stubService{
-		followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return nil, 0, errors.New("db error")
+// ============================================================================
+// Followers handler tests (offset-based, table-driven)
+// ============================================================================
+
+func TestHandler_Followers(t *testing.T) {
+	tests := []listTestCase{
+		{
+			name: "success",
+			stub: &stubService{
+				followersFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
+					return []uint64{100, 200}, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/followers?user_id=1",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "internal_error",
+			stub: &stubService{
+				followersFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
+					return nil, errors.New("db error")
+				},
+			},
+			userID:     1001,
+			path:       "/relations/followers?user_id=1",
+			wantStatus: http.StatusInternalServerError,
 		},
 	}
-	_, r := setupHandlerTest(stub, 1001)
 
-	w := perform(r, "GET", "/relations/followers/cursor?user_id=1", nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, r := setupHandlerTest(tt.stub, tt.userID)
+			w := perform(r, "GET", tt.path, nil)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
+	}
+}
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Code)
+// ============================================================================
+// FollowingCursor handler tests (table-driven)
+// ============================================================================
+
+func TestHandler_FollowingCursor(t *testing.T) {
+	tests := []listTestCase{
+		{
+			name: "success",
+			stub: &stubService{
+				followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
+					return []uint64{30, 20}, 1000, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/following/cursor?user_id=1&limit=2&cursor=0",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "last_page",
+			stub: &stubService{
+				followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
+					return []uint64{10}, 0, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/following/cursor?user_id=1&limit=10&cursor=500",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "empty",
+			stub: &stubService{
+				followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
+					return []uint64{}, 0, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/following/cursor?user_id=1",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "internal_error",
+			stub: &stubService{
+				followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
+					return nil, 0, errors.New("db error")
+				},
+			},
+			userID:     1001,
+			path:       "/relations/following/cursor?user_id=1",
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, r := setupHandlerTest(tt.stub, tt.userID)
+			w := perform(r, "GET", tt.path, nil)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// FollowersCursor handler tests (table-driven)
+// ============================================================================
+
+func TestHandler_FollowersCursor(t *testing.T) {
+	tests := []listTestCase{
+		{
+			name: "success",
+			stub: &stubService{
+				followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
+					return []uint64{50, 40}, 2000, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/followers/cursor?user_id=1&limit=2",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "internal_error",
+			stub: &stubService{
+				followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
+					return nil, 0, errors.New("db error")
+				},
+			},
+			userID:     1001,
+			path:       "/relations/followers/cursor?user_id=1",
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "default_cursor",
+			stub: &stubService{
+				followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
+					return []uint64{}, 0, nil
+				},
+			},
+			userID:     1001,
+			path:       "/relations/followers/cursor?user_id=1",
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, r := setupHandlerTest(tt.stub, tt.userID)
+			w := perform(r, "GET", tt.path, nil)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
 	}
 }
 
@@ -641,36 +658,6 @@ func TestQueryInt64_Invalid(t *testing.T) {
 	v := queryInt64(c, "cursor")
 	if v != 0 {
 		t.Fatalf("expected 0, got %d", v)
-	}
-}
-
-func TestHandler_Following_MissingUserID(t *testing.T) {
-	stub := &stubService{
-		followingFn: func(_ context.Context, _ uint64, limit, offset int) ([]uint64, error) {
-			return []uint64{}, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/following", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandler_FollowersCursor_DefaultCursor(t *testing.T) {
-	stub := &stubService{
-		followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{}, 0, nil
-		},
-	}
-	_, r := setupHandlerTest(stub, 1001)
-
-	w := perform(r, "GET", "/relations/followers/cursor?user_id=1", nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
 

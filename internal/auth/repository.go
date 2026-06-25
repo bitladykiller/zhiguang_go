@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"github.com/jmoiron/sqlx"
 	"go.uber.org/zap"
@@ -75,12 +76,12 @@ INSERT INTO users (
     :phone, :email, :password_hash, :nickname, :avatar, :bio, :zg_id, :gender, :birthday, :school, :tags_json
 )`, user)
 	if err != nil {
-		return err
+		return fmt.Errorf("create user: insert: %w", err)
 	}
 
 	insertID, err := result.LastInsertId()
 	if err != nil {
-		return err
+		return fmt.Errorf("create user: last insert ID: %w", err)
 	}
 	user.ID = uint64(insertID)
 	return nil
@@ -206,7 +207,10 @@ func (r *AuthRepository) IdentifierExists(ctx context.Context, idType Identifier
 //   - 如果新的 passwordHash 与原有值相同，UPDATE 仍然会成功（affected rows 可能为 0）
 func (r *AuthRepository) UpdatePassword(ctx context.Context, id uint64, passwordHash string) error {
 	_, err := r.db.ExecContext(ctx, "UPDATE users SET password_hash = ? WHERE id = ?", passwordHash, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	return nil
 }
 
 // RecordLoginLog 记录登录审计日志到数据库。

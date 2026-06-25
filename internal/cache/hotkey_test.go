@@ -158,11 +158,11 @@ func TestSumBucketsInWindow(t *testing.T) {
 
 	nowBucket := d.currentBucket()
 	values := map[string]string{
-		strconv.FormatInt(nowBucket, 10):     "10",
-		strconv.FormatInt(nowBucket-1, 10):   "5",
-		strconv.FormatInt(nowBucket-9, 10):   "3",
-		strconv.FormatInt(nowBucket-10, 10):  "2",
-		strconv.FormatInt(nowBucket+1, 10):   "99",
+		strconv.FormatInt(nowBucket, 10):    "10",
+		strconv.FormatInt(nowBucket-1, 10):  "5",
+		strconv.FormatInt(nowBucket-9, 10):  "3",
+		strconv.FormatInt(nowBucket-10, 10): "2",
+		strconv.FormatInt(nowBucket+1, 10):  "99",
 	}
 
 	total := d.sumBucketsInWindow(values, nowBucket)
@@ -181,7 +181,7 @@ func TestSumBucketsInWindow_InvalidField(t *testing.T) {
 
 	nowBucket := d.currentBucket()
 	values := map[string]string{
-		"not_a_number": "10",
+		"not_a_number":                   "10",
 		strconv.FormatInt(nowBucket, 10): "abc",
 	}
 
@@ -287,7 +287,7 @@ func TestGetLevel_FallbackToRedis(t *testing.T) {
 	}
 }
 
-func TestTtlForPublic(t *testing.T) {
+func TestTTLForPublic(t *testing.T) {
 	cfg := defaultHotKeyConfig()
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
@@ -297,10 +297,10 @@ func TestTtlForPublic(t *testing.T) {
 	d.levels["mykey"] = LevelMedium
 	d.levelMu.Unlock()
 
-	ttl := d.TtlForPublic(context.Background(), 60, "mykey")
+	ttl := d.TTLForPublic(context.Background(), 60, "mykey")
 	want := 60 + cfg.ExtendMediumSeconds
 	if ttl != want {
-		t.Fatalf("TtlForPublic = %d, want %d", ttl, want)
+		t.Fatalf("TTLForPublic = %d, want %d", ttl, want)
 	}
 }
 

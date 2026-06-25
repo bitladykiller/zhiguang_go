@@ -1,9 +1,21 @@
+// Package counter — 退避机制。
+//
+// 本文件包含 SDS 重建场景下的指数退避实现。当重建因限流、锁抢占或
+// 其他错误失败时,实体进入退避期,退避时间呈指数增长(500ms→1s→2s→...→30s cap),
+// 避免持续失败的请求压迫 Redis。
 package counter
 
 import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.uber.org/zap"
+)
+
+const (
+	backoffBaseMs = 500
+	backoffMaxMs  = 30000
 )
 
 // ============================================================================
@@ -72,9 +84,9 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 	expKey := s.backoffExpKey(entityType, entityID)
 	exp, _ := s.redis.Get(ctx, expKey).Int()
 
-	ms := int64(500) << exp
-	if ms > 30000 {
-		ms = 30000
+	ms := int64(backoffBaseMs) << exp
+	if ms > backoffMaxMs {
+		ms = backoffMaxMs
 	}
 	until := time.Now().UnixMilli() + ms
 
@@ -82,7 +94,9 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 	pipe.Set(ctx, s.backoffKey(entityType, entityID), until, 0)
 	pipe.Set(ctx, expKey, exp+1, 0)
 	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
-	pipe.Exec(ctx)
+	if _, err := pipe.Exec(ctx); err != nil {
+		zap.L().Warn("escalateBackoff: pipeline exec failed", zap.Error(err))
+	}
 }
 
 // resetBackoff 重置指定实体的退避状态。
@@ -104,5 +118,7 @@ func (s *CounterService) resetBackoff(ctx context.Context, entityType, entityID 
 	pipe.Del(ctx, s.backoffKey(entityType, entityID))
 	pipe.Del(ctx, s.backoffExpKey(entityType, entityID))
 	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
-	pipe.Exec(ctx)
+	if _, err := pipe.Exec(ctx); err != nil {
+		zap.L().Warn("resetBackoff: pipeline exec failed", zap.Error(err))
+	}
 }

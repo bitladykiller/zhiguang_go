@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/pkg/config"
 )
@@ -119,12 +120,6 @@ func (d *HotKeyDetector) currentBucket() int64 {
 
 // flushLoop 是后台 flush goroutine 的主循环。
 func (d *HotKeyDetector) flushLoop(ctx context.Context) {
-	defer func() {
-		if r := recover(); r != nil {
-			go d.flushLoop(ctx)
-		}
-	}()
-
 	ticker := time.NewTicker(d.flushInterval)
 	defer ticker.Stop()
 
@@ -133,7 +128,14 @@ func (d *HotKeyDetector) flushLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			d.flushOnce(ctx)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						zap.L().Warn("hotkey flush panicked", zap.Any("panic", r))
+					}
+				}()
+				d.flushOnce(ctx)
+			}()
 		}
 	}
 }
@@ -153,7 +155,7 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 		for bucket, count := range buckets {
 			pipe.HIncrBy(ctx, statKey, strconv.FormatInt(bucket, 10), count)
 		}
-		for i := int64(d.config.BucketCount); i < int64(d.config.BucketCount)+int64(d.config.BucketCount); i++ {
+		for i := int64(d.config.BucketCount); i < int64(d.config.BucketCount)*2; i++ {
 			oldBucket := nowBucket - i
 			pipe.HDel(ctx, statKey, strconv.FormatInt(oldBucket, 10))
 		}
@@ -244,8 +246,8 @@ func (d *HotKeyDetector) calcLevel(total int64) HotKeyLevel {
 	}
 }
 
-// TtlForPublic 返回公共缓存键根据热度调整后的 TTL。
-func (d *HotKeyDetector) TtlForPublic(ctx context.Context, baseTTL int, key string) int {
+// TTLForPublic 返回公共缓存键根据热度调整后的 TTL。
+func (d *HotKeyDetector) TTLForPublic(ctx context.Context, baseTTL int, key string) int {
 	return d.ttlForLevel(baseTTL, d.getLevel(ctx, key))
 }
 

@@ -69,7 +69,7 @@ type AuthUserResponse struct {
 	Nickname string     `json:"nickname"`
 	Avatar   *string    `json:"avatar,omitempty"`
 	Phone    *string    `json:"phone,omitempty"`
-	ZgId     *string    `json:"zg_id,omitempty"`
+	ZgID     *string    `json:"zg_id,omitempty"`
 	Birthday *time.Time `json:"birthday,omitempty"`
 	School   *string    `json:"school,omitempty"`
 	Bio      *string    `json:"bio,omitempty"`

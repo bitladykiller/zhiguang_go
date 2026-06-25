@@ -6,6 +6,11 @@ import "context"
 //
 // Handler 依赖此接口而非具体 *CounterService，使得 handler 可以独立于
 // service 实现进行单元测试。
+//
+// 方法实现位置说明:
+//   - Like/Unlike/Fav/Unfav → bitmap_toggle.go
+//   - GetCounts/IsLiked/IsFaved/GetCountsBatch → sds_read.go
+//   - BatchIsLiked/BatchIsFaved → bitmap_batch.go
 type CounterServiceInterface interface {
 	Like(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	Unlike(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)

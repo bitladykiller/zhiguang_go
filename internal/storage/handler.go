@@ -87,7 +87,7 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 	uploadURL, err := h.svc.GeneratePresignedPutURL(objectKey, expiry)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "failed to generate upload URL")
+		response.Error(c, errcode.ErrInternal.WithMsg("failed to generate upload URL"))
 		return
 	}
 

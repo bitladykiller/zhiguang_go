@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/zhiguang/app/internal/knowpost"
 )
 
 // ---------------------------------------------------------------------------
@@ -41,9 +40,9 @@ func mockESResponse(statusCode int, respBody string) *http.Response {
 // newMockClient 用 mockTransport 创建一个 *elasticsearch.Client。
 func newMockClient(fn func(req *http.Request) (*http.Response, error)) *elasticsearch.Client {
 	c, err := elasticsearch.NewClient(elasticsearch.Config{
-		Transport:                 &mockTransport{roundTrip: fn},
-		EnableCompatibilityMode:   true,
-		DisableMetaHeader:         true,
+		Transport:               &mockTransport{roundTrip: fn},
+		EnableCompatibilityMode: true,
+		DisableMetaHeader:       true,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("newMockClient: %v", err))
@@ -882,12 +881,12 @@ func TestDeleteDocument_NetworkError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// FeedItemResponse — ensure response JSON serialisation round-trips cleanly
+// SearchItem — ensure response JSON serialisation round-trips cleanly
 // ---------------------------------------------------------------------------
 
 func TestSearchResponse_JSONRoundTrip(t *testing.T) {
 	resp := &SearchResponse{
-		Items: []knowpost.FeedItemResponse{
+		Items: []SearchItem{
 			{
 				ID:             "1",
 				Title:          strPtr("t"),

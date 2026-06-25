@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	l1DetailCacheTTL    = 60
-	nullCacheTTLBase    = 30
-	nullCacheJitter     = 31
-	l2DetailTTLBase     = 60
-	l2DetailJitter      = 31
+	l1DetailCacheTTL = 60
+	nullCacheTTLBase = 30
+	nullCacheJitter  = 31
+	l2DetailTTLBase  = 60
+	l2DetailJitter   = 31
 )
 
 // --- [详情读取链路] --- //
@@ -68,7 +68,8 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 		s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 		resp, parseErr := s.parseDetail(val)
 		if parseErr == nil {
-			return s.enrichDetail(ctx, resp, currentUserID, true), nil
+			const refreshCounts = true
+			return s.enrichDetail(ctx, resp, currentUserID, refreshCounts), nil
 		}
 	}
 
@@ -81,7 +82,8 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 		s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 		resp, parseErr := s.parseDetail([]byte(cached))
 		if parseErr == nil {
-			return s.enrichDetail(ctx, resp, currentUserID, true), nil
+			const refreshCounts = true
+			return s.enrichDetail(ctx, resp, currentUserID, refreshCounts), nil
 		}
 	}
 
@@ -121,52 +123,64 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pageKey string, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	lockKey := "lock:" + pageKey
 	return cacheReadThrough(ctx, s.redis, lockKey,
-		func(ctx context.Context) (*KnowPostDetailResponse, bool, error) {
-			cached, _ := s.redis.Get(ctx, pageKey).Result()
-			if cached == "NULL" {
-				return nil, false, errcode.ErrNotFound.WithMsg("content not found")
-			}
-			if cached != "" {
-				resp, parseErr := s.parseDetail([]byte(cached))
-				if parseErr == nil {
-s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
-					return s.enrichDetail(ctx, resp, currentUserID, true), true, nil
-				}
-			}
-			return nil, false, nil
-		},
-		func(ctx context.Context) (*KnowPostDetailResponse, error) {
-			row, err := s.repo.FindDetailByID(ctx, id)
-			if err != nil || row == nil || row.Status == "deleted" {
-				ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
-				s.redis.Set(ctx, pageKey, "NULL", ttl)
-				return nil, errcode.ErrNotFound.WithMsg("content not found")
-			}
+		s.checkDetailCache(pageKey, currentUserID),
+		s.fetchDetail(pageKey, id, currentUserID),
+	)
+}
 
-			isPublic := row.Status == "published" && row.Visible == "public"
-			isOwner := currentUserID != nil && *currentUserID == row.CreatorID
-			if !isPublic && !isOwner {
-				return nil, errcode.ErrForbidden.WithMsg("no permission to view")
+// checkDetailCache 作为 cacheReadThrough 的 checkCache 回调。
+func (s *KnowPostService) checkDetailCache(pageKey string, currentUserID *uint64) func(ctx context.Context) (*KnowPostDetailResponse, bool, error) {
+	return func(ctx context.Context) (*KnowPostDetailResponse, bool, error) {
+		cached, _ := s.redis.Get(ctx, pageKey).Result()
+		if cached == "NULL" {
+			return nil, false, errcode.ErrNotFound.WithMsg("content not found")
+		}
+		if cached != "" {
+			resp, parseErr := s.parseDetail([]byte(cached))
+			if parseErr == nil {
+				s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
+				const refreshCounts = true
+				return s.enrichDetail(ctx, resp, currentUserID, refreshCounts), true, nil
 			}
+		}
+		return nil, false, nil
+	}
+}
 
-			resp := &KnowPostDetailResponse{
-				ID:             strconv.FormatUint(row.ID, 10),
-				Title:          row.Title,
-				Description:    row.Description,
-				ContentUrl:     row.ContentUrl,
-				Images:         jsonutil.ParseStringArray(row.ImgUrls),
-				Tags:           jsonutil.ParseStringArray(row.Tags),
-				AuthorID:       strconv.FormatUint(row.CreatorID, 10),
-				AuthorAvatar:   row.AuthorAvatar,
-				AuthorNickname: row.AuthorNickname,
-				AuthorTagJson:  row.AuthorTagJson,
-				IsTop:          row.IsTop,
-				Visible:        row.Visible,
-				Type:           row.Type,
-				PublishTime:    row.PublishTime,
-			}
+// fetchDetail 作为 cacheReadThrough 的 missHandler 回调。
+func (s *KnowPostService) fetchDetail(pageKey string, id uint64, currentUserID *uint64) func(ctx context.Context) (*KnowPostDetailResponse, error) {
+	return func(ctx context.Context) (*KnowPostDetailResponse, error) {
+		row, err := s.repo.FindDetailByID(ctx, id)
+		if err != nil || row == nil || row.Status == "deleted" {
+			ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
+			s.redis.Set(ctx, pageKey, "NULL", ttl)
+			return nil, errcode.ErrNotFound.WithMsg("content not found")
+		}
 
-if s.counter != nil {
+		isPublic := row.Status == "published" && row.Visible == "public"
+		isOwner := currentUserID != nil && *currentUserID == row.CreatorID
+		if !isPublic && !isOwner {
+			return nil, errcode.ErrForbidden.WithMsg("no permission to view")
+		}
+
+		resp := &KnowPostDetailResponse{
+			ID:             strconv.FormatUint(row.ID, 10),
+			Title:          row.Title,
+			Description:    row.Description,
+			ContentUrl:     row.ContentUrl,
+			Images:         jsonutil.ParseStringArray(row.ImgUrls),
+			Tags:           jsonutil.ParseStringArray(row.Tags),
+			AuthorID:       strconv.FormatUint(row.CreatorID, 10),
+			AuthorAvatar:   row.AuthorAvatar,
+			AuthorNickname: row.AuthorNickname,
+			AuthorTagJson:  row.AuthorTagJson,
+			IsTop:          row.IsTop,
+			Visible:        row.Visible,
+			Type:           row.Type,
+			PublishTime:    row.PublishTime,
+		}
+
+		if s.counter != nil {
 			counts, err := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
 			if err != nil {
 				zap.L().Warn("failed to get detail counts", zap.Uint64("knowpostID", id), zap.Error(err))
@@ -176,21 +190,20 @@ if s.counter != nil {
 			}
 		}
 
-			jsonBytes, err := json.Marshal(resp)
-			if err != nil {
-				return s.enrichDetail(ctx, resp, currentUserID, false), nil
-			}
+		jsonBytes, err := json.Marshal(resp)
+		if err == nil {
 			baseTTL := l2DetailTTLBase + rand.Intn(l2DetailJitter)
-			targetTTL := s.hotKey.TtlForPublic(ctx, baseTTL, pageKey)
+			targetTTL := s.hotKey.TTLForPublic(ctx, baseTTL, pageKey)
 			if targetTTL < baseTTL {
 				targetTTL = baseTTL
 			}
 			s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
 			s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
+		}
 
-			return s.enrichDetail(ctx, resp, currentUserID, false), nil
-		},
-	)
+		const refreshCounts = false
+		return s.enrichDetail(ctx, resp, currentUserID, refreshCounts), nil
+	}
 }
 
 // enrichDetail 在基础详情上叠加实时计数和当前用户的点赞/收藏状态。

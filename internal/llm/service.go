@@ -21,6 +21,12 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 )
 
+const (
+	defaultLLMTimeout   = 30 * time.Second
+	maxContentLength    = 2000
+	defaultLLMMaxTokens = 100
+)
+
 // ============================================================================
 // KnowPostDescriptionService：AI 摘要生成
 // ============================================================================
@@ -60,8 +66,8 @@ func NewKnowPostDescriptionService(cfg *config.LLMConfig) *KnowPostDescriptionSe
 //     标准格式：{"choices": [{"message": {"content": "..."}}]}
 func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, title, content string) (string, error) {
 	// 截断正文，避免超过模型 token 限制
-	if len(content) > 2000 {
-		content = content[:2000]
+	if len(content) > maxContentLength {
+		content = content[:maxContentLength]
 	}
 
 	reqBody := map[string]interface{}{
@@ -77,7 +83,7 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 			},
 		},
 		"temperature": s.cfg.DeepSeek.Temperature,
-		"max_tokens":  100,
+		"max_tokens":  defaultLLMMaxTokens,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -86,7 +92,7 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 	}
 
 	// 使用配置的超时，未配置则默认 30 秒
-	timeout := 30 * time.Second
+	timeout := defaultLLMTimeout
 	if s.cfg.TimeoutMs > 0 {
 		timeout = time.Duration(s.cfg.TimeoutMs) * time.Millisecond
 	}
@@ -177,7 +183,7 @@ func (s *RagQueryService) Query(ctx context.Context, postID uint64, question str
 	defer close(streamChan)
 
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("rag query: context: %w", err)
 	}
 
 	select {

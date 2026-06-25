@@ -3,9 +3,11 @@ package counter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.uber.org/zap"
 )
 
 func (s *CounterService) publishCounterEvent(ctx context.Context, event *CounterEvent) {
@@ -16,8 +18,18 @@ func (s *CounterService) publishCounterEvent(ctx context.Context, event *Counter
 	if err := s.producer.Publish(ctx, event); err != nil {
 		recordCtx, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
-		_ = s.markDirty(recordCtx, event.EntityType, event.EntityID)
-		_ = s.recordFailedEvent(recordCtx, counterFailureStagePublish, event, err)
+		if mdErr := s.markDirty(recordCtx, event.EntityType, event.EntityID); mdErr != nil {
+			zap.L().Warn("counter: mark dirty failed",
+				zap.String("entity_type", event.EntityType),
+				zap.String("entity_id", event.EntityID),
+				zap.Error(mdErr))
+		}
+		if rfErr := s.recordFailedEvent(recordCtx, counterFailureStagePublish, event, err); rfErr != nil {
+			zap.L().Warn("counter: record failed event failed",
+				zap.String("entity_type", event.EntityType),
+				zap.String("entity_id", event.EntityID),
+				zap.Error(rfErr))
+		}
 	}
 }
 
@@ -25,28 +37,27 @@ func (s *CounterService) markDirty(ctx context.Context, entityType, entityID str
 	return s.redis.SAdd(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Err()
 }
 
+// toStringArgs 将字符串切片转换为 any 切片，用于 Redis SAdd/SRem 的参数传递。
+func toStringArgs(members []string) []any {
+	args := make([]any, len(members))
+	for i, m := range members {
+		args[i] = m
+	}
+	return args
+}
+
 func (s *CounterService) markDirtyMembers(ctx context.Context, members []string) error {
 	if len(members) == 0 {
 		return nil
 	}
-
-	args := make([]any, 0, len(members))
-	for _, member := range members {
-		args = append(args, member)
-	}
-	return s.redis.SAdd(ctx, DirtySetKey(), args...).Err()
+	return s.redis.SAdd(ctx, DirtySetKey(), toStringArgs(members)...).Err()
 }
 
 func (s *CounterService) clearDirtyMembers(ctx context.Context, members []string) error {
 	if len(members) == 0 {
 		return nil
 	}
-
-	args := make([]any, 0, len(members))
-	for _, member := range members {
-		args = append(args, member)
-	}
-	return s.redis.SRem(ctx, DirtySetKey(), args...).Err()
+	return s.redis.SRem(ctx, DirtySetKey(), toStringArgs(members)...).Err()
 }
 
 func (s *CounterService) recordFailedEvent(ctx context.Context, stage string, event *CounterEvent, cause error) error {
@@ -56,7 +67,7 @@ func (s *CounterService) recordFailedEvent(ctx context.Context, stage string, ev
 
 	payload, err := json.Marshal(event)
 	if err != nil {
-		return err
+		return fmt.Errorf("record failed event: marshal: %w", err)
 	}
 
 	return s.failureRecorder.Create(ctx, &CounterFailedMessage{
@@ -103,13 +114,15 @@ func (s *CounterService) recordFailedKafkaMessages(ctx context.Context, stage st
 	return s.failureRecorder.CreateBatch(ctx, records)
 }
 
+const maxErrorMessageLen = 1024
+
 func failureErrorMessage(cause error) string {
 	if cause == nil {
 		return ""
 	}
 	message := cause.Error()
-	if len(message) > 1024 {
-		return message[:1024]
+	if len(message) > maxErrorMessageLen {
+		return message[:maxErrorMessageLen]
 	}
 	return message
 }
