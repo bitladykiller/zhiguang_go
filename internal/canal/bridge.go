@@ -212,14 +212,16 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		}
 
 		if message.Id == -1 || len(message.Entries) == 0 {
-			_ = contextutil.Sleep(ctx, pollDelay)
+			contextutil.Sleep(ctx, pollDelay)
 			continue
 		}
 
 		batchID := message.Id
 		payloads, err := parseEntries(entryPtrSlice(message.Entries))
 		if err != nil {
-			_ = connector.RollBack(batchID)
+			if rbErr := connector.RollBack(batchID); rbErr != nil {
+				b.logger.Warn("rollback canal batch failed after parse error", zap.Int64("batchID", batchID), zap.Error(rbErr))
+			}
 			return err
 		}
 		if len(payloads) == 0 {
@@ -234,7 +236,9 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 			var key []byte
 			rows, err := outbox.ExtractRows(payload)
 			if err != nil {
-				_ = connector.RollBack(batchID)
+				if rbErr := connector.RollBack(batchID); rbErr != nil {
+					b.logger.Warn("rollback canal batch failed after extract error", zap.Int64("batchID", batchID), zap.Error(rbErr))
+				}
 				return err
 			}
 			if len(rows) > 0 {
@@ -243,7 +247,9 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 			messages = append(messages, kafka.Message{Key: key, Value: payload})
 		}
 		if err := b.writer.WriteMessages(ctx, messages...); err != nil {
-			_ = connector.RollBack(batchID)
+			if rbErr := connector.RollBack(batchID); rbErr != nil {
+				b.logger.Warn("rollback canal batch failed after write error", zap.Int64("batchID", batchID), zap.Error(rbErr))
+			}
 			return err
 		}
 		if err := connector.Ack(batchID); err != nil {

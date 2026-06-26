@@ -10,7 +10,8 @@ import (
 	"github.com/zhiguang/app/pkg/contextutil"
 )
 
-type DirctPollConsumer struct {
+// DirectPollConsumer 将 outbox 表中的事件行轮询拉取出来交给 RowHandler 处理。
+type DirectPollConsumer struct {
 	db           *sqlx.DB
 	topicName    string
 	batchSize    int
@@ -19,18 +20,18 @@ type DirctPollConsumer struct {
 	logger       *zap.Logger
 }
 
-func NewDirctPollConsumer(
+func NewDirectPollConsumer(
 	db *sqlx.DB,
 	topicName string,
 	batchSize int,
 	pollInterval time.Duration,
 	handler RowHandler,
 	logger *zap.Logger,
-) *DirctPollConsumer {
+) *DirectPollConsumer {
 	if db == nil || handler == nil {
 		return nil
 	}
-	return &DirctPollConsumer{
+	return &DirectPollConsumer{
 		db:           db,
 		topicName:    topicName,
 		batchSize:    batchSize,
@@ -40,7 +41,7 @@ func NewDirctPollConsumer(
 	}
 }
 
-func (c *DirctPollConsumer) Start(ctx context.Context) {
+func (c *DirectPollConsumer) Start(ctx context.Context) {
 	if c == nil {
 		return
 	}
@@ -62,7 +63,7 @@ func (c *DirctPollConsumer) Start(ctx context.Context) {
 	}
 }
 
-func (c *DirctPollConsumer) pollOnce(ctx context.Context, query, deleteQuery string, lastID *uint64) error {
+func (c *DirectPollConsumer) pollOnce(ctx context.Context, query, deleteQuery string, lastID *uint64) error {
 	rows, err := c.db.QueryxContext(ctx, query, c.topicName, *lastID, c.batchSize)
 	if err != nil {
 		return err
@@ -99,20 +100,14 @@ func (c *DirctPollConsumer) pollOnce(ctx context.Context, query, deleteQuery str
 	return rows.Err()
 }
 
-func (c *DirctPollConsumer) logWarn(msg string, err error) {
+func (c *DirectPollConsumer) logWarn(msg string, err error) {
 	if c.logger != nil {
 		c.logger.Warn(msg, zap.String("topic", c.topicName), zap.Error(err))
 	}
 }
 
-func (c *DirctPollConsumer) logInfo(msg string) {
+func (c *DirectPollConsumer) logInfo(msg string) {
 	if c.logger != nil {
 		c.logger.Info(msg, zap.String("topic", c.topicName))
 	}
-}
-
-type DirectPollConsumer = DirctPollConsumer
-
-func NewDirectPollConsumer(db *sqlx.DB, topicName string, batchSize int, pollInterval time.Duration, handler RowHandler, logger *zap.Logger) *DirectPollConsumer {
-	return NewDirctPollConsumer(db, topicName, batchSize, pollInterval, handler, logger)
 }

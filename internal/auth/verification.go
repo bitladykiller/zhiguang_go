@@ -157,9 +157,6 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 		s.logger.Warn("failed to reset attempt counter", zap.String("attemptKey", attemptKey), zap.Error(err))
 	}
 
-	// 生产环境应走短信/邮件渠道；当前先输出到标准输出便于联调。
-	// fmt.Printf("[VERIFICATION] Scene=%s Identifier=%s Code=%s\n", scene, identifier, code)
-
 	return &SendCodeResult{Identifier: identifier, Scene: scene, ExpireSeconds: int(s.config.TTL.Seconds())}, nil
 }
 

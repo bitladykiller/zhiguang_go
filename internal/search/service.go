@@ -31,6 +31,7 @@ import (
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/zhiguang/app/internal/knowpost"
 	"github.com/zhiguang/app/pkg/jsonutil"
+	"go.uber.org/zap"
 )
 
 // SearchIndexDoc 是知文内容在 ES 中的文档结构。
@@ -122,6 +123,7 @@ type SearchService struct {
 	client    *elasticsearch.Client
 	indexName string
 	counter   SearchCounterClient
+	logger    *zap.Logger
 }
 
 // NewSearchService 使用给定 URI 地址列表创建 ES 客户端，并调用 EnsureIndex 确保索引存在。
@@ -138,7 +140,7 @@ func NewSearchService(cfg struct {
 	URIs      []string
 	IndexName string
 	MaxRetries int
-}, counter SearchCounterClient) (*SearchService, error) {
+}, counter SearchCounterClient, logger *zap.Logger) (*SearchService, error) {
 	client, err := elasticsearch.NewClient(elasticsearch.Config{
 		Addresses:     cfg.URIs,
 		MaxRetries:    cfg.MaxRetries,
@@ -148,7 +150,7 @@ func NewSearchService(cfg struct {
 		return nil, fmt.Errorf("create es client: %w", err)
 	}
 
-	svc := &SearchService{client: client, indexName: cfg.IndexName, counter: counter}
+	svc := &SearchService{client: client, indexName: cfg.IndexName, counter: counter, logger: logger}
 
 	// 启动时确保索引已存在
 	if err := svc.EnsureIndex(); err != nil {
@@ -412,8 +414,15 @@ func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, c
 		for i, hit := range hits {
 			hitIDs[i] = hit.Source.ID
 		}
-		likedMap, _ = s.counter.BatchIsLiked(ctx, *currentUserID, "knowpost", hitIDs)
-		favedMap, _ = s.counter.BatchIsFaved(ctx, *currentUserID, "knowpost", hitIDs)
+		var err error
+		likedMap, err = s.counter.BatchIsLiked(ctx, *currentUserID, "knowpost", hitIDs)
+		if err != nil {
+			s.logger.Warn("failed to batch check liked status", zap.Error(err))
+		}
+		favedMap, err = s.counter.BatchIsFaved(ctx, *currentUserID, "knowpost", hitIDs)
+		if err != nil {
+			s.logger.Warn("failed to batch check faved status", zap.Error(err))
+		}
 	}
 
 	for _, hit := range hits {

@@ -53,7 +53,9 @@ func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
-		_ = db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			zap.L().Warn("failed to close db after ping failure", zap.Error(closeErr))
+		}
 		return nil, err
 	}
 

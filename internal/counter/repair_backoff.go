@@ -12,6 +12,11 @@ import (
 // 退避
 // ============================================================================
 
+const (
+	backoffBaseMs = 500
+	backoffMaxMs  = 30000
+)
+
 func (s *CounterService) backoffKey(entityType, entityID string) string {
 	return fmt.Sprintf("backoff:sds-rebuild:until:%s:%s", entityType, entityID)
 }
@@ -74,9 +79,9 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 	expKey := s.backoffExpKey(entityType, entityID)
 	attemptCount, _ := s.redis.Get(ctx, expKey).Int()
 
-	ms := int64(500) << attemptCount
-	if ms > 30000 {
-		ms = 30000
+	ms := int64(backoffBaseMs) << attemptCount
+	if ms > backoffMaxMs {
+		ms = backoffMaxMs
 	}
 	until := time.Now().UnixMilli() + ms
 

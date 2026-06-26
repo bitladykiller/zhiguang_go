@@ -44,7 +44,7 @@ func initSearch(
 			URIs      []string
 			IndexName string
 			MaxRetries int
-		}{URIs: cfg.Elasticsearch.URIs, IndexName: cfg.Elasticsearch.IndexName, MaxRetries: cfg.Elasticsearch.MaxRetries}, counterSvc)
+		}{URIs: cfg.Elasticsearch.URIs, IndexName: cfg.Elasticsearch.IndexName, MaxRetries: cfg.Elasticsearch.MaxRetries}, counterSvc, logger)
 		if err != nil {
 			logger.Warn("Failed to initialize search service (ES may be unavailable)", zap.Error(err))
 			searchSvc = nil

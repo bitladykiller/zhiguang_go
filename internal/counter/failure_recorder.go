@@ -78,7 +78,11 @@ func (r *CounterFailedMessageRepository) CreateBatch(ctx context.Context, messag
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
 
 	for _, message := range messages {
 		if message == nil {

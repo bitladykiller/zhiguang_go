@@ -3,6 +3,12 @@ package counter
 import (
 	"context"
 	"fmt"
+	"time"
+)
+
+const (
+	rebuildRateWindow  = 60 * time.Second
+	rebuildRatePermits = 5
 )
 
 // ============================================================================
@@ -38,9 +44,9 @@ func (s *CounterService) rateLimiterKey(entityType, entityID string) string {
 //   - Lua 脚本执行失败时返回 0，视为允许（降级策略：宁可多重建也不拒绝）
 func (s *CounterService) allowedByRateLimiter(ctx context.Context, entityType, entityID string) bool {
 	key := s.rateLimiterKey(entityType, entityID)
-	count, err := rateLimitScript.Run(ctx, s.redis, []string{key}, 60).Int()
+	count, err := rateLimitScript.Run(ctx, s.redis, []string{key}, int(rebuildRateWindow/time.Second)).Int()
 	if err != nil {
 		return true
 	}
-	return count <= 5
+	return count <= rebuildRatePermits
 }

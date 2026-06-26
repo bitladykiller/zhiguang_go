@@ -80,6 +80,10 @@ func NewAggregationConsumer(
 	repairInterval := defaultRepairInterval
 	repairBatch := batchSize
 
+	if logger == nil {
+		logger = zap.L()
+	}
+
 	if cfg != nil {
 		if cfg.Consumer.BatchSize > 0 {
 			batchSize = cfg.Consumer.BatchSize
@@ -194,7 +198,7 @@ func (c *AggregationConsumer) flushAndReset(ctx context.Context, batch *counterB
 					c.logWarn("mark dirty members after exhausted retries failed", markErr)
 				}
 				cancel()
-				c.logWarn(
+				c.logError(
 					fmt.Sprintf("flush counter batch exhausted retries and will drop batch (attempts=%d, messages=%d)", maxAttempts, batch.size()),
 					err,
 				)
@@ -492,8 +496,20 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 }
 
 func (c *AggregationConsumer) logWarn(msg string, err error) {
+	if c == nil {
+		return
+	}
 	if c.logger != nil {
 		c.logger.Warn(msg, zap.Error(err))
+	}
+}
+
+func (c *AggregationConsumer) logError(msg string, err error) {
+	if c == nil {
+		return
+	}
+	if c.logger != nil {
+		c.logger.Error(msg, zap.Error(err))
 	}
 }
 

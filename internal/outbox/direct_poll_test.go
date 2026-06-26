@@ -7,9 +7,7 @@ import (
 
 func TestDirectPollConsumer_ID(t *testing.T) {
 	var d *DirectPollConsumer
-	var p *DirctPollConsumer
-	p = d
-	_ = p
+	_ = d
 }
 
 func TestDirectPollConsumer_Start_ContextCancelled(t *testing.T) {

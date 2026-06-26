@@ -12,6 +12,7 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/zhiguang/app/internal/knowpost"
+	"go.uber.org/zap"
 )
 
 // ---------------------------------------------------------------------------
@@ -598,7 +599,7 @@ func TestSearch_CounterError(t *testing.T) {
 	})
 	// counter returns an error — Search should still return items without liked/faved
 	counter := &stubSearchCounter{err: errors.New("counter down")}
-	svc := &SearchService{client: client, indexName: "test-index", counter: counter}
+	svc := &SearchService{client: client, indexName: "test-index", counter: counter, logger: zap.NewNop()}
 	uid := uint64(1)
 	resp, err := svc.Search(context.Background(), "go", 10, "", "", &uid)
 	if err != nil {

@@ -567,7 +567,12 @@ func (s *KnowPostFeedService) mapRowsToItems(ctx context.Context, rows []KnowPos
 		for i, r := range rows {
 			entityIDs[i] = strconv.FormatUint(r.ID, 10)
 		}
-		countsBatch, _ = s.counter.GetCountsBatch(ctx, "knowpost", entityIDs, []string{"like", "fav"})
+		var err error
+		countsBatch, err = s.counter.GetCountsBatch(ctx, "knowpost", entityIDs, []string{"like", "fav"})
+		if err != nil {
+			s.logger.Warn("failed to batch get counts for feed items", zap.Error(err))
+			countsBatch = nil
+		}
 	}
 
 	for i, r := range rows {

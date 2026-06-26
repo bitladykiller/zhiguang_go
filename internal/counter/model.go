@@ -60,6 +60,12 @@ var nameToIdx = map[string]int{
 	"posts": IdxPosts,
 }
 
+var indexToName = map[int]string{
+	IdxLike: "like", IdxFav: "fav",
+	IdxFollower: "follower", IdxFollowing: "following",
+	IdxPosts: "posts",
+}
+
 // NameToIdx 将指标名称映射到 SDS 槽位索引。
 //
 // 参数:

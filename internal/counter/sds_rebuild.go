@@ -113,9 +113,9 @@ func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType,
 
 // buildSnapshotFromBitmap 遍历所有指标，从位图构建完整 SDS 字节数组。
 func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType, entityID string) ([]byte, error) {
-	metrics := []string{"like", "fav", "follower", "following", "posts"}
 	sdsRaw := make([]byte, SchemaLen*FieldSize)
-	for i, metric := range metrics {
+	for i := 0; i < SchemaLen; i++ {
+		metric := indexToName[i]
 		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
 		if err != nil {
 			return nil, fmt.Errorf("build snapshot: bit count: %w", err)

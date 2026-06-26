@@ -139,7 +139,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 			backgroundRunners = append(backgroundRunners, searchOutboxConsumer)
 		}
 	} else {
-		logger.Warn("canal is disabled: outbox async sync pipeline will not start")
+		logger.Info("canal is disabled: outbox async sync pipeline will not start")
 	}
 
 	app := server.NewApp(router, cfg, logger, backgroundRunners...)
