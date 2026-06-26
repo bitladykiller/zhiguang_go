@@ -85,7 +85,7 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 	pipe.Set(ctx, expKey, attemptCount+1, 0)
 	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
 	if _, err := pipe.Exec(ctx); err != nil {
-		zap.L().Warn("escalateBackoff pipeline exec failed", zap.Error(err))
+		s.logger.Warn("escalateBackoff pipeline exec failed", zap.Error(err))
 	}
 }
 
@@ -109,6 +109,6 @@ func (s *CounterService) resetBackoff(ctx context.Context, entityType, entityID 
 	pipe.Del(ctx, s.backoffExpKey(entityType, entityID))
 	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
 	if _, err := pipe.Exec(ctx); err != nil {
-		zap.L().Warn("resetBackoff pipeline exec failed", zap.Error(err))
+		s.logger.Warn("resetBackoff pipeline exec failed", zap.Error(err))
 	}
 }

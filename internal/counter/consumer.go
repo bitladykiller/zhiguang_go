@@ -51,6 +51,7 @@ type AggregationConsumer struct {
 
 	mu      sync.Mutex
 	batches map[int]*counterBatch
+	wg      sync.WaitGroup
 }
 
 // NewAggregationConsumer 创建 AggregationConsumer 实例。
@@ -122,10 +123,12 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 	defer c.reader.Close()
 
 	if c.repairEnabled {
+		c.wg.Add(1)
 		go c.repairLoop(ctx)
 	}
 
 	c.consumeLoop(ctx)
+	c.wg.Wait()
 }
 
 func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
@@ -390,6 +393,7 @@ func (c *AggregationConsumer) retryDelay() time.Duration {
 }
 
 func (c *AggregationConsumer) repairLoop(ctx context.Context) {
+	defer c.wg.Done()
 	ticker := time.NewTicker(c.repairInterval)
 	defer ticker.Stop()
 

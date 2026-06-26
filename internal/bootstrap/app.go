@@ -86,7 +86,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 	hotKeyDetector := cache.NewHotKeyDetector(&cfg.Cache.HotKey, redisClient)
 
 	// ── 模块初始化（按依赖拓扑序） ──
-	authHandler, jwtSvc, err := initAuth(db, redisClient, cfg)
+	authHandler, jwtSvc, err := initAuth(db, redisClient, cfg, logger)
 	if err != nil {
 		return nil, err
 	}

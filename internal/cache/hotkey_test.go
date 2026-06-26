@@ -245,8 +245,6 @@ func TestRun_StartOnce(t *testing.T) {
 
 	d.Run(ctx)
 	d.Run(ctx)
-
-	_ = d.startOnce
 }
 
 func TestFlushOnce_EmptySnapshot(t *testing.T) {

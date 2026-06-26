@@ -32,7 +32,7 @@ import (
 func (s *KnowPostService) invalidateCache(ctx context.Context, id uint64) {
 	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
 	if err := s.redis.Del(ctx, pageKey).Err(); err != nil {
-		zap.L().Warn("failed to delete L2 detail cache", zap.String("pageKey", pageKey), zap.Error(err))
+		s.logger.Warn("failed to delete L2 detail cache", zap.String("pageKey", pageKey), zap.Error(err))
 	}
 	s.l1Cache.Del([]byte(pageKey))
 }
@@ -106,12 +106,12 @@ func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint6
 
 	// EXPIRE GT：只有当新 TTL 大于当前 TTL 时才更新，保证不缩短
 	if !extendTTL(ctx, s.redis, pageKey, target) {
-		zap.L().Debug("extendTTL skipped for pageKey", zap.String("pageKey", pageKey), zap.Int("targetTTL", target))
+		s.logger.Debug("extendTTL skipped for pageKey", zap.String("pageKey", pageKey), zap.Int("targetTTL", target))
 	}
 
 	itemKey := fmt.Sprintf("feed:item:%d", id)
 	if !extendTTL(ctx, s.redis, itemKey, target) {
-		zap.L().Debug("extendTTL skipped for itemKey", zap.String("itemKey", itemKey), zap.Int("targetTTL", target))
+		s.logger.Debug("extendTTL skipped for itemKey", zap.String("itemKey", itemKey), zap.Int("targetTTL", target))
 	}
 }
 

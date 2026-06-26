@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/auth"
 	"github.com/zhiguang/app/pkg/config"
@@ -26,16 +27,17 @@ func initAuth(
 	db *sqlx.DB,
 	redisClient *redis.Client,
 	cfg *config.Config,
+	logger *zap.Logger,
 ) (*auth.AuthHandler, *auth.JwtService, error) {
 	jwtSvc, err := auth.NewJwtService(&cfg.Auth.Jwt)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	verifSvc := auth.NewVerificationService(redisClient, &cfg.Auth.Verification)
-	tokenStore := auth.NewRedisRefreshTokenStore(redisClient)
-	authRepo := auth.NewAuthRepository(db)
-	authSvc := auth.NewAuthService(authRepo, verifSvc, jwtSvc, tokenStore, redisClient, &cfg.Auth)
+	verifSvc := auth.NewVerificationService(redisClient, &cfg.Auth.Verification, logger)
+	tokenStore := auth.NewRedisRefreshTokenStore(redisClient, logger)
+	authRepo := auth.NewAuthRepository(db, logger)
+	authSvc := auth.NewAuthService(authRepo, verifSvc, jwtSvc, tokenStore, redisClient, &cfg.Auth, logger)
 	authHandler := auth.NewAuthHandler(authSvc, jwtSvc)
 
 	return authHandler, jwtSvc, nil

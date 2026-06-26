@@ -30,12 +30,16 @@ type RefreshTokenStore interface {
 // WHY：以 userID 作为 key 前缀可以使同一个用户的所有令牌 ID 聚集在一起，
 // RevokeAll 可以通过 SCAN rt:{userID}:* 模式高效遍历删除。
 type RedisRefreshTokenStore struct {
-	redis *redis.Client
+	redis  *redis.Client
+	logger *zap.Logger
 }
 
 // NewRedisRefreshTokenStore 创建一个基于 Redis 的刷新令牌存储。
-func NewRedisRefreshTokenStore(redisClient *redis.Client) *RedisRefreshTokenStore {
-	return &RedisRefreshTokenStore{redis: redisClient}
+func NewRedisRefreshTokenStore(redisClient *redis.Client, logger *zap.Logger) *RedisRefreshTokenStore {
+	if logger == nil {
+		logger = zap.L()
+	}
+	return &RedisRefreshTokenStore{redis: redisClient, logger: logger}
 }
 
 // StoreToken 保存刷新令牌 ID 到 Redis 白名单中。
@@ -74,7 +78,7 @@ func (s *RedisRefreshTokenStore) IsTokenValid(ctx context.Context, userID uint64
 	key := fmt.Sprintf("rt:%d:%s", userID, tokenID)
 	exists, err := s.redis.Exists(ctx, key).Result()
 	if err != nil {
-		zap.L().Warn("failed to check token existence", zap.String("key", key), zap.Error(err))
+		s.logger.Warn("failed to check token existence", zap.String("key", key), zap.Error(err))
 	}
 	return exists > 0
 }
@@ -125,7 +129,7 @@ func (s *RedisRefreshTokenStore) RevokeAll(ctx context.Context, userID uint64) e
 	iter := s.redis.Scan(ctx, 0, pattern, 100).Iterator()
 	for iter.Next(ctx) {
 		if err := s.redis.Del(ctx, iter.Val()).Err(); err != nil {
-			zap.L().Warn("failed to delete refresh token during RevokeAll", zap.String("key", iter.Val()), zap.Error(err))
+			s.logger.Warn("failed to delete refresh token during RevokeAll", zap.String("key", iter.Val()), zap.Error(err))
 		}
 	}
 	return iter.Err()

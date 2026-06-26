@@ -393,8 +393,12 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 		if itemJson == nil {
 			return nil // 任意碎片缺失则视为缓存未命中
 		}
+		itemStr, ok := itemJson.(string)
+		if !ok {
+			return nil
+		}
 		var item FeedItemResponse
-		if err := json.Unmarshal([]byte(itemJson.(string)), &item); err != nil {
+		if err := json.Unmarshal([]byte(itemStr), &item); err != nil {
 			return nil
 		}
 		items = append(items, item)

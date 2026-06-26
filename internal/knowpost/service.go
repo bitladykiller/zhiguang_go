@@ -5,6 +5,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/cache"
 	"github.com/zhiguang/app/pkg/config"
@@ -44,6 +45,7 @@ type KnowPostService struct {
 	ossCfg    *config.OssConfig
 	counter   CounterClient
 	feedCache FeedCacheInvalidator
+	logger    *zap.Logger
 }
 
 const (
@@ -74,7 +76,11 @@ func NewKnowPostService(
 	ossCfg *config.OssConfig,
 	counter CounterClient,
 	feedCache FeedCacheInvalidator,
+	logger *zap.Logger,
 ) *KnowPostService {
+	if logger == nil {
+		logger = zap.L()
+	}
 	return &KnowPostService{
 		db:        db,
 		repo:      NewKnowPostRepository(db),
@@ -85,5 +91,6 @@ func NewKnowPostService(
 		ossCfg:    ossCfg,
 		counter:   counter,
 		feedCache: feedCache,
+		logger:    logger,
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 const (
@@ -157,7 +158,9 @@ func (l *Lock) Release() {
 
 	releaseCtx, cancel := context.WithTimeout(l.parentCtxOrDefault(), l.options.OpTimeout)
 	defer cancel()
-	_, _ = releaseScript.Run(releaseCtx, l.client, []string{l.lockKey}, l.token).Result()
+	if _, err := releaseScript.Run(releaseCtx, l.client, []string{l.lockKey}, l.token).Result(); err != nil {
+		zap.L().Warn("redislock release failed", zap.String("key", l.lockKey), zap.Error(err))
+	}
 }
 
 // watchdog 在业务仍持有锁期间周期性续租。

@@ -122,7 +122,7 @@ func (c *Consumer) Start(ctx context.Context) {
 
 		if err := c.handleMessageWithRetry(ctx, msg); err != nil {
 			c.logWarn("process outbox kafka message exhausted retries, will skip", err)
-			c.recordFailedMessage(msg.Value, err)
+			c.recordFailedMessage(ctx, msg.Value, err)
 			if err := c.reader.CommitMessages(ctx, msg); err != nil {
 				c.logWarn("commit skipped outbox kafka message failed", err)
 			}
@@ -154,11 +154,11 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, msg kafka.Message
 }
 
 // recordFailedMessage 将失败消息写入死信记录。
-func (c *Consumer) recordFailedMessage(value []byte, cause error) {
+func (c *Consumer) recordFailedMessage(ctx context.Context, value []byte, cause error) {
 	if c.failureRecorder == nil {
 		return
 	}
-	pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	_ = c.failureRecorder.Create(pubCtx, CanalOutboxTopic, "", value, cause)
 }

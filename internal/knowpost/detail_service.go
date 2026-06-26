@@ -129,7 +129,7 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			if cached != "" {
 				resp, parseErr := s.parseDetail([]byte(cached))
 				if parseErr == nil {
-s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
+					s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
 					return s.enrichDetail(ctx, resp, currentUserID, true), true, nil
 				}
 			}
@@ -166,15 +166,15 @@ s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
 				PublishTime:    row.PublishTime,
 			}
 
-if s.counter != nil {
-			counts, err := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
-			if err != nil {
-				zap.L().Warn("failed to get detail counts", zap.Uint64("knowpostID", id), zap.Error(err))
-			} else {
-				resp.LikeCount = int64(counts["like"])
-				resp.FavoriteCount = int64(counts["fav"])
+		if s.counter != nil {
+				counts, err := s.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(id, 10), []string{"like", "fav"})
+				if err != nil {
+					s.logger.Warn("failed to get detail counts", zap.Uint64("knowpostID", id), zap.Error(err))
+				} else {
+					resp.LikeCount = int64(counts["like"])
+					resp.FavoriteCount = int64(counts["fav"])
+				}
 			}
-		}
 
 			jsonBytes, err := json.Marshal(resp)
 			if err != nil {
@@ -226,7 +226,7 @@ func (s *KnowPostService) enrichDetail(ctx context.Context, base *KnowPostDetail
 	if refreshCounts {
 		counts, err := s.counter.GetCounts(ctx, "knowpost", base.ID, []string{"like", "fav"})
 		if err != nil {
-			zap.L().Warn("failed to enrich detail counts", zap.String("knowpostID", base.ID), zap.Error(err))
+			s.logger.Warn("failed to enrich detail counts", zap.String("knowpostID", base.ID), zap.Error(err))
 		} else if counts != nil {
 			base.LikeCount = int64(counts["like"])
 			base.FavoriteCount = int64(counts["fav"])
@@ -236,13 +236,13 @@ func (s *KnowPostService) enrichDetail(ctx context.Context, base *KnowPostDetail
 	if currentUserID != nil {
 		liked, err := s.counter.IsLiked(ctx, *currentUserID, "knowpost", base.ID)
 		if err != nil {
-			zap.L().Warn("failed to check IsLiked in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
+			s.logger.Warn("failed to check IsLiked in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
 		} else {
 			base.Liked = &liked
 		}
 		faved, err := s.counter.IsFaved(ctx, *currentUserID, "knowpost", base.ID)
 		if err != nil {
-			zap.L().Warn("failed to check IsFaved in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
+			s.logger.Warn("failed to check IsFaved in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
 		} else {
 			base.Faved = &faved
 		}

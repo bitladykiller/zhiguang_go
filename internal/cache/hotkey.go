@@ -123,7 +123,6 @@ func (d *HotKeyDetector) flushLoop(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			zap.L().Error("hotkey flushLoop panic recovered", zap.Any("panic", r))
-			go d.flushLoop(ctx)
 		}
 	}()
 
@@ -178,7 +177,9 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 			statKey := hotwinKeyPrefix + cacheKey
 			cmds[i] = pipeRead.HGetAll(ctx, statKey)
 		}
-		_, _ = pipeRead.Exec(ctx)
+		if _, err := pipeRead.Exec(ctx); err != nil {
+			zap.L().Warn("hotkey pipeRead exec failed", zap.Error(err))
+		}
 
 		pipeMark := d.redis.Pipeline()
 		for i, cacheKey := range cacheKeys {
@@ -193,7 +194,9 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 				pipeMark.Set(ctx, hotkeyActivePrefix+cacheKey, "1", d.markTTL)
 			}
 		}
-		_, _ = pipeMark.Exec(ctx)
+		if _, err := pipeMark.Exec(ctx); err != nil {
+			zap.L().Warn("hotkey pipeMark exec failed", zap.Error(err))
+		}
 	}
 
 	if len(newLevels) > 0 {

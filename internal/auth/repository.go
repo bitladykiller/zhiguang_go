@@ -33,8 +33,11 @@ type AuthRepository struct {
 //
 // 返回值:
 //   - *AuthRepository: 已初始化的仓储实例
-func NewAuthRepository(db sqlx.ExtContext) *AuthRepository {
-	return &AuthRepository{db: db, logger: zap.L()}
+func NewAuthRepository(db sqlx.ExtContext, logger *zap.Logger) *AuthRepository {
+	if logger == nil {
+		logger = zap.L()
+	}
+	return &AuthRepository{db: db, logger: logger}
 }
 
 // WithDB 克隆绑定到指定 sqlx 句柄的新仓储实例，用于事务上下文。

@@ -16,7 +16,7 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 	rlKey := fmt.Sprintf("rl:follow:%d", fromUserID)
 	allowed, err := s.redis.Eval(ctx, TOKEN_BUCKET_LUA, []string{rlKey}, 10, 1).Int()
 	if err != nil {
-		zap.L().Warn("token bucket eval failed", zap.String("key", rlKey), zap.Error(err))
+		s.logger.Warn("token bucket eval failed", zap.String("key", rlKey), zap.Error(err))
 		return false, nil
 	}
 	if allowed == 0 {
@@ -71,6 +71,8 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 			return err
 		}
 		if reverseAffected == 0 {
+			s.logger.Warn("unfollow: CancelFollower affected 0 rows, possible data inconsistency",
+				zap.Uint64("fromUserID", fromUserID), zap.Uint64("toUserID", toUserID))
 		}
 		return nil
 	}, []outbox.OutboxEvent{{

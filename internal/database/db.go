@@ -120,7 +120,9 @@ func NewRedisClient(cfg *config.RedisConfig) *redis.Client {
 	}
 
 	client := redis.NewClient(opts)
-	if err := client.Ping(context.Background()).Err(); err != nil {
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(pingCtx).Err(); err != nil {
 		zap.L().Warn("redis ping failed, connections will be established lazily", zap.Error(err))
 	}
 	return client

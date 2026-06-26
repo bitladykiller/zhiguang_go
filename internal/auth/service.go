@@ -39,6 +39,7 @@ type AuthService struct {
 	refreshLockOptions   redislock.Options
 	refreshLockRetryWait time.Duration
 	refreshLockTimeout   time.Duration
+	logger               *zap.Logger
 }
 
 // NewAuthService 使用完整依赖创建 AuthService。
@@ -57,7 +58,11 @@ func NewAuthService(
 	tokenStore RefreshTokenStore,
 	redisClient *redis.Client,
 	cfg *config.AuthConfig,
+	logger *zap.Logger,
 ) *AuthService {
+	if logger == nil {
+		logger = zap.L()
+	}
 	return &AuthService{
 		repo:                 repo,
 		verifSvc:             verifSvc,
@@ -68,6 +73,7 @@ func NewAuthService(
 		refreshLockOptions:   refreshSessionLockOptions(cfg),
 		refreshLockRetryWait: refreshSessionRetryInterval(cfg),
 		refreshLockTimeout:   refreshSessionLockTimeout(cfg),
+		logger:               logger,
 	}
 }
 
@@ -179,7 +185,7 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 	}
 
 	user := &User{
-		Nickname:     generateNickname(),
+		Nickname:     generateNickname(s.logger),
 		PasswordHash: passwordHash,
 	}
 	switch req.IdentifierType {
@@ -365,7 +371,7 @@ func (s *AuthService) Logout(ctx context.Context, req *TokenRefreshRequest) {
 	}
 	if jwtClaims, ok := claims.(*JwtClaims); ok {
 		if err := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); err != nil {
-			zap.L().Warn("failed to revoke refresh token during logout", zap.Uint64("userID", jwtClaims.UID), zap.String("tokenID", jwtClaims.ID), zap.Error(err))
+			s.logger.Warn("failed to revoke refresh token during logout", zap.Uint64("userID", jwtClaims.UID), zap.String("tokenID", jwtClaims.ID), zap.Error(err))
 		}
 	}
 }
@@ -618,13 +624,13 @@ func ensureVerificationSuccess(result *VerificationCheckResult) *errcode.AppErro
 //   - charset[n.Int64()]:
 //     用生成的随机数从字符集中选出一个字符。
 //     循环 8 次，生成 8 位随机字符组成后缀。
-func generateNickname() string {
+func generateNickname(logger *zap.Logger) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	suffix := make([]byte, 8)
 	for i := range suffix {
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
 	if err != nil {
-		zap.L().Warn("failed to generate secure random number for nickname", zap.Error(err))
+		logger.Warn("failed to generate secure random number for nickname", zap.Error(err))
 		n = big.NewInt(0)
 	}
 	suffix[i] = charset[n.Int64()]

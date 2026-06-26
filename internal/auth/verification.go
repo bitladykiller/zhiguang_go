@@ -41,6 +41,7 @@ type VerificationService struct {
 	sendLockOptions   redislock.Options
 	sendLockRetryWait time.Duration
 	operationTimeout  time.Duration
+	logger            *zap.Logger
 }
 
 // NewVerificationService 创建验证码服务实例。
@@ -51,13 +52,17 @@ type VerificationService struct {
 //
 // 返回值:
 //   - *VerificationService: 验证码服务实例
-func NewVerificationService(redisClient *redis.Client, cfg *config.VerificationConfig) *VerificationService {
+func NewVerificationService(redisClient *redis.Client, cfg *config.VerificationConfig, logger *zap.Logger) *VerificationService {
+	if logger == nil {
+		logger = zap.L()
+	}
 	return &VerificationService{
 		redis:             redisClient,
 		config:            cfg,
 		sendLockOptions:   verificationSendLockOptions(cfg),
 		sendLockRetryWait: verificationSendRetryInterval(cfg),
 		operationTimeout:  verificationOperationTimeout(cfg),
+		logger:            logger,
 	}
 }
 
@@ -131,7 +136,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	}
 
 	// 生成验证码
-	code := generateCode(s.config.CodeLength)
+	code := generateCode(s.config.CodeLength, s.logger)
 
 	// 通过 pipeline 批量写入 Redis（验证码 + 间隔锁 + 日计数原子递增）
 	codeKey := fmt.Sprintf("%s%s:%s", prefixCode, scene, identifier)
@@ -151,7 +156,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	// 重置尝试次数计数器（新验证码意味着新的尝试配额）
 	attemptKey := fmt.Sprintf("%s%s:%s", prefixAttempts, scene, identifier)
 	if err := s.redis.Del(ctx, attemptKey).Err(); err != nil {
-		zap.L().Warn("failed to reset attempt counter", zap.String("attemptKey", attemptKey), zap.Error(err))
+		s.logger.Warn("failed to reset attempt counter", zap.String("attemptKey", attemptKey), zap.Error(err))
 	}
 
 	// 生产环境应走短信/邮件渠道；当前先输出到标准输出便于联调。
@@ -245,7 +250,7 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 
 	// 成功后清理验证码和尝试次数
 	if err := s.redis.Del(ctx, codeKey, attemptKey).Err(); err != nil {
-		zap.L().Warn("failed to delete code/attempt keys after successful verification", zap.String("codeKey", codeKey), zap.String("attemptKey", attemptKey), zap.Error(err))
+		s.logger.Warn("failed to delete code/attempt keys after successful verification", zap.String("codeKey", codeKey), zap.String("attemptKey", attemptKey), zap.Error(err))
 	}
 	return success()
 }
@@ -266,12 +271,12 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 //   - length <= 0 时返回空字符串（调用方保证传入合法参数）
 //   - crypto/rand 读取失败时 n 为 0，极端情况下可能影响安全性，但 rand.Int 错误已被忽略
 //     （实际生产中 /dev/urandom 极少失败，忽略错误以简化代码）
-func generateCode(length int) string {
+func generateCode(length int, logger *zap.Logger) string {
 	code := make([]byte, length)
 	for i := range code {
 		n, err := rand.Int(rand.Reader, big.NewInt(10))
 	if err != nil {
-		zap.L().Warn("failed to generate secure random code digit", zap.Error(err))
+		logger.Warn("failed to generate secure random code digit", zap.Error(err))
 		n = big.NewInt(0)
 	}
 	code[i] = byte('0' + n.Int64())

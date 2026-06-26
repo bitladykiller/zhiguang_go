@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
 // ============================================================================
@@ -163,7 +165,7 @@ func TestGetCounts_RedisError(t *testing.T) {
 	defer shutdown()
 
 	rdb.Close()
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, zap.NewNop())
 
 	_, err := svc.GetCounts(context.Background(), "post", "1", []string{"like"})
 	// After redis.Close(), the connection is closed.

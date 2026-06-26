@@ -97,7 +97,7 @@ func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType,
 			for i, cmd := range cmds {
 				val, err := cmd.Result()
 				if err != nil {
-					zap.L().Warn("bitcount shard failed", zap.String("key", keys[i]), zap.Error(err))
+					s.logger.Warn("bitcount shard failed", zap.String("key", keys[i]), zap.Error(err))
 					continue
 				}
 				total += val

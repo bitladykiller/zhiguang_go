@@ -8,6 +8,7 @@ import (
 	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
+	"go.uber.org/zap"
 )
 
 type LlmHandler struct {
@@ -93,6 +94,7 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
+				zap.L().Error("ragSvc.Query panicked", zap.Any("panic", r))
 				select {
 				case streamChan <- fmt.Sprintf("data: {\"error\": \"internal server error\"}\n\n"):
 				default:

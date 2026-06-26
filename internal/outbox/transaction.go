@@ -29,27 +29,36 @@ func RunInTx(
 
 	defer func() {
 		if r := recover(); r != nil {
-			_ = tx.Rollback()
-			err = fmt.Errorf("outbox: panic in mutations: %v", r)
+			if rbErr := tx.Rollback(); rbErr != nil {
+				err = fmt.Errorf("outbox: panic: %v (rollback: %w)", r, rbErr)
+			} else {
+				err = fmt.Errorf("outbox: panic in mutations: %v", r)
+			}
 		}
 	}()
 
 	if err = mutations(tx); err != nil {
-		_ = tx.Rollback()
+		if rbErr := tx.Rollback(); rbErr != nil {
+			return fmt.Errorf("outbox: rollback after mutations error: %w (original: %v)", rbErr, err)
+		}
 		return err
 	}
 
 	for _, evt := range events {
 		payload, marshalErr := json.Marshal(evt.Payload)
 		if marshalErr != nil {
-			_ = tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				return fmt.Errorf("outbox: rollback after marshal error: %w (original: %w)", rbErr, marshalErr)
+			}
 			return fmt.Errorf("outbox: marshal event %s: %w", evt.EventType, marshalErr)
 		}
 		if _, execErr := tx.ExecContext(ctx,
 			"INSERT INTO outbox (id, aggregate_type, aggregate_id, type, payload) VALUES (?, ?, ?, ?, ?)",
 			evt.ID, evt.AggregateType, evt.AggregateID, evt.EventType, string(payload),
 		); execErr != nil {
-			_ = tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				return fmt.Errorf("outbox: rollback after exec error: %w (original: %v)", rbErr, execErr)
+			}
 			return execErr
 		}
 	}

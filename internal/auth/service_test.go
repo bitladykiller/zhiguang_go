@@ -5,6 +5,7 @@ import (
 
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
+	"go.uber.org/zap"
 )
 
 func TestValidateIdentifier_Phone(t *testing.T) {
@@ -63,7 +64,7 @@ func TestEnsureVerificationSuccess(t *testing.T) {
 }
 
 func TestGenerateNickname(t *testing.T) {
-	name := generateNickname()
+	name := generateNickname(zap.NewNop())
 	if len(name) < 10 {
 		t.Fatalf("expected nickname length >= 10, got %d", len(name))
 	}
