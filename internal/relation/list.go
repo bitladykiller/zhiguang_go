@@ -107,7 +107,11 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 	var nextCursor int64
 	if len(result) > 0 {
 		lastID := strconv.FormatUint(result[len(result)-1], 10)
-		score, _ := s.redis.ZScore(ctx, zsetKey, lastID).Result()
+		score, err := s.redis.ZScore(ctx, zsetKey, lastID).Result()
+		if err != nil {
+			s.logger.Warn("failed to get zscore for cursor pagination", zap.String("zsetKey", zsetKey), zap.String("lastID", lastID), zap.Error(err))
+			return result, 0, nil
+		}
 		nextCursor = int64(score)
 	}
 

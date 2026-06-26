@@ -11,12 +11,12 @@ import (
 )
 
 type DirctPollConsumer struct {
-	db         *sqlx.DB
-	topicName  string
-	batchSize  int
+	db           *sqlx.DB
+	topicName    string
+	batchSize    int
 	pollInterval time.Duration
-	handler    RowHandler
-	logger     *zap.Logger
+	handler      RowHandler
+	logger       *zap.Logger
 }
 
 func NewDirctPollConsumer(
@@ -109,4 +109,10 @@ func (c *DirctPollConsumer) logInfo(msg string) {
 	if c.logger != nil {
 		c.logger.Info(msg, zap.String("topic", c.topicName))
 	}
+}
+
+type DirectPollConsumer = DirctPollConsumer
+
+func NewDirectPollConsumer(db *sqlx.DB, topicName string, batchSize int, pollInterval time.Duration, handler RowHandler, logger *zap.Logger) *DirectPollConsumer {
+	return NewDirctPollConsumer(db, topicName, batchSize, pollInterval, handler, logger)
 }

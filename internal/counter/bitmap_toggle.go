@@ -9,8 +9,6 @@ package counter
 import (
 	"context"
 	"fmt"
-
-	"go.uber.org/zap"
 )
 
 // Like 为指定用户对指定实体打开点赞状态。
@@ -59,16 +57,9 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 			Delta:      delta,
 		}
 		if s.producer != nil {
-			go func(evt *CounterEvent) {
-				defer func() {
-					if r := recover(); r != nil {
-						zap.L().Error("counter toggle event publish panic", zap.Any("panic", r))
-					}
-				}()
-				pubCtx, cancel := context.WithTimeout(ctx, s.publishTimeout)
-				defer cancel()
-				s.publishCounterEvent(pubCtx, evt)
-			}(event)
+			pubCtx, cancel := context.WithTimeout(ctx, s.publishTimeout)
+			defer cancel()
+			s.publishCounterEvent(pubCtx, event)
 		}
 		return true, nil
 	}

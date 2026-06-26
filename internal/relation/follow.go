@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jmoiron/sqlx"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/outbox"
 )
@@ -14,7 +15,11 @@ import (
 func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	rlKey := fmt.Sprintf("rl:follow:%d", fromUserID)
 	allowed, err := s.redis.Eval(ctx, TOKEN_BUCKET_LUA, []string{rlKey}, 10, 1).Int()
-	if err != nil || allowed == 0 {
+	if err != nil {
+		zap.L().Warn("token bucket eval failed", zap.String("key", rlKey), zap.Error(err))
+		return false, nil
+	}
+	if allowed == 0 {
 		return false, nil
 	}
 

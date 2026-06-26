@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // ============================================================================
@@ -82,7 +84,9 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 	pipe.Set(ctx, s.backoffKey(entityType, entityID), until, 0)
 	pipe.Set(ctx, expKey, attemptCount+1, 0)
 	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
-	pipe.Exec(ctx)
+	if _, err := pipe.Exec(ctx); err != nil {
+		zap.L().Warn("escalateBackoff pipeline exec failed", zap.Error(err))
+	}
 }
 
 // resetBackoff 重置指定实体的退避状态。
@@ -104,5 +108,7 @@ func (s *CounterService) resetBackoff(ctx context.Context, entityType, entityID 
 	pipe.Del(ctx, s.backoffKey(entityType, entityID))
 	pipe.Del(ctx, s.backoffExpKey(entityType, entityID))
 	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
-	pipe.Exec(ctx)
+	if _, err := pipe.Exec(ctx); err != nil {
+		zap.L().Warn("resetBackoff pipeline exec failed", zap.Error(err))
+	}
 }

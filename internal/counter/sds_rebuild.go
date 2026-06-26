@@ -15,6 +15,7 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"github.com/zhiguang/app/pkg/redislock"
 )
 
@@ -93,9 +94,10 @@ func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType,
 			if _, err := pipe.Exec(ctx); err != nil {
 				return 0, fmt.Errorf("bit count shards: pipeline exec: %w", err)
 			}
-			for _, cmd := range cmds {
+			for i, cmd := range cmds {
 				val, err := cmd.Result()
 				if err != nil {
+					zap.L().Warn("bitcount shard failed", zap.String("key", keys[i]), zap.Error(err))
 					continue
 				}
 				total += val

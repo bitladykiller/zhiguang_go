@@ -4,6 +4,7 @@ import (
 	"github.com/coocood/freecache"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/cache"
 	"github.com/zhiguang/app/internal/knowpost"
@@ -34,12 +35,13 @@ func initKnowPost(
 	cfg *config.Config,
 	idGen *idgen.SnowflakeGenerator,
 	counter knowpost.CounterClient,
+	logger *zap.Logger,
 ) (*knowpost.KnowPostHandler, *knowpost.KnowPostService, *knowpost.KnowPostFeedService) {
 	detailCache := &knowpost.PrefixCache{Cache: l1Cache, Prefix: "d:"}
 	feedPublicCache := &knowpost.PrefixCache{Cache: l1Cache, Prefix: "fp:"}
 	feedMineCache := &knowpost.PrefixCache{Cache: l1Cache, Prefix: "fm:"}
 
-	feedSvc := knowpost.NewKnowPostFeedService(knowpost.NewKnowPostRepository(db), redisClient, feedPublicCache, feedMineCache, hotKeyDetector, counter)
+	feedSvc := knowpost.NewKnowPostFeedService(knowpost.NewKnowPostRepository(db), redisClient, feedPublicCache, feedMineCache, hotKeyDetector, counter, logger)
 	kpSvc := knowpost.NewKnowPostService(db, idGen, redisClient, detailCache, hotKeyDetector, &cfg.OSS, counter, feedSvc)
 	kpHandler := knowpost.NewKnowPostHandler(kpSvc, kpSvc, feedSvc)
 

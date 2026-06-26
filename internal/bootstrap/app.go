@@ -104,9 +104,9 @@ func InitializeApp(configPath string) (*server.App, error) {
 	}
 
 	// knowpost 构造时注入 counterSvc 和 feedSvc
-	kpHandler, _, _ := initKnowPost(db, redisClient, sharedFreeCache, hotKeyDetector, cfg, idGen, counterSvc)
+	kpHandler, _, _ := initKnowPost(db, redisClient, sharedFreeCache, hotKeyDetector, cfg, idGen, counterSvc, logger)
 
-	relHandler, _ := initRelation(db, redisClient, idGen)
+	relHandler, _ := initRelation(db, redisClient, idGen, logger)
 
 	searchHandler, searchOutboxConsumer, relationOutboxConsumer := initSearch(db, redisClient, counterSvc, cfg, logger)
 

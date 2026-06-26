@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/relation"
 	"github.com/zhiguang/app/pkg/idgen"
@@ -21,8 +22,9 @@ func initRelation(
 	db *sqlx.DB,
 	redisClient *redis.Client,
 	idGen *idgen.SnowflakeGenerator,
+	logger *zap.Logger,
 ) (*relation.RelationHandler, *relation.RelationService) {
-	relSvc := relation.NewRelationService(db, redisClient, 10*1024*1024, idGen)
+	relSvc := relation.NewRelationService(db, redisClient, 10*1024*1024, idGen, logger)
 	relHandler := relation.NewRelationHandler(relSvc)
 	return relHandler, relSvc
 }

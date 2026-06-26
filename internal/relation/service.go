@@ -58,14 +58,17 @@ type IDGenerator interface {
 }
 
 // NewRelationService 创建一个带多级缓存的关系服务实例。
-func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDGenerator) *RelationService {
+func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDGenerator, logger *zap.Logger) *RelationService {
+	if logger == nil {
+		logger = zap.L()
+	}
 	return &RelationService{
 		db:     db,
 		redis:  rdb,
 		repo:   NewRelationRepository(db),
 		l1:     freecache.NewCache(cacheSize),
 		idGen:  idGen,
-		logger: zap.L(),
+		logger: logger,
 	}
 }
 

@@ -65,7 +65,7 @@ func initSearch(
 		)
 	}
 
-	relationEventProcessor := relation.NewEventProcessor(redisClient, counter.NewUserCounter(counterSvc))
+	relationEventProcessor := relation.NewEventProcessor(redisClient, counter.NewUserCounter(counterSvc), logger)
 	relationRowHandler := &relation.RelationRowHandler{Processor: relationEventProcessor}
 	relationOutboxConsumer := outbox.NewConsumer(
 		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, outbox.CanalOutboxTopic, outbox.RelationOutboxConsumerGroup),

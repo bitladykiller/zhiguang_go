@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // UserCounterUpdater 定义关系事件处理所需的用户维度计数更新接口。
@@ -28,6 +29,7 @@ type UserCounterUpdater interface {
 type EventProcessor struct {
 	redis   *redis.Client
 	counter UserCounterUpdater
+	logger  *zap.Logger
 }
 
 // NewEventProcessor 创建关系事件处理器实例。
@@ -43,13 +45,14 @@ type EventProcessor struct {
 // 设计决策：
 //   返回 nil 而非 panic，使调用方可以在事件处理器未初始化时安全地消费消息
 // （在配置不完整时优雅降级）。
-func NewEventProcessor(redisClient *redis.Client, counter UserCounterUpdater) *EventProcessor {
+func NewEventProcessor(redisClient *redis.Client, counter UserCounterUpdater, logger *zap.Logger) *EventProcessor {
 	if redisClient == nil {
 		return nil
 	}
 	return &EventProcessor{
 		redis:   redisClient,
 		counter: counter,
+		logger:  logger,
 	}
 }
 
@@ -100,8 +103,12 @@ func (p *EventProcessor) Process(ctx context.Context, evt RelationEvent) error {
 		if err := p.redis.ZAdd(ctx, followersZSetKey(evt.ToUserID), redis.Z{Score: now, Member: strconv.FormatUint(evt.FromUserID, 10)}).Err(); err != nil {
 			return err
 		}
-		p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour)
-		p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour)
+		if _, err := p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour).Result(); err != nil {
+			p.logger.Warn("failed to set expire on following zset", zap.String("zsetKey", followingZSetKey(evt.FromUserID)), zap.Error(err))
+		}
+		if _, err := p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour).Result(); err != nil {
+			p.logger.Warn("failed to set expire on followers zset", zap.String("zsetKey", followersZSetKey(evt.ToUserID)), zap.Error(err))
+		}
 		if p.counter != nil {
 			if err := p.counter.IncrementFollowings(ctx, evt.FromUserID, 1); err != nil {
 				return err
@@ -117,8 +124,12 @@ func (p *EventProcessor) Process(ctx context.Context, evt RelationEvent) error {
 		if err := p.redis.ZRem(ctx, followersZSetKey(evt.ToUserID), strconv.FormatUint(evt.FromUserID, 10)).Err(); err != nil {
 			return err
 		}
-		p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour)
-		p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour)
+		if _, err := p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour).Result(); err != nil {
+			p.logger.Warn("failed to set expire on following zset", zap.String("zsetKey", followingZSetKey(evt.FromUserID)), zap.Error(err))
+		}
+		if _, err := p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour).Result(); err != nil {
+			p.logger.Warn("failed to set expire on followers zset", zap.String("zsetKey", followersZSetKey(evt.ToUserID)), zap.Error(err))
+		}
 		if p.counter != nil {
 			if err := p.counter.IncrementFollowings(ctx, evt.FromUserID, -1); err != nil {
 				return err

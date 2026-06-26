@@ -85,7 +85,9 @@ func (s *RelationService) fillZSet(ctx context.Context, listType string, userID 
 	if err := s.redis.ZAdd(ctx, zsetKey, members...).Err(); err != nil {
 		return false, fmt.Errorf("fill zset: redis zadd: %w", err)
 	}
-	s.redis.Expire(ctx, zsetKey, relationListCacheTTL)
+if err := s.redis.Expire(ctx, zsetKey, relationListCacheTTL).Err(); err != nil {
+		s.logger.Warn("failed to set expire on zset", zap.String("zsetKey", zsetKey), zap.Error(err))
+	}
 	return true, nil
 }
 

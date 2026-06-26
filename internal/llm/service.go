@@ -1,11 +1,3 @@
-// llm 包提供一组 AI 能力服务：
-//   - KnowPostDescriptionService：通过 DeepSeek API 生成帖子简洁的中文摘要（不超过 50 字）
-//   - RagQueryService：执行向量检索并以流式 SSE 方式生成问答结果
-//
-// 使用方式：
-//   这些服务在配置不完整时不会阻塞服务启动，而是由调用方判断并返回 503。
-//   在 bootstrap 中通过 buildDescriptionService / buildRagQueryService 函数
-//   检测配置完整性后创建服务实例或返回 nil。
 package llm
 
 import (
@@ -17,50 +9,31 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zhiguang/app/pkg/config"
 )
 
-// ============================================================================
-// KnowPostDescriptionService：AI 摘要生成
-// ============================================================================
-
-// KnowPostDescriptionService 为知文内容生成简洁中文摘要。
 type KnowPostDescriptionService struct {
-	cfg *config.LLMConfig
+	cfg    *config.LLMConfig
+	client *http.Client
 }
 
-// NewKnowPostDescriptionService 创建 AI 摘要生成服务。
-//
-// 参数：
-//   - cfg: LLM 配置（包含 DeepSeek 的 APIKey、BaseURL、Model、Temperature）
 func NewKnowPostDescriptionService(cfg *config.LLMConfig) *KnowPostDescriptionService {
-	return &KnowPostDescriptionService{cfg: cfg}
+	timeout := 30 * time.Second
+	if cfg != nil && cfg.TimeoutMs > 0 {
+		timeout = time.Duration(cfg.TimeoutMs) * time.Millisecond
+	}
+	return &KnowPostDescriptionService{
+		cfg:    cfg,
+		client: &http.Client{Timeout: timeout},
+	}
 }
 
-// SuggestDescription 调用 DeepSeek Chat API 为知文生成不超过 50 字的中文摘要。
-//
-// 参数：
-//   - title: 知文标题
-//   - content: 知文正文（超过 2000 字会被自动截断）
-//
-// 返回值：
-//   - string: AI 生成的摘要文本
-//   - error: 如果 DeepSeek API 调用失败、响应解析失败或返回空结果则返回错误
-//
-// 函数调用说明：
-//   - http.Post(url, contentType, body):
-//     Go 标准库的 HTTP POST 请求。需要设置超时防止 API 阻塞。
-//   - json.Marshal(reqBody):
-//     构造请求体。messages 数组包含 system prompt 和 user prompt 两个消息。
-//   - io.ReadAll(resp.Body):
-//     读取完整的 API 响应体后解析。大响应场景下应使用流式解析。
-//   - json.Unmarshal(body, &result):
-//     解析 DeepSeek 兼容的 OpenAI 格式响应。
-//     标准格式：{"choices": [{"message": {"content": "..."}}]}
 func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, title, content string) (string, error) {
-	// 截断正文，避免超过模型 token 限制
-	if len(content) > 2000 {
+	if utf8.RuneCountInString(content) > 2000 {
+		content = string([]rune(content)[:2000])
+	} else if len(content) > 2000 {
 		content = content[:2000]
 	}
 
@@ -85,12 +58,6 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 		return "", fmt.Errorf("suggest description: marshal request: %w", err)
 	}
 
-	// 使用配置的超时，未配置则默认 30 秒
-	timeout := 30 * time.Second
-	if s.cfg.TimeoutMs > 0 {
-		timeout = time.Duration(s.cfg.TimeoutMs) * time.Millisecond
-	}
-	client := &http.Client{Timeout: timeout}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		s.cfg.DeepSeek.BaseURL+"/v1/chat/completions",
 		bytes.NewReader(jsonBody),
@@ -100,7 +67,7 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("deepseek api: %w", err)
 	}
@@ -123,7 +90,7 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w, body: %s", err, string(body))
+		return "", fmt.Errorf("parse response: %w", err)
 	}
 
 	if result.Error != nil {
@@ -137,42 +104,15 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 	return strings.TrimSpace(result.Choices[0].Message.Content), nil
 }
 
-// ============================================================================
-// RagQueryService：流式 RAG 问答
-// ============================================================================
-
-// RagQueryService 执行向量检索与 LLM 流式问答。
 type RagQueryService struct {
 	llmCfg *config.LLMConfig
 	esURL  string
 }
 
-// NewRagQueryService 创建 RAG 问答服务。
-//
-// 参数：
-//   - llmCfg: LLM 配置（含 DeepSeek chat 模型和 OpenAI embedding 模型）
-//   - esURL: Elasticsearch 集群地址
 func NewRagQueryService(llmCfg *config.LLMConfig, esURL string) *RagQueryService {
 	return &RagQueryService{llmCfg: llmCfg, esURL: esURL}
 }
 
-// Query 执行基于 RAG 的问答，并把输出 token 流式写入目标 channel。
-//
-// 完整流程（当前为占位实现，待向量检索链路就绪后启用）：
-//  1. 使用 OpenAI 兼容接口为问题生成 embedding。
-//  2. 在 ES 中检索 top-K 相似文本片段（余弦相似度）。
-//  3. 用检索到的上下文拼装 prompt。
-//  4. 调用 DeepSeek API 开启 stream=true 做流式生成。
-//  5. 将 token 逐段按 SSE 格式写入 streamChan。
-//
-// 当前实现：
-//   返回一条占位消息，用于验证 SSE 链路是否正常。
-//   客户端可通过检查消息内容判断服务端是否真正就绪。
-//
-// 参数：
-//   - postID: 知文 ID（用于筛选检索范围）
-//   - question: 用户提出的问题
-//   - streamChan: 用于写入 SSE 格式 token 的 channel（函数会在完成后 close）
 func (s *RagQueryService) Query(ctx context.Context, postID uint64, question string, streamChan chan<- string) error {
 	defer close(streamChan)
 

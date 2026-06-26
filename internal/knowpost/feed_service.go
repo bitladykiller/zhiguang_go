@@ -92,6 +92,7 @@ func NewKnowPostFeedService(
 	l1Mine *PrefixCache,
 	hotKey *cache.HotKeyDetector,
 	counter CounterClient,
+	logger *zap.Logger,
 ) *KnowPostFeedService {
 	return &KnowPostFeedService{
 		repo:     repo,
@@ -100,7 +101,7 @@ func NewKnowPostFeedService(
 		l1Mine:   l1Mine,
 		hotKey:   hotKey,
 		counter:  counter,
-		logger:   zap.L(),
+		logger:   logger,
 	}
 }
 
@@ -485,6 +486,9 @@ func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, h
 	// 把页键注册到 pages 集合中，便于后续批量失效
 	if err := s.redis.SAdd(ctx, "feed:public:pages", idsKey).Err(); err != nil {
 		s.logger.Warn("failed to register feed page key", zap.String("idsKey", idsKey), zap.Error(err))
+	}
+	if err := s.redis.Expire(ctx, "feed:public:pages", 24*time.Hour).Err(); err != nil {
+		s.logger.Warn("failed to set expire on feed public pages set", zap.Error(err))
 	}
 }
 

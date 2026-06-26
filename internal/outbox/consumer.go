@@ -158,7 +158,9 @@ func (c *Consumer) recordFailedMessage(value []byte, cause error) {
 	if c.failureRecorder == nil {
 		return
 	}
-	_ = c.failureRecorder.Create(context.WithoutCancel(context.Background()), CanalOutboxTopic, "", value, cause)
+	pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = c.failureRecorder.Create(pubCtx, CanalOutboxTopic, "", value, cause)
 }
 
 // handleMessage 解析一条 Kafka 消息，提取 outbox 行并逐行处理。
