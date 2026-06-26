@@ -83,7 +83,11 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 	r := gin.New()
 
 	// --- 全局中间件 ---
-	r.Use(middleware.TraceMiddleware(30 * time.Second))
+	timeout := 30 * time.Second
+	if cfg != nil {
+		timeout = cfg.Server.HTTPRequestTimeout()
+	}
+	r.Use(middleware.TraceMiddleware(timeout))
 	r.Use(middleware.LoggerMiddleware(logger))
 	r.Use(middleware.ErrorLogMiddleware(logger))
 	r.Use(middleware.CorsMiddleware())

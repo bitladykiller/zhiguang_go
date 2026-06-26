@@ -54,10 +54,7 @@ func (s *CounterService) recordFailedEvent(ctx context.Context, stage string, ev
 		return nil
 	}
 
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
+	payload := string(MarshalCounterEventJSON(event))
 
 	return s.failureRecorder.Create(ctx, &CounterFailedMessage{
 		Stage:        stage,
@@ -67,7 +64,7 @@ func (s *CounterService) recordFailedEvent(ctx context.Context, stage string, ev
 		EntityID:     event.EntityID,
 		Metric:       event.Metric,
 		Delta:        event.Delta,
-		Payload:      string(payload),
+		Payload:      payload,
 		ErrorMessage: failureErrorMessage(cause),
 		RetryCount:   0,
 		Status:       counterFailureStatusPending,

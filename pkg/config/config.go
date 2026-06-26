@@ -39,10 +39,25 @@ type Config struct {
 	Relation  RelationConfig  `yaml:"relation"`
 }
 
+const (
+	DefaultServerPort              = 8080
+	DefaultHTTPRequestTimeoutMs    = 30000
+	DefaultCounterPublishTimeoutMs = 3000
+)
+
 // ServerConfig 控制 HTTP 服务监听配置。
 type ServerConfig struct {
-	Port int    `yaml:"port"` // default: 8080
-	Mode string `yaml:"mode"` // "debug", "release", or "test"
+	Port                 int `yaml:"port"` // default: 8080
+	Mode                 string `yaml:"mode"` // "debug", "release", or "test"
+	RequestTimeoutMs     int `yaml:"request_timeout_ms"` // default: 30000
+}
+
+// HTTPRequestTimeout 返回全局 HTTP 请求超时；未配置或非法时使用默认值。
+func (s ServerConfig) HTTPRequestTimeout() time.Duration {
+	if s.RequestTimeoutMs <= 0 {
+		return time.Duration(DefaultHTTPRequestTimeoutMs) * time.Millisecond
+	}
+	return time.Duration(s.RequestTimeoutMs) * time.Millisecond
 }
 
 // DatabaseConfig 配置 MySQL 连接池。
@@ -241,9 +256,18 @@ type CanalConfig struct {
 
 // CounterConfig 配置 SDS 计数器重建行为。
 type CounterConfig struct {
-	Consumer ConsumerConfig `yaml:"consumer"`
-	Repair   RepairConfig   `yaml:"repair"`
-	Rebuild  RebuildConfig  `yaml:"rebuild"`
+	Consumer         ConsumerConfig `yaml:"consumer"`
+	Repair           RepairConfig   `yaml:"repair"`
+	Rebuild          RebuildConfig  `yaml:"rebuild"`
+	PublishTimeoutMs int            `yaml:"publish_timeout_ms"` // 异步发布 Kafka 超时，默认 3000
+}
+
+// PublishTimeout 返回计数事件异步发布的超时时间。
+func (c CounterConfig) PublishTimeout() time.Duration {
+	if c.PublishTimeoutMs <= 0 {
+		return time.Duration(DefaultCounterPublishTimeoutMs) * time.Millisecond
+	}
+	return time.Duration(c.PublishTimeoutMs) * time.Millisecond
 }
 
 // ConsumerConfig 控制计数 MQ 消费端的批量聚合行为。
@@ -394,6 +418,13 @@ type RelationTokenBucketConfig struct {
 // 返回值：
 //   - error: 如果有任何字段不合法，返回包含所有错误信息的 error
 //   - nil: 所有字段合法
+// ApplyDefaults 为未显式配置的字段填充默认值（在 Validate 之前调用）。
+func (c *Config) ApplyDefaults() {
+	if c.Server.Port <= 0 {
+		c.Server.Port = DefaultServerPort
+	}
+}
+
 func (c *Config) Validate() error {
 	var errs []string
 

@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_Success(t *testing.T) {
@@ -152,6 +153,14 @@ func TestItoa(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults_ServerPort(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplyDefaults()
+	if cfg.Server.Port != DefaultServerPort {
+		t.Fatalf("port = %d want %d", cfg.Server.Port, DefaultServerPort)
+	}
+}
+
 func TestValidate_OK(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{Port: 8080},
@@ -165,6 +174,13 @@ func TestValidate_OK(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() = %v", err)
+	}
+}
+
+func TestServerConfig_HTTPRequestTimeout_Default(t *testing.T) {
+	d := ServerConfig{}.HTTPRequestTimeout()
+	if d != 30*time.Second {
+		t.Fatalf("got %v", d)
 	}
 }
 

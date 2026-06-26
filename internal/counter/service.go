@@ -1,6 +1,8 @@
 package counter
 
 import (
+	"time"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/redislock"
@@ -29,6 +31,7 @@ type CounterService struct {
 	failureTopic       string
 	messageIDGenerator MessageIDGenerator
 	logger             *zap.Logger
+	publishTimeout     time.Duration
 }
 
 // NewCounterService 创建计数器服务实例。
@@ -48,10 +51,15 @@ func NewCounterService(
 	messageIDGenerator MessageIDGenerator,
 	logger *zap.Logger,
 ) *CounterService {
+	publishTimeout := config.CounterConfig{}.PublishTimeout()
+	if cfg != nil {
+		publishTimeout = cfg.PublishTimeout()
+	}
 	return &CounterService{
 		redis:              rdb,
 		producer:           producer,
 		rebuildLockOptions: rebuildLockOptions(cfg),
+		publishTimeout:     publishTimeout,
 		failureRecorder:    failureRecorder,
 		failureTopic:       failureTopic,
 		messageIDGenerator: messageIDGenerator,

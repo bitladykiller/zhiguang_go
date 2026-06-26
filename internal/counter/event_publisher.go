@@ -2,7 +2,6 @@ package counter
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/segmentio/kafka-go"
@@ -80,10 +79,7 @@ func (p *CounterEventProducer) Publish(ctx context.Context, event *CounterEvent)
 	if p == nil || p.writer == nil {
 		return fmt.Errorf("counter kafka writer is nil")
 	}
-	data, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
+	data := MarshalCounterEventJSON(event)
 	return p.writer.WriteMessages(ctx, kafka.Message{
 		Key:   []byte(event.EntityType + ":" + event.EntityID),
 		Value: data,

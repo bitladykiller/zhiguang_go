@@ -166,22 +166,34 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 	}
 
 	newLevels := make(map[string]HotKeyLevel, len(snapshot))
+	cacheKeys := make([]string, 0, len(snapshot))
 	for cacheKey := range snapshot {
-		statKey := hotwinKeyPrefix + cacheKey
+		cacheKeys = append(cacheKeys, cacheKey)
+	}
 
-		values, err := d.redis.HGetAll(ctx, statKey).Result()
-		if err != nil {
-			continue
+	if len(cacheKeys) > 0 {
+		pipeRead := d.redis.Pipeline()
+		cmds := make([]*redis.MapStringStringCmd, len(cacheKeys))
+		for i, cacheKey := range cacheKeys {
+			statKey := hotwinKeyPrefix + cacheKey
+			cmds[i] = pipeRead.HGetAll(ctx, statKey)
 		}
+		_, _ = pipeRead.Exec(ctx)
 
-		total := d.sumBucketsInWindow(values, nowBucket)
-		level := d.calcLevel(total)
-
-		newLevels[cacheKey] = level
-
-		if level >= LevelLow {
-			d.redis.Set(ctx, hotkeyActivePrefix+cacheKey, "1", d.markTTL)
+		pipeMark := d.redis.Pipeline()
+		for i, cacheKey := range cacheKeys {
+			values, err := cmds[i].Result()
+			if err != nil {
+				continue
+			}
+			total := d.sumBucketsInWindow(values, nowBucket)
+			level := d.calcLevel(total)
+			newLevels[cacheKey] = level
+			if level >= LevelLow {
+				pipeMark.Set(ctx, hotkeyActivePrefix+cacheKey, "1", d.markTTL)
+			}
 		}
+		_, _ = pipeMark.Exec(ctx)
 	}
 
 	if len(newLevels) > 0 {

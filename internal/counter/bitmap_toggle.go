@@ -9,7 +9,6 @@ package counter
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"go.uber.org/zap"
 )
@@ -66,7 +65,7 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 						zap.L().Error("counter toggle event publish panic", zap.Any("panic", r))
 					}
 				}()
-				pubCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				pubCtx, cancel := context.WithTimeout(ctx, s.publishTimeout)
 				defer cancel()
 				s.publishCounterEvent(pubCtx, evt)
 			}(event)

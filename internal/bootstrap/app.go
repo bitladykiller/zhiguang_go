@@ -65,6 +65,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
