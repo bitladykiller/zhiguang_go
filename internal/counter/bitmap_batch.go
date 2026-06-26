@@ -39,11 +39,11 @@ func (s *CounterService) batchGetBit(ctx context.Context, userID uint64, entityT
 
 	result := make(map[string]bool, len(entityIDs))
 	for i, cmd := range cmds {
-		val, err := cmd.Result()
+		bitValue, err := cmd.Result()
 		if err != nil {
 			continue
 		}
-		result[entityIDs[i]] = val == 1
+		result[entityIDs[i]] = bitValue == 1
 	}
 	return result, nil
 }

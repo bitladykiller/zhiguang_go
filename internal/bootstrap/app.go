@@ -65,6 +65,9 @@ func InitializeApp(configPath string) (*server.App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 
 	// ── 基础设施 ──
 	db, err := database.NewDB(&cfg.Database)

@@ -17,13 +17,13 @@ func ptr[T any](v T) *T { return &v }
 // ============================================================================
 
 func TestIsValidVisible(t *testing.T) {
-	valid := []string{"public", "followers", "school", "private", "unlisted"}
+	valid := []KnowPostVisibility{KnowPostVisibilityPublic, KnowPostVisibilityFollowers, KnowPostVisibilitySchool, KnowPostVisibilityPrivate, KnowPostVisibilityUnlisted}
 	for _, v := range valid {
 		if !isValidVisible(v) {
 			t.Errorf("isValidVisible(%q) = false, want true", v)
 		}
 	}
-	invalid := []string{"", "unknown", "PUBLIC", "PUB"}
+	invalid := []KnowPostVisibility{"", "unknown", "PUBLIC", "PUB"}
 	for _, v := range invalid {
 		if isValidVisible(v) {
 			t.Errorf("isValidVisible(%q) = true, want false", v)
@@ -255,6 +255,9 @@ func TestKnowPostModel_ZeroValues(t *testing.T) {
 	p := KnowPost{}
 	if p.Status != "" {
 		t.Error("Status should be empty by default")
+	}
+	if p.Visible != "" {
+		t.Error("Visible should be empty by default")
 	}
 	if p.IsTop {
 		t.Error("IsTop should be false by default")

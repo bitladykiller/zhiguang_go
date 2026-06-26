@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -117,7 +118,7 @@ func (p *KnowPostProjector) ProjectPayload(ctx context.Context, raw []byte) erro
 func (p *KnowPostProjector) UpsertKnowPost(ctx context.Context, postID uint64) error {
 	doc, err := p.buildSearchDocument(ctx, postID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return p.SoftDeleteKnowPost(ctx, postID)
 		}
 		return err

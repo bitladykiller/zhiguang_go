@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -169,7 +170,7 @@ func (s *JwtService) encode(user *User, issuedAt, expiresAt time.Time, tokenType
 			Issuer:    s.config.Issuer,
 			IssuedAt:  jwt.NewNumericDate(issuedAt),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
-			Subject:   fmt.Sprintf("%d", user.ID),
+			Subject:   strconv.FormatUint(user.ID, 10),
 			ID:        tokenID,
 		},
 		UID:       user.ID,

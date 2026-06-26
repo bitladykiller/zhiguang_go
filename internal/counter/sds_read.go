@@ -10,6 +10,7 @@ package counter
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
@@ -38,13 +39,13 @@ func (s *CounterService) emptyCounts(metrics []string) map[string]int32 {
 func (s *CounterService) GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error) {
 	sdsKey := SdsKey(entityType, entityID)
 
-	raw, err := s.redis.Get(ctx, sdsKey).Bytes()
-	if err == redis.Nil || len(raw) != SchemaLen*FieldSize {
-		raw, err = s.rebuildSds(ctx, entityType, entityID)
+	sdsRaw, err := s.redis.Get(ctx, sdsKey).Bytes()
+	if errors.Is(err, redis.Nil) || len(sdsRaw) != SchemaLen*FieldSize {
+		sdsRaw, err = s.rebuildSds(ctx, entityType, entityID)
 		if err != nil {
 			return s.emptyCounts(metrics), nil
 		}
-		if len(raw) != SchemaLen*FieldSize {
+		if len(sdsRaw) != SchemaLen*FieldSize {
 			return s.emptyCounts(metrics), nil
 		}
 	} else if err != nil {
@@ -57,7 +58,7 @@ func (s *CounterService) GetCounts(ctx context.Context, entityType, entityID str
 		if !ok {
 			continue
 		}
-		result[m] = readInt32BE(raw, idx*FieldSize)
+		result[m] = readInt32BE(sdsRaw, idx*FieldSize)
 	}
 	return result, nil
 }
@@ -111,8 +112,8 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 
 	result := make(map[string]map[string]int32, len(entityIDs))
 	for i, cmd := range cmds {
-		raw, err := cmd.Bytes()
-		if err != nil || len(raw) != SchemaLen*FieldSize {
+		sdsRaw, err := cmd.Bytes()
+		if err != nil || len(sdsRaw) != SchemaLen*FieldSize {
 			continue
 		}
 		counts := make(map[string]int32, len(metrics))
@@ -121,7 +122,7 @@ func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, 
 			if !ok {
 				continue
 			}
-			counts[m] = readInt32BE(raw, idx*FieldSize)
+			counts[m] = readInt32BE(sdsRaw, idx*FieldSize)
 		}
 		result[keyToEID[keys[i]]] = counts
 	}

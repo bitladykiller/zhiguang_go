@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
@@ -73,7 +74,7 @@ func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 	desc, err := h.descSvc.SuggestDescription(c.Request.Context(), req.Title, req.Content)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 
@@ -149,8 +150,14 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				streamChan <- fmt.Sprintf("data: {\"error\": \"internal server error\"}\n\n")
-				streamChan <- "data: [DONE]\n\n"
+				select {
+				case streamChan <- fmt.Sprintf("data: {\"error\": \"internal server error\"}\n\n"):
+				default:
+				}
+				select {
+				case streamChan <- "data: [DONE]\n\n":
+				default:
+				}
 				close(streamChan)
 			}
 		}()

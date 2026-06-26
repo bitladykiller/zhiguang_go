@@ -26,3 +26,23 @@ func QueryInt(c *gin.Context, key string, def int) int {
 	}
 	return v
 }
+
+// QueryUint64 从 Gin 查询参数中解析 uint64 值，缺失或非法时返回默认值。
+//
+// 参数：
+//   - c: Gin 上下文
+//   - key: 查询参数名
+//   - def: 默认值
+//
+// 返回值：解析成功返回 uint64 值，失败返回 def。
+func QueryUint64(c *gin.Context, key string, def uint64) uint64 {
+	s := c.Query(key)
+	if s == "" {
+		return def
+	}
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return def
+	}
+	return v
+}

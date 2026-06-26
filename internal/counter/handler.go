@@ -2,6 +2,7 @@ package counter
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -122,7 +123,7 @@ func (h *CounterHandler) handleToggle(
 	changed, err := toggleFn(c.Request.Context(), userID, req.EntityType, req.EntityID)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, toAppErr(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true, "changed": changed})
@@ -167,7 +168,7 @@ func (h *CounterHandler) GetCounts(c *gin.Context) {
 	counts, err := h.svc.GetCounts(c.Request.Context(), entityType, entityID, metrics)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, toAppErr(err))
 		return
 	}
 	response.Success(c, gin.H{"data": counts})
@@ -211,7 +212,20 @@ func (h *CounterHandler) Status(c *gin.Context) {
 		return
 	}
 
+	// 乐观降级：Redis 临时不可用时静默返回 false，不暴露 500 错误
 	liked, _ := h.svc.IsLiked(c.Request.Context(), userID, entityType, entityID)
 	faved, _ := h.svc.IsFaved(c.Request.Context(), userID, entityType, entityID)
 	response.Success(c, gin.H{"is_liked": liked, "is_faved": faved})
+}
+
+// toAppErr 将任意 error 转换为 *errcode.AppError。
+//
+// 功能：如果原始错误已经是 AppError 类型，直接原样返回。
+// 如果是其他类型的 error（如数据库查询错误），包装为 ErrInternal。
+func toAppErr(err error) *errcode.AppError {
+	var appErr *errcode.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	return errcode.ErrInternal.WithMsg(err.Error())
 }

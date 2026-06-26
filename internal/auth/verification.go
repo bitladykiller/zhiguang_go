@@ -218,7 +218,7 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 	codeKey := fmt.Sprintf("%s%s:%s", prefixCode, scene, identifier)
 
 	// 原子操作：检查尝试次数 + 递增 + 获取验证码
-	result, err := verifyAndCountScript.Run(
+	luaResult, err := verifyAndCountScript.Run(
 		ctx, s.redis,
 		[]string{attemptKey, codeKey},
 		s.config.MaxAttempts, int(s.config.TTL.Seconds()),
@@ -228,18 +228,18 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 		return fail(StatusNotFound)
 	}
 
-	// result[0] = 尝试次数（递增后），"-1" 表示已超限
-	if len(result) < 1 || result[0] == "-1" {
+	// luaResult[0] = 尝试次数（递增后），"-1" 表示已超限
+	if len(luaResult) < 1 || luaResult[0] == "-1" {
 		return fail(StatusTooManyAttempts)
 	}
 
-	// result[1] = 验证码，空字符串表示不存在或已过期
-	if len(result) < 2 || result[1] == "" {
+	// luaResult[1] = 验证码，空字符串表示不存在或已过期
+	if len(luaResult) < 2 || luaResult[1] == "" {
 		return fail(StatusNotFound)
 	}
 
 	// 比较验证码
-	if result[1] != code {
+	if luaResult[1] != code {
 		return fail(StatusMismatch)
 	}
 

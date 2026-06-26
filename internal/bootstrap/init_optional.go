@@ -81,6 +81,10 @@ func buildRagQueryService(cfg *config.Config, logger *zap.Logger) *llm.RagQueryS
 		logger.Warn("RAG query service disabled: chat model config is incomplete")
 		return nil
 	}
+	if len(cfg.Elasticsearch.URIs) == 0 {
+		logger.Warn("RAG query service disabled: elasticsearch URIs is empty")
+		return nil
+	}
 	return llm.NewRagQueryService(&cfg.LLM, cfg.Elasticsearch.URIs[0])
 }
 

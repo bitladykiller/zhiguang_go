@@ -10,6 +10,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Like 为指定用户对指定实体打开点赞状态。
@@ -38,12 +40,12 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 	offset := BitOf(userID)
 	bmKey := BitmapKey(metric, entityType, entityID, chunk)
 
-	val, err := s.redis.Eval(ctx, TOGGLE_LUA, []string{bmKey}, offset, op).Int()
+	changed, err := s.redis.Eval(ctx, TOGGLE_LUA, []string{bmKey}, offset, op).Int()
 	if err != nil {
 		return false, fmt.Errorf("lua toggle: %w", err)
 	}
 
-	if val == 1 {
+	if changed == 1 {
 		delta := 1
 		if op == "remove" {
 			delta = -1
@@ -61,8 +63,7 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 			go func(evt *CounterEvent) {
 				defer func() {
 					if r := recover(); r != nil {
-						// fire-and-forget goroutine 的 panic 不应该导致进程崩溃。
-						// 如果发布失败，dirty set 修复任务会兜底。
+						zap.L().Error("counter toggle event publish panic", zap.Any("panic", r))
 					}
 				}()
 				pubCtx, cancel := context.WithTimeout(ctx, 3*time.Second)

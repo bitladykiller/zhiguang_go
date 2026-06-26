@@ -25,7 +25,10 @@ type ObjectStorage interface {
 	PresignExpiry() time.Duration
 }
 
-// StorageServiceInterface 是 ObjectStorage 的类型别名，保持向后兼容。
-//
-// Deprecated: 请直接使用 ObjectStorage 接口。
-type StorageServiceInterface = ObjectStorage
+// StorageServiceInterface 定义了 OSS 存储服务的接口。
+type StorageServiceInterface interface {
+	GeneratePresignedPutURL(objectKey string, expiry time.Duration) (string, error)
+	GenerateObjectKey(folder, fileName string) string
+	PublicURL(objectKey string) string
+	PresignExpiry() time.Duration
+}

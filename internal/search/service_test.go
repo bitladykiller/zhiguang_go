@@ -845,17 +845,13 @@ func TestDeleteDocument_Success(t *testing.T) {
 }
 
 func TestDeleteDocument_NotFound(t *testing.T) {
-	// ES returns 404 for non-existent doc; the code treats IsError() as an error.
 	client := newMockClient(func(req *http.Request) (*http.Response, error) {
 		return mockESResponse(404, `{"found":false}`), nil
 	})
 	svc := &SearchService{client: client, indexName: "test-index"}
 	err := svc.DeleteDocument(context.Background(), "999")
-	if err == nil {
-		t.Fatal("expected error for 404 response")
-	}
-	if !strings.Contains(err.Error(), "delete failed") {
-		t.Errorf("error = %v, want 'delete failed'", err)
+	if err != nil {
+		t.Fatalf("DeleteDocument() for 404 should return nil, got: %v", err)
 	}
 }
 

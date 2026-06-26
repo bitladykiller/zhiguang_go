@@ -70,9 +70,9 @@ func (s *CounterService) inBackoff(ctx context.Context, entityType, entityID str
 //     Set 的过期时间为 0 表示永不过期，由 resetBackoff 或下次 escalate 时覆盖。
 func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entityID string) {
 	expKey := s.backoffExpKey(entityType, entityID)
-	exp, _ := s.redis.Get(ctx, expKey).Int()
+	attemptCount, _ := s.redis.Get(ctx, expKey).Int()
 
-	ms := int64(500) << exp
+	ms := int64(500) << attemptCount
 	if ms > 30000 {
 		ms = 30000
 	}
@@ -80,7 +80,7 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 
 	pipe := s.redis.Pipeline()
 	pipe.Set(ctx, s.backoffKey(entityType, entityID), until, 0)
-	pipe.Set(ctx, expKey, exp+1, 0)
+	pipe.Set(ctx, expKey, attemptCount+1, 0)
 	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
 	pipe.Exec(ctx)
 }

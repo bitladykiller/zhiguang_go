@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/pkg/config"
 )
@@ -121,6 +122,7 @@ func (d *HotKeyDetector) currentBucket() int64 {
 func (d *HotKeyDetector) flushLoop(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
+			zap.L().Error("hotkey flushLoop panic recovered", zap.Any("panic", r))
 			go d.flushLoop(ctx)
 		}
 	}()

@@ -21,6 +21,11 @@ import (
 	"github.com/zhiguang/app/pkg/errcode"
 )
 
+const (
+	ResponseMessageSuccess = "success"
+	ResponseMessageCreated = "created"
+)
+
 // ApiResponse 是所有 API 接口统一使用的 JSON 响应结构。
 // 当 Code == 0 时表示请求成功；非 0 则表示发生错误。
 type ApiResponse[T any] struct {
@@ -50,7 +55,7 @@ type ApiResponse[T any] struct {
 func Success[T any](c *gin.Context, data T) {
 	c.JSON(http.StatusOK, ApiResponse[T]{
 		Code:    0,
-		Message: "success",
+		Message: ResponseMessageSuccess,
 		Data:    data,
 	})
 }
@@ -74,7 +79,7 @@ func Success[T any](c *gin.Context, data T) {
 func Created[T any](c *gin.Context, data T) {
 	c.JSON(http.StatusCreated, ApiResponse[T]{
 		Code:    0,
-		Message: "created",
+		Message: ResponseMessageCreated,
 		Data:    data,
 	})
 }
@@ -149,39 +154,4 @@ func Fail(c *gin.Context, httpStatus int, msg string) {
 		Code:    httpStatus,
 		Message: msg,
 	})
-}
-
-// httpStatusFromCode 将 AppError 的业务错误码映射为最合适的 HTTP 状态码。
-//
-// 参数:
-//   - code: 业务错误码，可能是 3 位（如 400）或 5 位（如 40901）
-//
-// 返回值:
-//   - int: HTTP 状态码
-//
-// 映射规则:
-//   1. 如果 code >= 1000（5 位错误码），先归一化为前 3 位：
-//       40901 → 409（整数除法），40401 → 404
-//   2. 归一化/原始 code 按以下顺序匹配：
-//       CodeSuccess(0)     → 200 OK
-//       CodeUnauthorized   → 401
-//       CodeForbidden      → 403
-//       CodeNotFound       → 404
-//       CodeConflict       → 409
-//       CodeTooManyRequests → 429
-//       >= 500             → 500（服务端错误）
-//       >= 400             → 400（客户端错误）
-//       default            → 500（fallback）
-//
-// WHY 需要归一化:
-//   40901 是 5 位错误码，如果直接 switch case，由于它不等于 CodeConflict(409)，
-//   会走 fallthrough 到 default 分支并返回 500。归一化后 40901/100 = 409，
-//   可以正确匹配 CodeConflict 分支，返回 HTTP 409。
-//
-// 设计决策:
-//   错误码的号段（4xxxx 表示客户端错误、5xxxx 表示服务端错误）决定了大致的 HTTP 状态类别。
-//   这样客户端才能区分"可自行修复的请求错误"与"需要重试的服务端错误"。
-// httpStatusFromCode is deprecated, use errcode.HTTPStatusFromCode instead.
-func httpStatusFromCode(code errcode.ErrorCode) int {
-	return errcode.HTTPStatusFromCode(code)
 }

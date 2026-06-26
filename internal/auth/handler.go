@@ -72,7 +72,7 @@ func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
 func (h *AuthHandler) SendCode(c *gin.Context) {
 	var req SendCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 
@@ -135,7 +135,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 
@@ -170,7 +170,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	var req TokenRefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 
@@ -204,7 +204,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 func (h *AuthHandler) Logout(c *gin.Context) {
 	var req TokenRefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 
@@ -235,7 +235,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	var req PasswordResetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 

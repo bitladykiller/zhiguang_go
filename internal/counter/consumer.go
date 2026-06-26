@@ -20,6 +20,9 @@ import (
 const counterRepairLeaderLockKey = "lock:counter:repair"
 
 const (
+	defaultConsumerBatchSize     = 100
+	defaultConsumerFlushInterval = time.Second
+	defaultRepairInterval        = time.Minute
 	defaultCounterFlushMaxAttempts = 3
 	defaultCounterFlushRetryDelay  = time.Second
 )
@@ -70,10 +73,10 @@ func NewAggregationConsumer(
 		return nil
 	}
 
-	batchSize := 100
-	flushInterval := time.Second
+	batchSize := defaultConsumerBatchSize
+	flushInterval := defaultConsumerFlushInterval
 	repairEnabled := false
-	repairInterval := time.Minute
+	repairInterval := defaultRepairInterval
 	repairBatch := batchSize
 
 	if cfg != nil {
@@ -132,44 +135,28 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 			c.mu.Unlock()
 			continue
 		}
-
-		fetchCtx := ctx
-		if deadline, ok := nextBatchDeadline(c.batches, c.flushInterval); ok {
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				c.mu.Unlock()
-				continue
-			}
-			var cancel context.CancelFunc
-			fetchCtx, cancel = context.WithTimeout(ctx, remaining)
-			msg, err := c.reader.FetchMessage(fetchCtx)
-			cancel()
-			if err != nil {
-				c.mu.Unlock()
-				if ctx.Err() != nil {
-					return
-				}
-				if errors.Is(err, context.DeadlineExceeded) {
-					continue
-				}
-				c.logWarn("fetch counter kafka message failed", err)
-				if !contextutil.Sleep(ctx, time.Second) {
-					return
-				}
-				continue
-			}
-			if err := c.acceptMessage(ctx, c.batches, msg); err != nil {
-				c.logWarn("accept counter kafka message failed", err)
-			}
-			c.mu.Unlock()
-			continue
-		}
+		deadline, ok := nextBatchDeadline(c.batches, c.flushInterval)
 		c.mu.Unlock()
 
+		var wait time.Duration
+		if ok {
+			wait = time.Until(deadline)
+			if wait <= 0 {
+				continue
+			}
+		} else {
+			wait = c.flushInterval
+		}
+
+		fetchCtx, cancel := context.WithTimeout(ctx, wait)
 		msg, err := c.reader.FetchMessage(fetchCtx)
+		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
 				return
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				continue
 			}
 			c.logWarn("fetch counter kafka message failed", err)
 			if !contextutil.Sleep(ctx, time.Second) {
@@ -177,6 +164,7 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 			}
 			continue
 		}
+
 		c.mu.Lock()
 		if err := c.acceptMessage(ctx, c.batches, msg); err != nil {
 			c.logWarn("accept counter kafka message failed", err)
@@ -485,11 +473,11 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 	}
 	defer lock.Release()
 
-	raw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)
+	sdsRaw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)
 	if err != nil {
 		return fmt.Errorf("repair dirty member: build snapshot: %w", err)
 	}
-	if err := c.service.redis.Set(ctx, SdsKey(entityType, entityID), raw, 0).Err(); err != nil {
+	if err := c.service.redis.Set(ctx, SdsKey(entityType, entityID), sdsRaw, 0).Err(); err != nil {
 		return fmt.Errorf("repair dirty member: set sds: %w", err)
 	}
 	if err := c.service.clearDirtyMembers(ctx, []string{member}); err != nil {

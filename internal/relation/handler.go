@@ -1,6 +1,7 @@
 package relation
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -66,7 +67,7 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 	ok, err := h.svc.Follow(c.Request.Context(), userID, req.ToUserID)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, toAppErr(err))
 		return
 	}
 	if !ok {
@@ -95,7 +96,7 @@ func (h *RelationHandler) Unfollow(c *gin.Context) {
 	ok, err := h.svc.Unfollow(c.Request.Context(), userID, req.ToUserID)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, toAppErr(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true, "changed": ok})
@@ -111,15 +112,15 @@ func (h *RelationHandler) Status(c *gin.Context) {
 		response.Error(c, errcode.ErrUnauthorized)
 		return
 	}
-	otherID, err := strconv.ParseUint(c.Query("other_id"), 10, 64)
-	if err != nil {
+	otherID := httputil.QueryUint64(c, "other_id", 0)
+	if otherID == 0 {
 		response.Fail(c, 400, "invalid other_id")
 		return
 	}
 	status, err := h.svc.RelationStatus(c.Request.Context(), userID, otherID)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, toAppErr(err))
 		return
 	}
 	response.Success(c, gin.H{"status": status})
@@ -136,7 +137,7 @@ func (h *RelationHandler) Following(c *gin.Context) {
 	data, err := h.svc.Following(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, toAppErr(err))
 		return
 	}
 	response.Success(c, gin.H{"data": data})
@@ -153,7 +154,7 @@ func (h *RelationHandler) Followers(c *gin.Context) {
 	data, err := h.svc.Followers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, toAppErr(err))
 		return
 	}
 	response.Success(c, gin.H{"data": data})
@@ -173,7 +174,7 @@ func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 	data, nextCursor, err := h.svc.FollowingCursor(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, toAppErr(err))
 		return
 	}
 	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
@@ -190,7 +191,7 @@ func (h *RelationHandler) FollowersCursor(c *gin.Context) {
 	data, nextCursor, err := h.svc.FollowersCursor(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "internal server error")
+		response.Error(c, toAppErr(err))
 		return
 	}
 	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
@@ -225,4 +226,13 @@ func queryUint64(c *gin.Context, key string) uint64 {
 		return 0
 	}
 	return v
+}
+
+// toAppErr 将任意 error 转换为 *errcode.AppError。
+func toAppErr(err error) *errcode.AppError {
+	var appErr *errcode.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	return errcode.ErrInternal.WithMsg(err.Error())
 }

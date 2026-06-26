@@ -1,0 +1,28 @@
+package model
+
+// FeedItem 表示 feed 列表中的单个条目，是 knowpost 和 search 模块共享的领域模型。
+//
+// 设计意图：
+//   - 避免 search 直接依赖 knowpost 的 DTO，打破模块间循环依赖。
+//   - 作为跨模块的共享数据结构，只包含纯数据字段，不含业务逻辑。
+//   - 各模块在返回 HTTP 响应时，将 FeedItem 映射到自己的 DTO 结构。
+//
+// 字段说明：
+//   - ID：字符串类型，避免前端 JavaScript 精度丢失。
+//   - Liked、Faved：用户态字段，只在读取时根据当前用户动态补齐，不会进入缓存。
+//   - IsTop：仅"我的已发布"列表包含此字段，其他场景为 nil。
+type FeedItem struct {
+	ID             string
+	Title          *string
+	Description    *string
+	CoverImage     *string
+	Tags           []string
+	AuthorAvatar   *string
+	AuthorNickname string
+	TagJson        *string
+	LikeCount      int64
+	FavoriteCount  int64
+	Liked          *bool // 当前用户是否点赞（动态补齐，不入缓存）
+	Faved          *bool // 当前用户是否收藏（动态补齐，不入缓存）
+	IsTop          *bool // 仅"我的已发布"列表包含此字段
+}

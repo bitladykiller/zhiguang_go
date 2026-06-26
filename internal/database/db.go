@@ -11,12 +11,14 @@
 package database
 
 import (
+	"context"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
 	"github.com/zhiguang/app/pkg/config"
+	"go.uber.org/zap"
 )
 
 // NewDB 根据传入的 DatabaseConfig 创建带连接池配置的 sqlx 数据库连接。
@@ -117,5 +119,9 @@ func NewRedisClient(cfg *config.RedisConfig) *redis.Client {
 		opts.ConnMaxLifetime = time.Duration(cfg.ConnMaxLifetime) * time.Second
 	}
 
-	return redis.NewClient(opts)
+	client := redis.NewClient(opts)
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		zap.L().Warn("redis ping failed, connections will be established lazily", zap.Error(err))
+	}
+	return client
 }

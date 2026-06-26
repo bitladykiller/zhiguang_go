@@ -26,7 +26,7 @@ func NewKnowPostRepository(db sqlx.ExtContext) *KnowPostRepository {
 }
 
 // WithDB 克隆一个绑定到指定 sqlx 句柄的新仓储实例，用于事务上下文。
-func (r *KnowPostRepository) WithDB(db sqlx.ExtContext) *KnowPostRepository {
+func (r *KnowPostRepository) WithDB(db sqlx.ExtContext) Repo {
 	return &KnowPostRepository{db: db}
 }
 
@@ -106,7 +106,7 @@ func (r *KnowPostRepository) Publish(ctx context.Context, id, creatorID uint64) 
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
 		"UPDATE know_posts SET status = ?, publish_time = ?, update_time = ? WHERE id = ? AND creator_id = ? AND status = ?",
-		"published", now, now, id, creatorID, "draft",
+		KnowPostStatusPublished, now, now, id, creatorID, KnowPostStatusDraft,
 	)
 	if err != nil {
 		return 0, err
@@ -131,7 +131,7 @@ func (r *KnowPostRepository) UpdateTop(ctx context.Context, id, creatorID uint64
 }
 
 // UpdateVisibility 更新可见性。
-func (r *KnowPostRepository) UpdateVisibility(ctx context.Context, id, creatorID uint64, visible string) (int64, error) {
+func (r *KnowPostRepository) UpdateVisibility(ctx context.Context, id, creatorID uint64, visible KnowPostVisibility) (int64, error) {
 	result, err := r.db.ExecContext(ctx,
 		"UPDATE know_posts SET visible = ?, update_time = ? WHERE id = ? AND creator_id = ?",
 		visible, time.Now(), id, creatorID,
@@ -146,7 +146,7 @@ func (r *KnowPostRepository) UpdateVisibility(ctx context.Context, id, creatorID
 func (r *KnowPostRepository) SoftDelete(ctx context.Context, id, creatorID uint64) (int64, error) {
 	result, err := r.db.ExecContext(ctx,
 		"UPDATE know_posts SET status = ?, update_time = ? WHERE id = ? AND creator_id = ?",
-		"deleted", time.Now(), id, creatorID,
+		KnowPostStatusDeleted, time.Now(), id, creatorID,
 	)
 	if err != nil {
 		return 0, err
@@ -202,7 +202,7 @@ LEFT JOIN users ON know_posts.creator_id = users.id
 WHERE know_posts.status = ? AND know_posts.visible = ?
 ORDER BY know_posts.publish_time DESC
 LIMIT ? OFFSET ?
-`, "published", "public", limit, offset)
+`, KnowPostStatusPublished, KnowPostVisibilityPublic, limit, offset)
 	return rows, err
 }
 
@@ -225,6 +225,6 @@ LEFT JOIN users ON know_posts.creator_id = users.id
 WHERE know_posts.creator_id = ? AND know_posts.status != ?
 ORDER BY know_posts.is_top DESC, know_posts.create_time DESC
 LIMIT ? OFFSET ?
-`, userID, "deleted", limit, offset)
+`, userID, KnowPostStatusDeleted, limit, offset)
 	return rows, err
 }

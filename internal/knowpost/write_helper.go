@@ -33,15 +33,14 @@ func (s *KnowPostService) publicURL(objectKey string) string {
 // isValidVisible 校验可见性设置是否合法。
 //
 // 功能：检查传入的可见性值是否在预定义的合法选项中。
-// 支持的可见性选项：public、followers、school、private、unlisted。
 //
 // 参数：
-//   - v: string，要校验的可见性值。
+//   - v: KnowPostVisibility，要校验的可见性值。
 //
 // 返回值：bool，true 表示合法，false 表示不合法。
-func isValidVisible(v string) bool {
+func isValidVisible(v KnowPostVisibility) bool {
 	switch v {
-	case "public", "followers", "school", "private", "unlisted":
+	case KnowPostVisibilityPublic, KnowPostVisibilityFollowers, KnowPostVisibilitySchool, KnowPostVisibilityPrivate, KnowPostVisibilityUnlisted:
 		return true
 	}
 	return false
@@ -62,6 +61,15 @@ func toJSON(v interface{}) string {
 		return ""
 	}
 	return string(b)
+}
+
+// visiblePtr 安全地解引用 *KnowPostVisibility 指针。
+// nil 指针返回 KnowPostVisibility 零值（空字符串）。
+func visiblePtr(v *KnowPostVisibility) KnowPostVisibility {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 // strVal 安全地解引用 *string 指针。

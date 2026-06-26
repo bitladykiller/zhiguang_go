@@ -38,9 +38,9 @@ func (s *CounterService) rateLimiterKey(entityType, entityID string) string {
 //   - Lua 脚本执行失败时返回 0，视为允许（降级策略：宁可多重建也不拒绝）
 func (s *CounterService) allowedByRateLimiter(ctx context.Context, entityType, entityID string) bool {
 	key := s.rateLimiterKey(entityType, entityID)
-	val, err := rateLimitScript.Run(ctx, s.redis, []string{key}, 60).Int()
+	count, err := rateLimitScript.Run(ctx, s.redis, []string{key}, 60).Int()
 	if err != nil {
 		return true
 	}
-	return val <= 5
+	return count <= 5
 }

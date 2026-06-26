@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -177,7 +178,7 @@ func (s *SearchService) EnsureIndex() error {
 	}
 	defer res.Body.Close()
 
-	if res.StatusCode == 200 {
+	if res.StatusCode == http.StatusOK {
 		return s.ensureCompatibleMappings()
 	}
 
@@ -327,14 +328,34 @@ func (s *SearchService) buildSearchQuery(keyword string, tags []string, afterVal
 	}
 
 	if len(tags) > 0 {
-		filter := query["query"].(map[string]interface{})["function_score"].(map[string]interface{})["query"].(map[string]interface{})["bool"].(map[string]interface{})["filter"].([]map[string]interface{})
-		filter = append(filter, map[string]interface{}{"terms": map[string]interface{}{"tags": tags}})
-		query["query"].(map[string]interface{})["function_score"].(map[string]interface{})["query"].(map[string]interface{})["bool"].(map[string]interface{})["filter"] = filter
+		s.addTagFilter(query, tags)
 	}
 	if len(afterValues) > 0 {
 		query["search_after"] = afterValues
 	}
 	return query
+}
+
+// addTagFilter 向已构建的 ES query 中添加 tags 过滤条件。
+func (s *SearchService) addTagFilter(query map[string]interface{}, tags []string) {
+	fs, ok := query["query"].(map[string]interface{})["function_score"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	inner, ok := fs["query"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	bq, ok := inner["bool"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	filter, ok := bq["filter"].([]map[string]interface{})
+	if !ok {
+		return
+	}
+	filter = append(filter, map[string]interface{}{"terms": map[string]interface{}{"tags": tags}})
+	bq["filter"] = filter
 }
 
 // searchHit 表示 ES 搜索结果中的单个 hit。
@@ -768,8 +789,8 @@ func (s *SearchService) IndexDocument(ctx context.Context, doc *SearchIndexDoc) 
 //     而不是真的从索引中移除（参见 SoftDeleteKnowPost 中的 IndexDocument 调用）
 //
 // 边界情况:
-//   - 删除不存在的 ID → 不会返回错误（ES 响应 404，函数中未检查）
-//   - s.client.Delete 调用成功但返回错误 response body → 未读取，调用方无从得知
+//   - 删除不存在的 ID → 不会返回错误（ES 响应 404，已显式检查并忽略）
+//   - s.client.Delete 调用成功但返回错误 response body → 已读取并返回给调用方
 func (s *SearchService) DeleteDocument(ctx context.Context, id string) error {
 	res, err := s.client.Delete(
 		s.indexName,
@@ -781,10 +802,14 @@ func (s *SearchService) DeleteDocument(ctx context.Context, id string) error {
 	}
 	defer res.Body.Close()
 
+	if res.StatusCode == http.StatusNotFound {
+		return nil
+	}
+
 	if res.IsError() {
 		body, readErr := io.ReadAll(res.Body)
 		if readErr != nil {
-			return fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
+			return fmt.Errorf("delete error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
 		}
 		return fmt.Errorf("delete failed: %s", string(body))
 	}

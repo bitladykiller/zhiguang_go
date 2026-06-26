@@ -14,7 +14,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -375,12 +377,46 @@ type RelationTokenBucketConfig struct {
 	Rate     int `yaml:"rate"`
 }
 
-// TimeoutsConfig 配置全局超时参数。
-type TimeoutsConfig struct {
-	HTTPClientTimeoutMs  int `yaml:"http_client_timeout_ms"`  // LLM/OSS HTTP 客户端超时（毫秒）
-	OSSPresignExpiryMs   int `yaml:"oss_presign_expiry_ms"`   // OSS 预签名 URL 过期时间（毫秒）
-	CanalSocketTimeoutMs int `yaml:"canal_socket_timeout_ms"` // Canal Socket 超时（毫秒）
-	CanalIdleTimeoutMs   int `yaml:"canal_idle_timeout_ms"`   // Canal 空闲超时（毫秒）
+// Validate 校验配置中的关键字段是否合法。
+//
+// 验证规则：
+//   - Server.Port 必须在 1~65535 范围内
+//   - Database.DSN 不能为空（DSN 方法内部从多个字段拼接，但此处校验 DSN() 返回值）
+//   - Redis.Addr 不能为空
+//   - Jwt.PrivateKeyPath 和 Jwt.PublicKeyPath 不能为空
+//
+// 注意：
+//   - DSN() 会拼接 User、Password、Host、Port、Name 等字段生成连接串，
+//     但 Validate() 直接用 Database.DSN 字段（若有独立 DSN 字段）。
+//     当前 DatabaseConfig 没有独立的 DSN 字段，而是通过 DSN() 方法拼装，
+//     因此此处校验 DSN() 返回值是否为 ""。
+//
+// 返回值：
+//   - error: 如果有任何字段不合法，返回包含所有错误信息的 error
+//   - nil: 所有字段合法
+func (c *Config) Validate() error {
+	var errs []string
+
+	if c.Server.Port <= 0 || c.Server.Port > 65535 {
+		errs = append(errs, "server.port must be between 1 and 65535")
+	}
+	if c.Database.DSN() == "" {
+		errs = append(errs, "database.dsn is required")
+	}
+	if c.Redis.Addr() == "" {
+		errs = append(errs, "redis.addr is required")
+	}
+	if c.Auth.Jwt.PrivateKeyPath == "" {
+		errs = append(errs, "auth.jwt.private_key_path is required")
+	}
+	if c.Auth.Jwt.PublicKeyPath == "" {
+		errs = append(errs, "auth.jwt.public_key_path is required")
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
+	}
+	return nil
 }
 
 // LoadConfig 从指定路径读取 YAML 配置文件并解析为 Config 结构体。

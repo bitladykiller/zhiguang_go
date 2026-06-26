@@ -21,9 +21,9 @@ func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64) (ui
 	post := &KnowPost{
 		ID:         id,
 		CreatorID:  creatorID,
-		Status:     "draft",
+		Status:     KnowPostStatusDraft,
 		Type:       "image_text",
-		Visible:    "public",
+		Visible:    KnowPostVisibilityPublic,
 		IsTop:      false,
 		CreateTime: now,
 		UpdateTime: now,
@@ -71,7 +71,7 @@ func (s *KnowPostService) UpdateMetadata(ctx context.Context, creatorID, id uint
 		CreatorID:  creatorID,
 		Title:      req.Title,
 		TagID:      req.TagID,
-		Visible:    strVal(req.Visible),
+		Visible:    visiblePtr(req.Visible),
 		Type:       "image_text",
 		UpdateTime: time.Now(),
 	}
@@ -86,7 +86,7 @@ func (s *KnowPostService) UpdateMetadata(ctx context.Context, creatorID, id uint
 		post.Description = req.Description
 	}
 
-	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostMetadataUpdated, func(txRepo *KnowPostRepository) error {
+	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostMetadataUpdated, func(txRepo Repo) error {
 		affected, err := txRepo.UpdateMetadata(ctx, post)
 		if err != nil {
 			return err
@@ -106,7 +106,7 @@ func (s *KnowPostService) UpdateMetadata(ctx context.Context, creatorID, id uint
 
 // Publish 把知文状态从草稿流转为已发布。
 func (s *KnowPostService) Publish(ctx context.Context, creatorID, id uint64) error {
-	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostPublished, func(txRepo *KnowPostRepository) error {
+	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostPublished, func(txRepo Repo) error {
 		affected, err := txRepo.Publish(ctx, id, creatorID)
 		if err != nil {
 			return err
@@ -126,7 +126,7 @@ func (s *KnowPostService) Publish(ctx context.Context, creatorID, id uint64) err
 
 // UpdateTop 更新知文的置顶标记。
 func (s *KnowPostService) UpdateTop(ctx context.Context, creatorID, id uint64, isTop bool) error {
-	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostTopUpdated, func(txRepo *KnowPostRepository) error {
+	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostTopUpdated, func(txRepo Repo) error {
 		affected, err := txRepo.UpdateTop(ctx, id, creatorID, isTop)
 		if err != nil {
 			return err
@@ -144,11 +144,11 @@ func (s *KnowPostService) UpdateTop(ctx context.Context, creatorID, id uint64, i
 }
 
 // UpdateVisibility 修改知文的可见性设置。
-func (s *KnowPostService) UpdateVisibility(ctx context.Context, creatorID, id uint64, visible string) error {
+func (s *KnowPostService) UpdateVisibility(ctx context.Context, creatorID, id uint64, visible KnowPostVisibility) error {
 	if !isValidVisible(visible) {
 		return errcode.ErrBadRequest.WithMsg("invalid visibility value")
 	}
-	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostVisibilityUpdated, func(txRepo *KnowPostRepository) error {
+	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostVisibilityUpdated, func(txRepo Repo) error {
 		affected, err := txRepo.UpdateVisibility(ctx, id, creatorID, visible)
 		if err != nil {
 			return err
@@ -167,7 +167,7 @@ func (s *KnowPostService) UpdateVisibility(ctx context.Context, creatorID, id ui
 
 // Delete 对知文执行软删除。
 func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) error {
-	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostDeleted, func(txRepo *KnowPostRepository) error {
+	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostDeleted, func(txRepo Repo) error {
 		affected, err := txRepo.SoftDelete(ctx, id, creatorID)
 		if err != nil {
 			return err
@@ -186,7 +186,7 @@ func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) erro
 }
 
 // runKnowPostTx 在数据库事务中执行业务变更和 outbox 事件写入（Transactional Outbox Pattern）。
-func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventType string, mutate func(txRepo *KnowPostRepository) error) error {
+func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventType string, mutate func(txRepo Repo) error) error {
 	return outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
 		return mutate(s.repo.WithDB(tx))
 	}, []outbox.OutboxEvent{{

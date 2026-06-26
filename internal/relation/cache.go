@@ -101,7 +101,9 @@ func (s *RelationService) ensureListCacheWarm(ctx context.Context, listType stri
 	if err != nil {
 		return false, fmt.Errorf("ensure list cache warm: %w", err)
 	}
-	defer lock.Release()
+	if lock != nil {
+		defer lock.Release()
+	}
 
 	exists, err = s.redis.Exists(ctx, zsetKey).Result()
 	if err == nil && exists > 0 {

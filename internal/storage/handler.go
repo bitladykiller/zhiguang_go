@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
@@ -77,7 +78,7 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 
 	var req StoragePresignRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 
@@ -87,7 +88,7 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 	uploadURL, err := h.svc.GeneratePresignedPutURL(objectKey, expiry)
 	if err != nil {
 		middleware.RecordError(c, err)
-		response.Fail(c, 500, "failed to generate upload URL")
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 

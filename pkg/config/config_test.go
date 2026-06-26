@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -148,5 +149,38 @@ func TestItoa(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("itoa(%d) = %q, want %q", tt.n, got, tt.want)
 		}
+	}
+}
+
+func TestValidate_OK(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Port: 8080},
+		Database: DatabaseConfig{
+			Host: "127.0.0.1", Port: 3306, User: "u", Password: "p", Name: "db",
+		},
+		Redis: RedisConfig{Host: "127.0.0.1", Port: 6379},
+		Auth: AuthConfig{
+			Jwt: JwtConfig{PrivateKeyPath: "/keys/private.pem", PublicKeyPath: "/keys/public.pem"},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v", err)
+	}
+}
+
+func TestValidate_MissingJWT(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Port: 8080},
+		Database: DatabaseConfig{
+			Host: "127.0.0.1", Port: 3306, User: "u", Password: "p", Name: "db",
+		},
+		Redis: RedisConfig{Host: "127.0.0.1", Port: 6379},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "private_key_path") {
+		t.Errorf("error = %v", err)
 	}
 }

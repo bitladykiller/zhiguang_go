@@ -49,25 +49,25 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 	defer lock.Release()
 
 	// double-check：可能在当前请求等待锁期间，前一个实例已经完成了重建。
-	raw, err := s.redis.Get(ctx, sdsKey).Bytes()
-	if err == nil && len(raw) == SchemaLen*FieldSize {
+	sdsRaw, err := s.redis.Get(ctx, sdsKey).Bytes()
+	if err == nil && len(sdsRaw) == SchemaLen*FieldSize {
 		s.resetBackoff(ctx, entityType, entityID)
-		return raw, nil
+		return sdsRaw, nil
 	}
 
-	raw, err = s.buildSnapshotFromBitmap(ctx, entityType, entityID)
+	sdsRaw, err = s.buildSnapshotFromBitmap(ctx, entityType, entityID)
 	if err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, fmt.Errorf("rebuild sds: build snapshot: %w", err)
 	}
 
-	if err := s.redis.Set(ctx, sdsKey, raw, 0).Err(); err != nil {
+	if err := s.redis.Set(ctx, sdsKey, sdsRaw, 0).Err(); err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, fmt.Errorf("rebuild sds: set: %w", err)
 	}
 
 	s.resetBackoff(ctx, entityType, entityID)
-	return raw, nil
+	return sdsRaw, nil
 }
 
 // bitCountShards 统计指定指标的所有位图片段的 SETBIT 总数量。
@@ -112,13 +112,13 @@ func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType,
 // buildSnapshotFromBitmap 遍历所有指标，从位图构建完整 SDS 字节数组。
 func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType, entityID string) ([]byte, error) {
 	metrics := []string{"like", "fav", "follower", "following", "posts"}
-	raw := make([]byte, SchemaLen*FieldSize)
+	sdsRaw := make([]byte, SchemaLen*FieldSize)
 	for i, metric := range metrics {
 		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
 		if err != nil {
 			return nil, fmt.Errorf("build snapshot: bit count: %w", err)
 		}
-		writeInt32BE(raw, i*FieldSize, int32(total))
+		writeInt32BE(sdsRaw, i*FieldSize, int32(total))
 	}
-	return raw, nil
+	return sdsRaw, nil
 }

@@ -12,7 +12,7 @@ type KnowPostWriteService interface {
 	UpdateMetadata(ctx context.Context, creatorID, id uint64, req *KnowPostPatchRequest) error
 	Publish(ctx context.Context, creatorID, id uint64) error
 	UpdateTop(ctx context.Context, creatorID, id uint64, isTop bool) error
-	UpdateVisibility(ctx context.Context, creatorID, id uint64, visible string) error
+	UpdateVisibility(ctx context.Context, creatorID, id uint64, visible KnowPostVisibility) error
 	Delete(ctx context.Context, creatorID, id uint64) error
 }
 

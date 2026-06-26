@@ -71,17 +71,17 @@ type KnowPostContentConfirmRequest struct {
 }
 
 type KnowPostPatchRequest struct {
-	Title       *string  `json:"title"`
-	TagID       *uint64  `json:"tag_id"`
-	Tags        []string `json:"tags"`
-	ImgUrls     []string `json:"img_urls"`
-	Visible     *string  `json:"visible"`
-	IsTop       *bool    `json:"is_top"`
-	Description *string  `json:"description"`
+	Title       *string            `json:"title"`
+	TagID       *uint64            `json:"tag_id"`
+	Tags        []string           `json:"tags"`
+	ImgUrls     []string           `json:"img_urls"`
+	Visible     *KnowPostVisibility `json:"visible"`
+	IsTop       *bool              `json:"is_top"`
+	Description *string            `json:"description"`
 }
 
 type KnowPostVisibilityPatchRequest struct {
-	Visible string `json:"visible" binding:"required"`
+	Visible KnowPostVisibility `json:"visible" binding:"required"`
 }
 
 type KnowPostTopPatchRequest struct {

@@ -55,13 +55,14 @@ func (o Options) normalized() Options {
 //   - 续约 goroutine、停止信号、归属 token 和 Redis 客户端需要一起管理。
 //   - 把这些生命周期状态收敛到一个对象里，调用方只需要 `Release()` 即可。
 type Lock struct {
-	client   *redis.Client
-	lockKey  string
-	token    string
-	options  Options
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	stopOnce sync.Once
+	client    *redis.Client
+	lockKey   string
+	token     string
+	options   Options
+	stopCh    chan struct{}
+	doneCh    chan struct{}
+	parentCtx context.Context
+	stopOnce  sync.Once
 }
 
 var releaseScript = redis.NewScript(`
@@ -98,12 +99,13 @@ func TryAcquire(ctx context.Context, client *redis.Client, lockKey string, optio
 	}
 
 	lock := &Lock{
-		client:  client,
-		lockKey: lockKey,
-		token:   token,
-		options: opts,
-		stopCh:  make(chan struct{}),
-		doneCh:  make(chan struct{}),
+		client:    client,
+		lockKey:   lockKey,
+		token:     token,
+		options:   opts,
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
+		parentCtx: ctx,
 	}
 	go lock.watchdog()
 	return lock, true, nil
@@ -153,7 +155,7 @@ func (l *Lock) Release() {
 
 	l.stopWatchdog()
 
-	releaseCtx, cancel := context.WithTimeout(context.Background(), l.options.OpTimeout)
+	releaseCtx, cancel := context.WithTimeout(l.parentCtxOrDefault(), l.options.OpTimeout)
 	defer cancel()
 	_, _ = releaseScript.Run(releaseCtx, l.client, []string{l.lockKey}, l.token).Result()
 }
@@ -184,7 +186,7 @@ func (l *Lock) watchdog() {
 
 // renew 仅在 token 仍归当前持锁方时刷新 TTL。
 func (l *Lock) renew() (bool, error) {
-	renewCtx, cancel := context.WithTimeout(context.Background(), l.options.OpTimeout)
+	renewCtx, cancel := context.WithTimeout(l.parentCtxOrDefault(), l.options.OpTimeout)
 	defer cancel()
 
 	result, err := renewScript.Run(
@@ -199,6 +201,14 @@ func (l *Lock) renew() (bool, error) {
 	}
 
 	return result == 1, nil
+}
+
+// parentCtxOrDefault 返回 parentCtx，若为 nil 则 fallback 到 Background。
+func (l *Lock) parentCtxOrDefault() context.Context {
+	if l.parentCtx != nil {
+		return l.parentCtx
+	}
+	return context.Background()
 }
 
 // stopWatchdog 保证看门狗只停止一次。
