@@ -118,6 +118,13 @@ const indexMapping = `{
   }
 }`
 
+// ESConfig 封装 Elasticsearch 连接配置参数。
+type ESConfig struct {
+	URIs       []string
+	IndexName  string
+	MaxRetries int
+}
+
 // SearchService 封装 Elasticsearch 客户端并提供搜索相关操作。
 type SearchService struct {
 	client    *elasticsearch.Client
@@ -136,11 +143,7 @@ type SearchService struct {
 // 返回值:
 //   - *SearchService: 搜索服务实例
 //   - error: 如果创建客户端失败或索引创建/校验出错则返回非 nil 错误
-func NewSearchService(cfg struct {
-	URIs      []string
-	IndexName string
-	MaxRetries int
-}, counter SearchCounterClient, logger *zap.Logger) (*SearchService, error) {
+func NewSearchService(cfg ESConfig, counter SearchCounterClient, logger *zap.Logger) (*SearchService, error) {
 	client, err := elasticsearch.NewClient(elasticsearch.Config{
 		Addresses:     cfg.URIs,
 		MaxRetries:    cfg.MaxRetries,

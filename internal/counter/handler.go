@@ -212,8 +212,12 @@ func (h *CounterHandler) Status(c *gin.Context) {
 		return
 	}
 
-	// 乐观降级：Redis 临时不可用时静默返回 false，不暴露 500 错误
-	liked, _ := h.svc.IsLiked(c.Request.Context(), userID, entityType, entityID)
-	faved, _ := h.svc.IsFaved(c.Request.Context(), userID, entityType, entityID)
-	response.Success(c, gin.H{"is_liked": liked, "is_faved": faved})
+	liked, likedErr := h.svc.IsLiked(c.Request.Context(), userID, entityType, entityID)
+	faved, favedErr := h.svc.IsFaved(c.Request.Context(), userID, entityType, entityID)
+
+	resp := gin.H{"is_liked": liked, "is_faved": faved}
+	if likedErr != nil || favedErr != nil {
+		resp["degraded"] = true
+	}
+	response.Success(c, resp)
 }

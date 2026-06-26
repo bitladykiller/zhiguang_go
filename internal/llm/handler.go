@@ -1,8 +1,10 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/httputil"
@@ -103,7 +105,6 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 				case streamChan <- "data: [DONE]\n\n":
 				default:
 				}
-				close(streamChan)
 			}
 		}()
 		h.ragSvc.Query(ctx, postID, req.Question, streamChan)
@@ -111,10 +112,20 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 
 	flusher, _ := c.Writer.(interface{ Flush() })
 
-	for token := range streamChan {
-		fmt.Fprint(c.Writer, token)
-		if flusher != nil {
-			flusher.Flush()
+	readCtx, readCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer readCancel()
+	for {
+		select {
+		case <-readCtx.Done():
+			return
+		case token, ok := <-streamChan:
+			if !ok {
+				return
+			}
+			fmt.Fprint(c.Writer, token)
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 	}
 }

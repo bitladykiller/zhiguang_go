@@ -78,8 +78,9 @@ func (r *CounterFailedMessageRepository) CreateBatch(ctx context.Context, messag
 	if err != nil {
 		return err
 	}
+	committed := false
 	defer func() {
-		if err != nil {
+		if !committed {
 			_ = tx.Rollback()
 		}
 	}()
@@ -98,5 +99,6 @@ INSERT INTO counter_failed_messages (
 		}
 	}
 
+	committed = true
 	return tx.Commit()
 }

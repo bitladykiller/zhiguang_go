@@ -3,6 +3,7 @@ package knowpost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -88,6 +89,36 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 	return s.getDetailUnderLock(ctx, id, pageKey, currentUserID)
 }
 
+func (s *KnowPostService) queryDetailFromDB(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
+	row, err := s.repo.FindDetailByID(ctx, id)
+	if err != nil || row == nil || row.Status == KnowPostStatusDeleted {
+		return nil, errcode.ErrNotFound.WithMsg("content not found")
+	}
+
+	isPublic := row.Status == KnowPostStatusPublished && row.Visible == KnowPostVisibilityPublic
+	isOwner := currentUserID != nil && *currentUserID == row.CreatorID
+	if !isPublic && !isOwner {
+		return nil, errcode.ErrForbidden.WithMsg("no permission to view")
+	}
+
+	return &KnowPostDetailResponse{
+		ID:             strconv.FormatUint(row.ID, 10),
+		Title:          row.Title,
+		Description:    row.Description,
+		ContentUrl:     row.ContentUrl,
+		Images:         jsonutil.ParseStringArray(row.ImgUrls),
+		Tags:           jsonutil.ParseStringArray(row.Tags),
+		AuthorID:       strconv.FormatUint(row.CreatorID, 10),
+		AuthorAvatar:   row.AuthorAvatar,
+		AuthorNickname: row.AuthorNickname,
+		AuthorTagJson:  row.AuthorTagJson,
+		IsTop:          row.IsTop,
+		Visible:        string(row.Visible),
+		Type:           row.Type,
+		PublishTime:    row.PublishTime,
+	}, nil
+}
+
 // getDetailUnderLock 在 Redis 看门狗分布式锁保护下从 MySQL 回源查询详情。
 //
 // 功能：这是防止缓存击穿的核心方法。
@@ -136,34 +167,13 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			return nil, false, nil
 		},
 		func(ctx context.Context) (*KnowPostDetailResponse, error) {
-			row, err := s.repo.FindDetailByID(ctx, id)
-			if err != nil || row == nil || row.Status == KnowPostStatusDeleted {
-				ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
-				s.redis.Set(ctx, pageKey, "NULL", ttl)
-				return nil, errcode.ErrNotFound.WithMsg("content not found")
-			}
-
-			isPublic := row.Status == KnowPostStatusPublished && row.Visible == KnowPostVisibilityPublic
-			isOwner := currentUserID != nil && *currentUserID == row.CreatorID
-			if !isPublic && !isOwner {
-				return nil, errcode.ErrForbidden.WithMsg("no permission to view")
-			}
-
-			resp := &KnowPostDetailResponse{
-				ID:             strconv.FormatUint(row.ID, 10),
-				Title:          row.Title,
-				Description:    row.Description,
-				ContentUrl:     row.ContentUrl,
-				Images:         jsonutil.ParseStringArray(row.ImgUrls),
-				Tags:           jsonutil.ParseStringArray(row.Tags),
-				AuthorID:       strconv.FormatUint(row.CreatorID, 10),
-				AuthorAvatar:   row.AuthorAvatar,
-				AuthorNickname: row.AuthorNickname,
-				AuthorTagJson:  row.AuthorTagJson,
-				IsTop:          row.IsTop,
-				Visible:        string(row.Visible),
-				Type:           row.Type,
-				PublishTime:    row.PublishTime,
+			resp, err := s.queryDetailFromDB(ctx, id, currentUserID)
+			if err != nil {
+				if errors.Is(err, errcode.ErrNotFound) {
+					ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
+					s.redis.Set(ctx, pageKey, "NULL", ttl)
+				}
+				return nil, err
 			}
 
 		if s.counter != nil {

@@ -516,11 +516,9 @@ func (s *AuthService) recordLoginLog(ctx context.Context, userID uint64, identif
 //   - 邮箱不匹配标准邮箱正则
 //
 // 函数调用说明：
-//   - regexp.MatchString(pattern, s):
-//     Go 的 regexp 包。检查字符串 s 是否匹配正则表达式 pattern。
-//     注意：该函数会编译正则，每次调用都编译。在生产热门路径上
-//     应该使用 regexp.MustCompile 预编译以提高性能。
-//     这里因为不是高频调用，所以使用了方便的 MatchString 快捷方式。
+//   - phoneRegex.MatchString(identifier):
+//     使用包级别预编译的 regexp.MustCompile 正则。
+//     预编译在包初始化时完成，避免每次调用时重新编译正则表达式。
 func validateIdentifier(idType IdentifierType, identifier string) error {
 	switch idType {
 	case IdentifierPhone:

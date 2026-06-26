@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zhiguang/app/pkg/config"
+	"go.uber.org/zap"
 )
 
 type KnowPostDescriptionService struct {
@@ -23,6 +24,9 @@ func NewKnowPostDescriptionService(cfg *config.LLMConfig) *KnowPostDescriptionSe
 	timeout := 30 * time.Second
 	if cfg != nil && cfg.TimeoutMs > 0 {
 		timeout = time.Duration(cfg.TimeoutMs) * time.Millisecond
+	}
+	if cfg == nil || cfg.DeepSeek.APIKey == "" {
+		zap.L().Warn("llm deepseek api_key is empty, description service will fail at runtime")
 	}
 	return &KnowPostDescriptionService{
 		cfg:    cfg,

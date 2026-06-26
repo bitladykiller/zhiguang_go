@@ -142,33 +142,45 @@ func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int,
 	idsKey := fmt.Sprintf("feed:public:ids:%d:%d:%d:%d", feedVersion, safeSize, hourSlot, safePage)
 	hasMoreKey := idsKey + ":hasMore"
 
-	// --- L1：freecache ---
-	if val, err := s.l1Public.Get([]byte(localPageKey)); err == nil {
-		resp, parseErr := s.parseFeedPage(val)
-		if parseErr == nil {
-			for _, item := range resp.Items {
-				s.recordItemHotKey(ctx, item.ID)
-			}
-			return &FeedPageResponse{
-				Items:   s.enrichItems(ctx, resp.Items, currentUserID),
-				Page:    resp.Page,
-				Size:    resp.Size,
-				HasMore: resp.HasMore,
-			}, nil
-		}
-	}
-
-	// --- L2：Redis 碎片缓存 ---
-	if resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, safePage, safeSize, currentUserID); resp != nil {
-		s.cacheFeedPage(localPageKey, resp, s.l1Public)
-		for _, item := range resp.Items {
-			s.recordItemHotKey(ctx, item.ID)
-		}
+	if resp := s.getPublicFeedL1(ctx, localPageKey, safePage, safeSize, currentUserID); resp != nil {
 		return resp, nil
 	}
-
-	// --- Redis 分布式锁 ---
+	if resp := s.getPublicFeedL2(ctx, idsKey, hasMoreKey, safePage, safeSize, currentUserID, localPageKey); resp != nil {
+		return resp, nil
+	}
 	return s.getPublicFeedUnderLock(ctx, idsKey, hasMoreKey, localPageKey, safePage, safeSize, currentUserID)
+}
+
+func (s *KnowPostFeedService) getPublicFeedL1(ctx context.Context, localPageKey string, safePage, safeSize int, currentUserID *uint64) *FeedPageResponse {
+	val, err := s.l1Public.Get([]byte(localPageKey))
+	if err != nil {
+		return nil
+	}
+	resp, parseErr := s.parseFeedPage(val)
+	if parseErr != nil {
+		return nil
+	}
+	for _, item := range resp.Items {
+		s.recordItemHotKey(ctx, item.ID)
+	}
+	return &FeedPageResponse{
+		Items:   s.enrichItems(ctx, resp.Items, currentUserID),
+		Page:    resp.Page,
+		Size:    resp.Size,
+		HasMore: resp.HasMore,
+	}
+}
+
+func (s *KnowPostFeedService) getPublicFeedL2(ctx context.Context, idsKey, hasMoreKey string, safePage, safeSize int, currentUserID *uint64, localPageKey string) *FeedPageResponse {
+	resp := s.assembleFromCache(ctx, idsKey, hasMoreKey, safePage, safeSize, currentUserID)
+	if resp == nil {
+		return nil
+	}
+	s.cacheFeedPage(localPageKey, resp, s.l1Public)
+	for _, item := range resp.Items {
+		s.recordItemHotKey(ctx, item.ID)
+	}
+	return resp
 }
 
 // getPublicFeedUnderLock 在 Redis 看门狗分布式锁保护下从 MySQL 查询公共 Feed。
@@ -452,28 +464,34 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 //   - items: []FeedItemResponse，转换后的条目列表。
 //   - hasMore: bool，是否有下一页。
 func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, hasMoreKey string, size int, rows []KnowPostFeedRow, items []FeedItemResponse, hasMore bool) {
-	// 写入 ID 列表
+	s.writeFeedIDListCache(ctx, idsKey, hasMoreKey, rows, hasMore)
+	s.writeFeedItemCaches(ctx, items)
+	s.registerFeedPageKey(ctx, idsKey)
+}
+
+func (s *KnowPostFeedService) writeFeedIDListCache(ctx context.Context, idsKey, hasMoreKey string, rows []KnowPostFeedRow, hasMore bool) {
 	idVals := make([]interface{}, len(rows))
 	for i, r := range rows {
 		idVals[i] = strconv.FormatUint(r.ID, 10)
 	}
-	if len(idVals) > 0 {
-		if err := s.redis.LPush(ctx, idsKey, idVals...).Err(); err != nil {
-			s.logger.Warn("failed to LPush feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
-		}
-		ttl := time.Duration(l2IDListTTLBase+rand.Intn(l2IDListJitter)) * time.Second
-		if err := s.redis.Expire(ctx, idsKey, ttl).Err(); err != nil {
-			s.logger.Warn("failed to set expire on feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
-		}
-
-		// hasMore 软缓存
-		hasMoreTTL := time.Duration(l2HasMoreTTLBase+rand.Intn(l2HasMoreJitter)) * time.Second
-		if err := s.redis.Set(ctx, hasMoreKey, boolToStr(hasMore), hasMoreTTL).Err(); err != nil {
-			s.logger.Warn("failed to set hasMore cache", zap.String("hasMoreKey", hasMoreKey), zap.Error(err))
-		}
+	if len(idVals) == 0 {
+		return
 	}
+	if err := s.redis.LPush(ctx, idsKey, idVals...).Err(); err != nil {
+		s.logger.Warn("failed to LPush feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
+	}
+	ttl := time.Duration(l2IDListTTLBase+rand.Intn(l2IDListJitter)) * time.Second
+	if err := s.redis.Expire(ctx, idsKey, ttl).Err(); err != nil {
+		s.logger.Warn("failed to set expire on feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
+	}
+	hasMoreTTL := time.Duration(l2HasMoreTTLBase+rand.Intn(l2HasMoreJitter)) * time.Second
+	if err := s.redis.Set(ctx, hasMoreKey, boolToStr(hasMore), hasMoreTTL).Err(); err != nil {
+		s.logger.Warn("failed to set hasMore cache", zap.String("hasMoreKey", hasMoreKey), zap.Error(err))
+	}
+}
 
-	// 写入条目碎片
+func (s *KnowPostFeedService) writeFeedItemCaches(ctx context.Context, items []FeedItemResponse) {
+	pipe := s.redis.Pipeline()
 	for _, item := range items {
 		itemKey := "feed:item:" + item.ID
 		jsonBytes, err := json.Marshal(item)
@@ -482,12 +500,14 @@ func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, h
 			continue
 		}
 		ttl := time.Duration(l2ItemTTLBase+rand.Intn(l2ItemJitter)) * time.Second
-		if err := s.redis.Set(ctx, itemKey, string(jsonBytes), ttl).Err(); err != nil {
-			s.logger.Warn("failed to cache feed item", zap.String("itemKey", itemKey), zap.Error(err))
-		}
+		pipe.Set(ctx, itemKey, string(jsonBytes), ttl)
 	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		s.logger.Warn("failed to pipeline feed item cache entries", zap.Error(err))
+	}
+}
 
-	// 把页键注册到 pages 集合中，便于后续批量失效
+func (s *KnowPostFeedService) registerFeedPageKey(ctx context.Context, idsKey string) {
 	if err := s.redis.SAdd(ctx, "feed:public:pages", idsKey).Err(); err != nil {
 		s.logger.Warn("failed to register feed page key", zap.String("idsKey", idsKey), zap.Error(err))
 	}

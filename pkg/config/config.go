@@ -426,6 +426,12 @@ func (c *Config) ApplyDefaults() {
 	if c.Server.Port <= 0 {
 		c.Server.Port = DefaultServerPort
 	}
+	if c.Auth.Password.BcryptCost <= 0 {
+		c.Auth.Password.BcryptCost = 12
+	}
+	if c.Auth.Password.MinLength <= 0 {
+		c.Auth.Password.MinLength = 8
+	}
 }
 
 func (c *Config) Validate() error {

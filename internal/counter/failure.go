@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.uber.org/zap"
 )
 
 func (s *CounterService) publishCounterEvent(ctx context.Context, event *CounterEvent) {
@@ -16,8 +17,12 @@ func (s *CounterService) publishCounterEvent(ctx context.Context, event *Counter
 	if err := s.producer.Publish(ctx, event); err != nil {
 		recordCtx, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
-		_ = s.markDirty(recordCtx, event.EntityType, event.EntityID)
-		_ = s.recordFailedEvent(recordCtx, counterFailureStagePublish, event, err)
+		if markErr := s.markDirty(recordCtx, event.EntityType, event.EntityID); markErr != nil {
+			s.logger.Warn("mark dirty after publish failed", zap.String("entityType", event.EntityType), zap.String("entityID", event.EntityID), zap.Error(markErr))
+		}
+		if recErr := s.recordFailedEvent(recordCtx, counterFailureStagePublish, event, err); recErr != nil {
+			s.logger.Warn("record failed event after publish failed", zap.String("entityType", event.EntityType), zap.String("entityID", event.EntityID), zap.Error(recErr))
+		}
 	}
 }
 
