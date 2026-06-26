@@ -9,7 +9,8 @@ import (
 
 // RelationRepository 封装关系域的数据库访问，使用 sqlx.ExtContext 同时支持 DB 和 Tx。
 type RelationRepository struct {
-	db sqlx.ExtContext
+	db      sqlx.ExtContext
+	nowFunc func() time.Time
 }
 
 // NewRelationRepository 创建 RelationRepository 实例。
@@ -20,17 +21,17 @@ type RelationRepository struct {
 // 返回值:
 //   - *RelationRepository: 已初始化的仓储实例
 func NewRelationRepository(db sqlx.ExtContext) *RelationRepository {
-	return &RelationRepository{db: db}
+	return &RelationRepository{db: db, nowFunc: time.Now}
 }
 
 // WithDB 克隆绑定到指定 sqlx 句柄的仓储实例，用于事务上下文。
 func (r *RelationRepository) WithDB(db sqlx.ExtContext) *RelationRepository {
-	return &RelationRepository{db: db}
+	return &RelationRepository{db: db, nowFunc: r.nowFunc}
 }
 
 // UpsertFollowing INSERT ... ON DUPLICATE KEY UPDATE，使用 ExecContext。
 func (r *RelationRepository) UpsertFollowing(ctx context.Context, id, fromUserID, toUserID uint64, status int) error {
-	now := time.Now()
+	now := r.nowFunc()
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO following (id, from_user_id, to_user_id, rel_status, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
@@ -41,7 +42,7 @@ ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(upd
 
 // UpsertFollower INSERT ... ON DUPLICATE KEY UPDATE，使用 ExecContext。
 func (r *RelationRepository) UpsertFollower(ctx context.Context, id, toUserID, fromUserID uint64, status int) error {
-	now := time.Now()
+	now := r.nowFunc()
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO follower (id, to_user_id, from_user_id, rel_status, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
@@ -54,7 +55,7 @@ ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(upd
 func (r *RelationRepository) CancelFollowing(ctx context.Context, fromUserID, toUserID uint64) (int64, error) {
 	result, err := r.db.ExecContext(ctx,
 		"UPDATE following SET rel_status = 0, updated_at = ? WHERE from_user_id = ? AND to_user_id = ? AND rel_status = 1",
-		time.Now(), fromUserID, toUserID,
+		r.nowFunc(), fromUserID, toUserID,
 	)
 	if err != nil {
 		return 0, err
@@ -66,7 +67,7 @@ func (r *RelationRepository) CancelFollowing(ctx context.Context, fromUserID, to
 func (r *RelationRepository) CancelFollower(ctx context.Context, toUserID, fromUserID uint64) (int64, error) {
 	result, err := r.db.ExecContext(ctx,
 		"UPDATE follower SET rel_status = 0, updated_at = ? WHERE to_user_id = ? AND from_user_id = ? AND rel_status = 1",
-		time.Now(), toUserID, fromUserID,
+		r.nowFunc(), toUserID, fromUserID,
 	)
 	if err != nil {
 		return 0, err

@@ -81,17 +81,17 @@ func (r *Repository) Update(ctx context.Context, id uint64, req *ProfilePatchReq
 // toUserProfile 将 model.User 映射为对外 DTO，过滤敏感字段。
 func toUserProfile(row *model.User) *UserProfile {
 	return &UserProfile{
-		ID:       row.ID,
-		Nickname: row.Nickname,
-		Avatar:   row.Avatar,
-		Phone:    row.Phone,
-		Email:    row.Email,
-		ZgID:     row.ZgID,
-		Birthday: row.Birthday,
-		School:   row.School,
-		Bio:      row.Bio,
-		Gender:   row.Gender,
-		TagsJSON: row.TagsJSON,
+		ID:        row.ID,
+		Nickname:  row.Nickname,
+		Avatar:    row.Avatar,
+		Phone:     row.Phone,
+		Email:     row.Email,
+		ZgID:      row.ZgID,
+		Birthday:  row.Birthday,
+		School:    row.School,
+		Bio:       row.Bio,
+		Gender:    row.Gender,
+		TagsJSON:  row.TagsJSON,
 		CreatedAt: row.CreatedAt,
 		UpdatedAt: row.UpdatedAt,
 	}

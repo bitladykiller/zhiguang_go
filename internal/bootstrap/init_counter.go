@@ -15,10 +15,10 @@ import (
 // initCounter 创建计数器模块的完整服务栈。
 //
 // 创建顺序：
-//   1. CounterEventProducer（Kafka 事件发布）
-//   2. CounterService（Redis 位图 + SDS + Lua 脚本，构造时注入所有依赖）
-//   3. AggregationConsumer（Kafka 消费者，批量聚合计数器事件）
-//   4. CounterHandler（HTTP 请求适配）
+//  1. CounterEventProducer（Kafka 事件发布）
+//  2. CounterService（Redis 位图 + SDS + Lua 脚本，构造时注入所有依赖）
+//  3. AggregationConsumer（Kafka 消费者，批量聚合计数器事件）
+//  4. CounterHandler（HTTP 请求适配）
 //
 // 返回：
 //   - *counter.CounterHandler: HTTP handler
@@ -42,7 +42,7 @@ func initCounter(
 		cfg.Kafka.Topics.CounterEvents,
 		idGen,
 		logger,
-	)
+	).(*counter.CounterService)
 	counterAggConsumer := counter.NewAggregationConsumer(
 		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, cfg.Kafka.Topics.CounterEvents, cfg.Kafka.ConsumerGroup),
 		counterSvc,

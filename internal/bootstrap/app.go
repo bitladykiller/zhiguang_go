@@ -32,14 +32,36 @@ import (
 	"github.com/coocood/freecache"
 	"go.uber.org/zap"
 
+	"github.com/zhiguang/app/internal/auth"
 	"github.com/zhiguang/app/internal/cache"
 	"github.com/zhiguang/app/internal/canal"
+	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/internal/database"
+	"github.com/zhiguang/app/internal/knowpost"
+	"github.com/zhiguang/app/internal/llm"
 	"github.com/zhiguang/app/internal/messaging"
 	"github.com/zhiguang/app/internal/outbox"
+	"github.com/zhiguang/app/internal/profile"
+	"github.com/zhiguang/app/internal/relation"
+	"github.com/zhiguang/app/internal/search"
 	"github.com/zhiguang/app/internal/server"
+	"github.com/zhiguang/app/internal/storage"
 	"github.com/zhiguang/app/pkg/config"
 )
+
+// AppModules 聚合所有已初始化的业务模块，避免 InitializeApp 返回过多参数。
+type AppModules struct {
+	AuthHandler     *auth.AuthHandler
+	JwtService      *auth.JwtService
+	CounterHandler  *counter.CounterHandler
+	CounterService  *counter.CounterService
+	KnowPostHandler *knowpost.KnowPostHandler
+	RelationHandler *relation.RelationHandler
+	SearchHandler   *search.SearchHandler
+	LLMHandler      *llm.LlmHandler
+	StorageHandler  *storage.StorageHandler
+	ProfileHandler  *profile.ProfileHandler
+}
 
 // InitializeApp 完成整个应用的依赖装配，返回 *server.App 实例。
 //
@@ -86,6 +108,10 @@ func InitializeApp(configPath string) (*server.App, error) {
 	hotKeyDetector := cache.NewHotKeyDetector(&cfg.Cache.HotKey, redisClient)
 
 	// ── 模块初始化（按依赖拓扑序） ──
+	// 注册 outbox 分区键生成函数（必须在任何 outbox 消息生成前完成）
+	outbox.RegisterMessageKeyFunc(knowpost.MessageKey)
+	outbox.RegisterMessageKeyFunc(relation.MessageKey)
+
 	authHandler, jwtSvc, err := initAuth(db, redisClient, cfg)
 	if err != nil {
 		return nil, err
@@ -144,10 +170,10 @@ func InitializeApp(configPath string) (*server.App, error) {
 
 	app := server.NewApp(router, cfg, logger, backgroundRunners...)
 	app.AddCleanup(
-		func(context.Context) error { return kafkaWriter.Close() },
-		func(context.Context) error { return canalOutboxWriter.Close() },
-		func(context.Context) error { return redisClient.Close() },
 		func(context.Context) error { return db.Close() },
+		func(context.Context) error { return redisClient.Close() },
+		func(context.Context) error { return canalOutboxWriter.Close() },
+		func(context.Context) error { return kafkaWriter.Close() },
 	)
 	return app, nil
 }

@@ -134,7 +134,11 @@ func TestParseDetail_EmptySlice(t *testing.T) {
 // EnrichDetail 测试
 // ============================================================================
 
-type stubCounter struct{ counts map[string]int32; liked bool; faved bool }
+type stubCounter struct {
+	counts map[string]int32
+	liked  bool
+	faved  bool
+}
 
 func (s *stubCounter) GetCounts(_ context.Context, _, _ string, _ []string) (map[string]int32, error) {
 	if s.counts == nil {

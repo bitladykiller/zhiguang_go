@@ -15,6 +15,7 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zhiguang/app/pkg/rediskey"
 	"github.com/zhiguang/app/pkg/redislock"
 )
 
@@ -40,7 +41,7 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 		return nil, fmt.Errorf("rate limited")
 	}
 
-	lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
+	lockKey := rediskey.CounterLockRebuild(entityType, entityID)
 	lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval)
 	if err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
@@ -75,7 +76,7 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 // 使用 Redis SCAN 命令迭代匹配模式 `bm:{metric}:{entityType}:{entityID}:*`，
 // 对每个匹配的位图键执行 BITCOUNT，通过 Pipeline 批量发送并汇总。
 func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType, entityID string) (int64, error) {
-	pattern := fmt.Sprintf("bm:%s:%s:%s:*", metric, entityType, entityID)
+	pattern := rediskey.CounterBitmapPattern(metric, entityType, entityID)
 
 	var total int64
 	var cursor uint64

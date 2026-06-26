@@ -9,12 +9,14 @@
 //   - 装配逻辑集中在 bootstrap.InitializeApp，便于测试时替换完整依赖图。
 //
 // 使用方式：
-//   go run ./cmd/server -config config/config-local.yaml
+//
+//	go run ./cmd/server -config config/config-local.yaml
 package main
 
 import (
 	"flag"
-	"log"
+	"fmt"
+	"os"
 
 	"github.com/zhiguang/app/internal/bootstrap"
 	"github.com/zhiguang/app/internal/server"
@@ -29,12 +31,14 @@ func main() {
 	// 以及所有业务服务的装配和路由注册。
 	app, err := initializeApp(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to initialize application: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to initialize application: %v\n", err)
+		os.Exit(1)
 	}
 
 	// 启动 HTTP 服务并阻塞等待退出信号
 	if err := app.Run(); err != nil {
-		log.Fatalf("Application error: %v", err)
+		fmt.Fprintf(os.Stderr, "Application error: %v\n", err)
+		os.Exit(1)
 	}
 }
 

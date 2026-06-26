@@ -158,10 +158,10 @@ func TestNewOssStorageService_NilConfig(t *testing.T) {
 // --- interface compliance ---
 
 func TestOssStorageImplementsInterface(t *testing.T) {
-	var _ ObjectStorage = (*OssStorageService)(nil)
+	var _ StorageServicer = (*OssStorageService)(nil)
 }
 
-func TestStorageServiceInterface_IsObjectStorage(t *testing.T) {
+func TestStorageServiceInterface_IsStorageServicer(t *testing.T) {
 	var svc StorageServiceInterface = nil
 	_ = svc
 }

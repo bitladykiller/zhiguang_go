@@ -7,8 +7,6 @@ package outbox
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -57,12 +55,12 @@ type FailedMessageRecorder interface {
 //	consumer.SetFailedMessageRecorder(recorder)
 //	go consumer.Start(ctx)
 type Consumer struct {
-	reader             *kafka.Reader
-	handler            RowHandler
-	logger             *zap.Logger
-	failureRecorder    FailedMessageRecorder
-	maxRetries         int
-	retryDelay         time.Duration
+	reader          *kafka.Reader
+	handler         RowHandler
+	logger          *zap.Logger
+	failureRecorder FailedMessageRecorder
+	maxRetries      int
+	retryDelay      time.Duration
 }
 
 // NewConsumer 创建 outbox 消费者实例。
@@ -122,7 +120,7 @@ func (c *Consumer) Start(ctx context.Context) {
 
 		if err := c.handleMessageWithRetry(ctx, msg); err != nil {
 			c.logWarn("process outbox kafka message exhausted retries, will skip", err)
-			c.recordFailedMessage(msg.Value, err)
+			c.recordFailedMessage(ctx, msg.Value, err)
 			if err := c.reader.CommitMessages(ctx, msg); err != nil {
 				c.logWarn("commit skipped outbox kafka message failed", err)
 			}
@@ -154,11 +152,11 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, msg kafka.Message
 }
 
 // recordFailedMessage 将失败消息写入死信记录。
-func (c *Consumer) recordFailedMessage(value []byte, cause error) {
+func (c *Consumer) recordFailedMessage(ctx context.Context, value []byte, cause error) {
 	if c.failureRecorder == nil {
 		return
 	}
-	_ = c.failureRecorder.Create(context.WithoutCancel(context.Background()), CanalOutboxTopic, "", value, cause)
+	_ = c.failureRecorder.Create(context.WithoutCancel(ctx), CanalOutboxTopic, "", value, cause)
 }
 
 // handleMessage 解析一条 Kafka 消息，提取 outbox 行并逐行处理。
@@ -187,19 +185,16 @@ func (c *Consumer) handleMessage(ctx context.Context, value []byte) error {
 //   - 变更类型必须是 INSERT 或 UPDATE
 //   - Payload 为空的行会被保留（由调用方决定是否跳过）
 func extractRows(value []byte) ([]Row, error) {
-	var envelope CanalEnvelope
-	if err := json.Unmarshal(value, &envelope); err != nil {
-		return nil, fmt.Errorf("extract rows: unmarshal: %w", err)
+	canalRows, err := ExtractRows(value)
+	if err != nil {
+		return nil, err
 	}
-	if envelope.Table != outboxTableName {
-		return nil, nil
-	}
-	if envelope.Type != changeInsert && envelope.Type != changeUpdate {
+	if len(canalRows) == 0 {
 		return nil, nil
 	}
 
-	rows := make([]Row, 0, len(envelope.Data))
-	for _, data := range envelope.Data {
+	rows := make([]Row, 0, len(canalRows))
+	for _, data := range canalRows {
 		rows = append(rows, Row{
 			AggregateType: data.AggregateType,
 			AggregateID:   data.AggregateID,

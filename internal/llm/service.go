@@ -3,9 +3,10 @@
 //   - RagQueryService：执行向量检索并以流式 SSE 方式生成问答结果
 //
 // 使用方式：
-//   这些服务在配置不完整时不会阻塞服务启动，而是由调用方判断并返回 503。
-//   在 bootstrap 中通过 buildDescriptionService / buildRagQueryService 函数
-//   检测配置完整性后创建服务实例或返回 nil。
+//
+//	这些服务在配置不完整时不会阻塞服务启动，而是由调用方判断并返回 503。
+//	在 bootstrap 中通过 buildDescriptionService / buildRagQueryService 函数
+//	检测配置完整性后创建服务实例或返回 nil。
 package llm
 
 import (
@@ -38,6 +39,29 @@ func NewKnowPostDescriptionService(cfg *config.LLMConfig) *KnowPostDescriptionSe
 	return &KnowPostDescriptionService{cfg: cfg}
 }
 
+// chatMessage 表示 OpenAI 兼容格式的聊天消息。
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// chatCompletionRequest 表示 DeepSeek/OpenAI 兼容的聊天完成请求体。
+type chatCompletionRequest struct {
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Temperature float64       `json:"temperature,omitempty"`
+	MaxTokens   int           `json:"max_tokens,omitempty"`
+}
+
+// chatCompletionResponse 表示 DeepSeek/OpenAI 兼容的聊天完成响应体。
+type chatCompletionResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
 // SuggestDescription 调用 DeepSeek Chat API 为知文生成不超过 50 字的中文摘要。
 //
 // 参数：
@@ -64,20 +88,20 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 		content = content[:2000]
 	}
 
-	reqBody := map[string]interface{}{
-		"model": s.cfg.DeepSeek.Model,
-		"messages": []map[string]string{
+	reqBody := chatCompletionRequest{
+		Model: s.cfg.DeepSeek.Model,
+		Messages: []chatMessage{
 			{
-				"role":    "system",
-				"content": "你是一个专业的内容摘要助手，请用简洁的语言为以下文章生成一段不超过50字的摘要描述。",
+				Role:    "system",
+				Content: "你是一个专业的内容摘要助手，请用简洁的语言为以下文章生成一段不超过50字的摘要描述。",
 			},
 			{
-				"role":    "user",
-				"content": fmt.Sprintf("标题：%s\n内容：%s\n\n请生成不超过50字的摘要：", title, content),
+				Role:    "user",
+				Content: fmt.Sprintf("标题：%s\n内容：%s\n\n请生成不超过50字的摘要：", title, content),
 			},
 		},
-		"temperature": s.cfg.DeepSeek.Temperature,
-		"max_tokens":  100,
+		Temperature: s.cfg.DeepSeek.Temperature,
+		MaxTokens:   100,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -166,8 +190,9 @@ func NewRagQueryService(llmCfg *config.LLMConfig, esURL string) *RagQueryService
 //  5. 将 token 逐段按 SSE 格式写入 streamChan。
 //
 // 当前实现：
-//   返回一条占位消息，用于验证 SSE 链路是否正常。
-//   客户端可通过检查消息内容判断服务端是否真正就绪。
+//
+//	返回一条占位消息，用于验证 SSE 链路是否正常。
+//	客户端可通过检查消息内容判断服务端是否真正就绪。
 //
 // 参数：
 //   - postID: 知文 ID（用于筛选检索范围）

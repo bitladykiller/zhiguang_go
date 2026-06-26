@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -50,27 +51,35 @@ func RunInTx(
 
 	defer func() {
 		if r := recover(); r != nil {
-			_ = tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				log.Printf("outbox: rollback after panic failed: %v", rbErr)
+			}
 			panic(r) // 重新抛出，让上层 recover 处理
 		}
 	}()
 
 	if err := mutations(tx); err != nil {
-		_ = tx.Rollback()
+		if rbErr := tx.Rollback(); rbErr != nil {
+			log.Printf("outbox: rollback after mutation error failed: %v", rbErr)
+		}
 		return err
 	}
 
 	for _, evt := range events {
 		payload, err := json.Marshal(evt.Payload)
 		if err != nil {
-			_ = tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				log.Printf("outbox: rollback after marshal error failed: %v", rbErr)
+			}
 			return fmt.Errorf("outbox: marshal event %s: %w", evt.EventType, err)
 		}
 		if _, err := tx.ExecContext(ctx,
 			"INSERT INTO outbox (id, aggregate_type, aggregate_id, type, payload) VALUES (?, ?, ?, ?, ?)",
 			evt.ID, evt.AggregateType, evt.AggregateID, evt.EventType, string(payload),
 		); err != nil {
-			_ = tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				log.Printf("outbox: rollback after insert error failed: %v", rbErr)
+			}
 			return err
 		}
 	}

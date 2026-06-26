@@ -10,18 +10,19 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/httputil"
 )
 
 // stubService implements RelationServiceInterface for handler testing.
 type stubService struct {
-	followFn           func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
-	unfollowFn         func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
-	followingFn        func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
-	followersFn        func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
-	followingCursorFn  func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
-	followersCursorFn  func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
-	relationStatusFn   func(ctx context.Context, fromUserID, toUserID uint64) (string, error)
-	isFollowingFn      func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
+	followFn          func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
+	unfollowFn        func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
+	followingFn       func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
+	followersFn       func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
+	followingCursorFn func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	followersCursorFn func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	relationStatusFn  func(ctx context.Context, fromUserID, toUserID uint64) (string, error)
+	isFollowingFn     func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
 }
 
 func (s *stubService) Follow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
@@ -583,7 +584,7 @@ func TestQueryUint64(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/test?user_id=12345", nil)
 
-	id := queryUint64(c, "user_id")
+	id := httputil.QueryUint64(c, "user_id")
 	if id != 12345 {
 		t.Fatalf("expected 12345, got %d", id)
 	}
@@ -594,7 +595,7 @@ func TestQueryUint64_Missing(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/test", nil)
 
-	id := queryUint64(c, "user_id")
+	id := httputil.QueryUint64(c, "user_id")
 	if id != 0 {
 		t.Fatalf("expected 0, got %d", id)
 	}
@@ -605,7 +606,7 @@ func TestQueryUint64_Invalid(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/test?user_id=abc", nil)
 
-	id := queryUint64(c, "user_id")
+	id := httputil.QueryUint64(c, "user_id")
 	if id != 0 {
 		t.Fatalf("expected 0, got %d", id)
 	}
@@ -616,7 +617,7 @@ func TestQueryInt64(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/test?cursor=98765", nil)
 
-	v := queryInt64(c, "cursor")
+	v := httputil.QueryInt64(c, "cursor")
 	if v != 98765 {
 		t.Fatalf("expected 98765, got %d", v)
 	}
@@ -627,7 +628,7 @@ func TestQueryInt64_Missing(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/test", nil)
 
-	v := queryInt64(c, "cursor")
+	v := httputil.QueryInt64(c, "cursor")
 	if v != 0 {
 		t.Fatalf("expected 0, got %d", v)
 	}
@@ -638,7 +639,7 @@ func TestQueryInt64_Invalid(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/test?cursor=abc", nil)
 
-	v := queryInt64(c, "cursor")
+	v := httputil.QueryInt64(c, "cursor")
 	if v != 0 {
 		t.Fatalf("expected 0, got %d", v)
 	}

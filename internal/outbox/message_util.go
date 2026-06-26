@@ -73,37 +73,56 @@ func ExtractRows(message []byte) ([]CanalRow, error) {
 	return envelope.Data, nil
 }
 
-// MessageKey 为一条 outbox 行生成稳定的 Kafka 分区键。
-// WHY：同一聚合根的事件必须进入同一分区，才能在 consumer 侧保持处理顺序。
-func MessageKey(row CanalRow) string {
-	aggType := strings.TrimSpace(row.AggregateType)
-	aggID := strings.TrimSpace(row.AggregateID)
+// MessageKeyFunc 是生成 Kafka 分区键的函数签名。
+//
+// 业务模块通过注册自己的 MessageKeyFunc 来提供聚合根的分区键生成逻辑，
+// 避免 outbox 包硬编码业务类型。
+//
+// 参数：
+//   - row: CanalRow，包含 AggregateType、AggregateID、Payload 等字段
+//
+// 返回值：
+//   - string: 分区键，用于路由到同一 Kafka 分区
+//   - bool:   true=该函数能处理此聚合类型；false=不能处理，应尝试下一个函数
+type MessageKeyFunc func(row CanalRow) (string, bool)
 
-	switch aggType {
-	case "knowpost":
-		if aggID != "" {
-			return "knowpost:" + aggID
-		}
-		var payload struct {
-			Entity string `json:"entity"`
-			ID     uint64 `json:"id"`
-		}
-		if err := json.Unmarshal([]byte(row.Payload), &payload); err == nil && payload.Entity == "knowpost" && payload.ID != 0 {
-			return fmt.Sprintf("knowpost:%d", payload.ID)
-		}
-	case "following":
-		var evt struct {
-			FromUserID uint64 `json:"from_user_id"`
-			ToUserID   uint64 `json:"to_user_id"`
-		}
-		if err := json.Unmarshal([]byte(row.Payload), &evt); err == nil && evt.FromUserID != 0 && evt.ToUserID != 0 {
-			return fmt.Sprintf("following:%d:%d", evt.FromUserID, evt.ToUserID)
-		}
-		if aggID != "" {
-			return "following:" + aggID
+var messageKeyFuncs []MessageKeyFunc
+
+// RegisterMessageKeyFunc 注册一个业务模块的分区键生成函数。
+//
+// 调用时机：在应用初始化时（如 bootstrap 中）注册。
+// 线程安全：应在单线程初始化阶段调用，无需并发保护。
+//
+// 示例：
+//
+//	outbox.RegisterMessageKeyFunc(knowpost.MessageKey)
+//	outbox.RegisterMessageKeyFunc(relation.MessageKey)
+func RegisterMessageKeyFunc(fn MessageKeyFunc) {
+	messageKeyFuncs = append(messageKeyFuncs, fn)
+}
+
+// MessageKey 为一条 outbox 行生成稳定的 Kafka 分区键。
+//
+// 调用顺序：
+//  1. 先遍历所有已注册的 MessageKeyFunc，按注册顺序调用
+//  2. 如果某个函数返回 ok=true，使用其返回的 key
+//  3. 如果所有函数都返回 ok=false，使用默认兜底策略
+//
+// 默认兜底策略（按优先级）：
+//   - aggregate_type:aggregate_id
+//   - aggregate_type:event_type
+//   - outbox:row_id
+//   - event_type
+func MessageKey(row CanalRow) string {
+	for _, fn := range messageKeyFuncs {
+		if key, ok := fn(row); ok {
+			return key
 		}
 	}
 
+	// 默认兜底策略
+	aggType := strings.TrimSpace(row.AggregateType)
+	aggID := strings.TrimSpace(row.AggregateID)
 	if aggType != "" && aggID != "" {
 		return aggType + ":" + aggID
 	}

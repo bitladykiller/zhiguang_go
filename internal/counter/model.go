@@ -26,6 +26,8 @@ package counter
 import (
 	"fmt"
 	"strings"
+
+	"github.com/zhiguang/app/pkg/rediskey"
 )
 
 // CounterEvent 表示发往 Kafka、供异步聚合消费的计数变更事件。
@@ -87,8 +89,9 @@ func BitOf(userID uint64) uint64 { return userID % ChunkSize }
 
 // Redis 键生成函数。
 func BitmapKey(metric, entityType, entityID string, chunk uint64) string {
-	return fmt.Sprintf("bm:%s:%s:%s:%d", metric, entityType, entityID, chunk)
+	return rediskey.CounterBitmap(metric, entityType, entityID, chunk)
 }
+
 // SdsKey 生成实体在 Redis 中的 SDS 正式快照键。
 //
 // 格式: "cnt:{entityType}:{entityID}"
@@ -100,7 +103,7 @@ func BitmapKey(metric, entityType, entityID string, chunk uint64) string {
 // 返回值:
 //   - string: Redis 键名
 func SdsKey(entityType, entityID string) string {
-	return fmt.Sprintf("cnt:%s:%s", entityType, entityID)
+	return rediskey.CounterSds(entityType, entityID)
 }
 
 const counterDirtySetKey = "repair:counter:dirty"

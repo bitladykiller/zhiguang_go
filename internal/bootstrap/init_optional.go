@@ -89,7 +89,7 @@ func buildRagQueryService(cfg *config.Config, logger *zap.Logger) *llm.RagQueryS
 }
 
 // buildOssService 根据配置创建 OSS 存储服务。
-func buildOssService(cfg *config.Config, logger *zap.Logger) *storage.OssStorageService {
+func buildOssService(cfg *config.Config, logger *zap.Logger) storage.StorageServicer {
 	if !isOptionalEnabled(cfg.OSS.Enabled) {
 		logger.Warn("Storage service disabled: explicitly disabled")
 		return nil

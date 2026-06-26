@@ -57,7 +57,7 @@ func NewAuthService(
 	tokenStore RefreshTokenStore,
 	redisClient *redis.Client,
 	cfg *config.AuthConfig,
-) *AuthService {
+) AuthServicer {
 	return &AuthService{
 		repo:                 repo,
 		verifSvc:             verifSvc,
@@ -623,11 +623,11 @@ func generateNickname() string {
 	suffix := make([]byte, 8)
 	for i := range suffix {
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-	if err != nil {
-		zap.L().Warn("failed to generate secure random number for nickname", zap.Error(err))
-		n = big.NewInt(0)
-	}
-	suffix[i] = charset[n.Int64()]
+		if err != nil {
+			zap.L().Warn("failed to generate secure random number for nickname", zap.Error(err))
+			n = big.NewInt(0)
+		}
+		suffix[i] = charset[n.Int64()]
 	}
 	return "知光用户" + string(suffix)
 }

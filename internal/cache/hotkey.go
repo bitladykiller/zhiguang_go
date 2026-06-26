@@ -155,7 +155,7 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 		for bucket, count := range buckets {
 			pipe.HIncrBy(ctx, statKey, strconv.FormatInt(bucket, 10), count)
 		}
-		for i := int64(d.config.BucketCount); i < int64(d.config.BucketCount)+int64(d.config.BucketCount); i++ {
+		for i := int64(0); i < int64(d.config.BucketCount); i++ {
 			oldBucket := nowBucket - i
 			pipe.HDel(ctx, statKey, strconv.FormatInt(oldBucket, 10))
 		}

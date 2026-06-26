@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -84,9 +85,10 @@ func TestMessageUtilExtractRows_UPDATE(t *testing.T) {
 	}
 }
 
-// --- MessageKey ---
+// --- MessageKey with registered handlers ---
 
 func TestMessageKey_KnowPostByAggID(t *testing.T) {
+	RegisterMessageKeyFunc(knowpostMessageKey)
 	row := CanalRow{AggregateType: "knowpost", AggregateID: "42"}
 	key := MessageKey(row)
 	if key != "knowpost:42" {
@@ -95,6 +97,7 @@ func TestMessageKey_KnowPostByAggID(t *testing.T) {
 }
 
 func TestMessageKey_KnowPostByPayload(t *testing.T) {
+	RegisterMessageKeyFunc(knowpostMessageKey)
 	row := CanalRow{AggregateType: "knowpost", Payload: `{"entity":"knowpost","id":99}`}
 	key := MessageKey(row)
 	if key != "knowpost:99" {
@@ -103,6 +106,7 @@ func TestMessageKey_KnowPostByPayload(t *testing.T) {
 }
 
 func TestMessageKey_KnowPostPayloadMalformed(t *testing.T) {
+	RegisterMessageKeyFunc(knowpostMessageKey)
 	row := CanalRow{AggregateType: "knowpost", Payload: `{bad}`}
 	key := MessageKey(row)
 	if key != "" {
@@ -111,6 +115,7 @@ func TestMessageKey_KnowPostPayloadMalformed(t *testing.T) {
 }
 
 func TestMessageKey_KnowPostNoAggIDNoPayload(t *testing.T) {
+	RegisterMessageKeyFunc(knowpostMessageKey)
 	row := CanalRow{AggregateType: "knowpost"}
 	key := MessageKey(row)
 	if key != "" {
@@ -119,6 +124,7 @@ func TestMessageKey_KnowPostNoAggIDNoPayload(t *testing.T) {
 }
 
 func TestMessageKey_FollowingByPayload(t *testing.T) {
+	RegisterMessageKeyFunc(followingMessageKey)
 	row := CanalRow{AggregateType: "following", Payload: `{"from_user_id":1,"to_user_id":2}`}
 	key := MessageKey(row)
 	if key != "following:1:2" {
@@ -127,6 +133,7 @@ func TestMessageKey_FollowingByPayload(t *testing.T) {
 }
 
 func TestMessageKey_FollowingByAggID(t *testing.T) {
+	RegisterMessageKeyFunc(followingMessageKey)
 	row := CanalRow{AggregateType: "following", AggregateID: "55"}
 	key := MessageKey(row)
 	if key != "following:55" {
@@ -135,12 +142,15 @@ func TestMessageKey_FollowingByAggID(t *testing.T) {
 }
 
 func TestMessageKey_FollowingMalformedPayloadNoAggID(t *testing.T) {
+	RegisterMessageKeyFunc(followingMessageKey)
 	row := CanalRow{AggregateType: "following", Payload: `{bad}`}
 	key := MessageKey(row)
 	if key != "" {
 		t.Errorf("expected empty string, got %q", key)
 	}
 }
+
+// --- MessageKey fallback (no registered handlers) ---
 
 func TestMessageKey_FallbackByTypeID(t *testing.T) {
 	row := CanalRow{AggregateType: "comment", AggregateID: "10"}
@@ -175,6 +185,7 @@ func TestMessageKey_FallbackByType(t *testing.T) {
 }
 
 func TestMessageKey_TrimSpaces(t *testing.T) {
+	RegisterMessageKeyFunc(knowpostMessageKey)
 	row := CanalRow{AggregateType: "  knowpost  ", AggregateID: "  42  "}
 	key := MessageKey(row)
 	if key != "knowpost:42" {
@@ -188,6 +199,42 @@ func TestMessageKey_EmptyRow(t *testing.T) {
 	if key != "" {
 		t.Errorf("expected empty string for empty row, got %q", key)
 	}
+}
+
+// --- Stub message key functions for testing ---
+
+func knowpostMessageKey(row CanalRow) (string, bool) {
+	if row.AggregateType != "knowpost" {
+		return "", false
+	}
+	if row.AggregateID != "" {
+		return "knowpost:" + row.AggregateID, true
+	}
+	var payload struct {
+		Entity string `json:"entity"`
+		ID     uint64 `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(row.Payload), &payload); err == nil && payload.Entity == "knowpost" && payload.ID != 0 {
+		return fmt.Sprintf("knowpost:%d", payload.ID), true
+	}
+	return "", false
+}
+
+func followingMessageKey(row CanalRow) (string, bool) {
+	if row.AggregateType != "following" {
+		return "", false
+	}
+	var evt struct {
+		FromUserID uint64 `json:"from_user_id"`
+		ToUserID   uint64 `json:"to_user_id"`
+	}
+	if err := json.Unmarshal([]byte(row.Payload), &evt); err == nil && evt.FromUserID != 0 && evt.ToUserID != 0 {
+		return fmt.Sprintf("following:%d:%d", evt.FromUserID, evt.ToUserID), true
+	}
+	if row.AggregateID != "" {
+		return "following:" + row.AggregateID, true
+	}
+	return "", false
 }
 
 // --- CanalEnvelope JSON round-trip ---

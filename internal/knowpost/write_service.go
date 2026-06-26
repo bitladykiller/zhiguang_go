@@ -2,6 +2,7 @@ package knowpost
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/jsonutil"
+	"github.com/zhiguang/app/pkg/rediskey"
 )
 
 // --- [写操作] --- //
@@ -185,6 +187,14 @@ func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) erro
 	return nil
 }
 
+// knowPostOutboxPayload 表示知文 outbox 事件的标准化载荷。
+type knowPostOutboxPayload struct {
+	Entity string `json:"entity"`
+	ID     uint64 `json:"id"`
+	Op     string `json:"op"`
+	Type   string `json:"type"`
+}
+
 // runKnowPostTx 在数据库事务中执行业务变更和 outbox 事件写入（Transactional Outbox Pattern）。
 func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventType string, mutate func(txRepo Repo) error) error {
 	return outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
@@ -194,11 +204,11 @@ func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventTyp
 		AggregateType: "knowpost",
 		AggregateID:   &id,
 		EventType:     eventType,
-		Payload: map[string]interface{}{
-			"entity": "knowpost",
-			"id":     id,
-			"op":     knowPostOutboxOp(eventType),
-			"type":   eventType,
+		Payload: knowPostOutboxPayload{
+			Entity: "knowpost",
+			ID:     id,
+			Op:     knowPostOutboxOp(eventType),
+			Type:   eventType,
 		},
 	}})
 }
@@ -208,4 +218,35 @@ func knowPostOutboxOp(eventType string) string {
 		return "delete"
 	}
 	return "upsert"
+}
+
+// MessageKey 为 knowpost 类型的 outbox 行生成 Kafka 分区键。
+//
+// 实现 outbox.MessageKeyFunc 接口，在 bootstrap 中注册到 outbox 包。
+//
+// 分区键策略：
+//   - 优先使用 AggregateID（即 knowpost ID）
+//   - 如果 AggregateID 为空，尝试从 Payload 中解析 Entity 和 ID
+//
+// 参数：
+//   - row: outbox.CanalRow，包含 AggregateType、AggregateID、Payload 等
+//
+// 返回值：
+//   - string: 分区键，格式为 "knowpost:{id}"
+//   - bool:   true=能处理此聚合类型；false=不能处理
+func MessageKey(row outbox.CanalRow) (string, bool) {
+	if row.AggregateType != "knowpost" {
+		return "", false
+	}
+	if row.AggregateID != "" {
+		return "knowpost:" + row.AggregateID, true
+	}
+	var payload struct {
+		Entity string `json:"entity"`
+		ID     uint64 `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(row.Payload), &payload); err == nil && payload.Entity == "knowpost" && payload.ID != 0 {
+		return rediskey.KnowPostMessageKey(payload.ID), true
+	}
+	return "", false
 }

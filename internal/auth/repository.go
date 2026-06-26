@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"go.uber.org/zap"
@@ -22,8 +23,9 @@ const authUserSelectColumns = `
 //   - 更新密码
 //   - 记录登录审计日志
 type AuthRepository struct {
-	db     sqlx.ExtContext
-	logger *zap.Logger
+	db      sqlx.ExtContext
+	logger  *zap.Logger
+	nowFunc func() time.Time
 }
 
 // NewAuthRepository 创建 AuthRepository 实例。
@@ -34,12 +36,12 @@ type AuthRepository struct {
 // 返回值:
 //   - *AuthRepository: 已初始化的仓储实例
 func NewAuthRepository(db sqlx.ExtContext) *AuthRepository {
-	return &AuthRepository{db: db, logger: zap.L()}
+	return &AuthRepository{db: db, logger: zap.L(), nowFunc: time.Now}
 }
 
 // WithDB 克隆绑定到指定 sqlx 句柄的新仓储实例，用于事务上下文。
 func (r *AuthRepository) WithDB(db sqlx.ExtContext) *AuthRepository {
-	return &AuthRepository{db: db, logger: r.logger}
+	return &AuthRepository{db: db, logger: r.logger, nowFunc: r.nowFunc}
 }
 
 // CreateUser 在数据库中创建新用户记录。

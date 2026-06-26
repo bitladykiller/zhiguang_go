@@ -8,17 +8,18 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zhiguang/app/pkg/rediskey"
 	"go.uber.org/zap"
 )
 
 const (
-	l1CacheTTL          = 600
+	l1CacheTTL           = 600
 	fallbackExhaustedTTL = 10 * time.Minute
 )
 
 // fillL1 将 BigV 用户的前 500 个关注/粉丝 ID 写入 freecache（L1）。
 func (s *RelationService) fillL1(ctx context.Context, listType string, userID uint64) {
-	key := s.l1KeyStr(listType, userID)
+	key := s.zsetKey(listType, userID)
 	entries, err := s.readFromDB(ctx, listType, userID, 500, 0)
 	if err != nil || len(entries) == 0 {
 		return
@@ -52,13 +53,13 @@ func (s *RelationService) invalidateCaches(ctx context.Context, fromUserID, toUs
 	if err := s.redis.Del(cacheCtx, s.zsetKey("following", fromUserID)).Err(); err != nil {
 		s.logger.Warn("failed to invalidate following zset cache", zap.Uint64("fromUserID", fromUserID), zap.Error(err))
 	}
-	s.l1.Del([]byte(s.l1KeyStr("following", fromUserID)))
+	s.l1.Del([]byte(s.zsetKey("following", fromUserID)))
 	if err := s.redis.Del(cacheCtx, s.zsetKey("followers", toUserID)).Err(); err != nil {
 		s.logger.Warn("failed to invalidate followers zset cache", zap.Uint64("toUserID", toUserID), zap.Error(err))
 	}
-	s.l1.Del([]byte(s.l1KeyStr("followers", toUserID)))
+	s.l1.Del([]byte(s.zsetKey("followers", toUserID)))
 
-	if err := s.redis.Del(cacheCtx, fmt.Sprintf("follower:fallback:exhausted:%d", toUserID)).Err(); err != nil {
+	if err := s.redis.Del(cacheCtx, rediskey.RelationFallbackExhausted(toUserID)).Err(); err != nil {
 		s.logger.Warn("failed to invalidate follower fallback exhausted key", zap.Uint64("toUserID", toUserID), zap.Error(err))
 	}
 }
@@ -136,7 +137,7 @@ func (s *RelationService) isBigV(ctx context.Context, userID uint64) bool {
 
 // shouldFallbackToFollowing 判断是否需要从 following 表降级查询粉丝。
 func (s *RelationService) shouldFallbackToFollowing(ctx context.Context, userID uint64) bool {
-	key := fmt.Sprintf("follower:fallback:exhausted:%d", userID)
+	key := rediskey.RelationFallbackExhausted(userID)
 	exists, err := s.redis.Exists(ctx, key).Result()
 	if err != nil {
 		return true
@@ -146,7 +147,7 @@ func (s *RelationService) shouldFallbackToFollowing(ctx context.Context, userID 
 
 // markFollowerFallbackExhausted 标记该用户的粉丝降级查询已穷尽。
 func (s *RelationService) markFollowerFallbackExhausted(ctx context.Context, userID uint64) {
-	key := fmt.Sprintf("follower:fallback:exhausted:%d", userID)
+	key := rediskey.RelationFallbackExhausted(userID)
 	if err := s.redis.Set(ctx, key, "1", fallbackExhaustedTTL).Err(); err != nil {
 		s.logger.Warn("failed to mark follower fallback exhausted", zap.String("key", key), zap.Error(err))
 	}

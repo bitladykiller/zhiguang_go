@@ -6,9 +6,10 @@ import "github.com/coocood/freecache"
 // PrefixCache 在 freecache 的 key 上自动添加前缀，实现单一缓存池的多用途隔离。
 //
 // 设计目的：
-//   将之前 3 个独立的 freecache 实例（detailCache、feedPublicCache、feedMineCache）
-//   合并为一个共享实例，通过 key 前缀区分不同用途。
-//   这样既保持了逻辑隔离，又减少了内存碎片。
+//
+//	将之前 3 个独立的 freecache 实例（detailCache、feedPublicCache、feedMineCache）
+//	合并为一个共享实例，通过 key 前缀区分不同用途。
+//	这样既保持了逻辑隔离，又减少了内存碎片。
 //
 // 使用方式：
 //

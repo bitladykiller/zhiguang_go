@@ -10,17 +10,16 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 )
 
-// OssStorageService 管理 OSS 对象存储相关操作，实现 ObjectStorage 接口。
+// OssStorageService 管理 OSS 对象存储相关操作，实现 StorageServicer 接口。
 //
 // 它提供直传 OSS 的预签名 URL，以及对象公开访问地址的构造能力。
 type OssStorageService struct {
-	client *oss.Client
 	bucket *oss.Bucket
 	cfg    *config.OssConfig
 }
 
-// 编译期断言：*OssStorageService 实现了 ObjectStorage 接口。
-var _ ObjectStorage = (*OssStorageService)(nil)
+// 编译期断言：*OssStorageService 实现了 StorageServicer 接口。
+var _ StorageServicer = (*OssStorageService)(nil)
 
 // NewOssStorageService 创建 OSS 客户端以及 bucket 引用。
 //
@@ -28,20 +27,21 @@ var _ ObjectStorage = (*OssStorageService)(nil)
 //   - cfg: OSS 配置（含 Endpoint、AccessKeyID、AccessKeySecret、Bucket 等）
 //
 // 返回值:
-//   - *OssStorageService: 存储服务实例
+//   - StorageServicer: 存储服务实例
 //   - error: 客户端创建失败或 bucket 获取失败时返回
 //
 // OSS SDK 调用说明:
-//   1. oss.New(endpoint, accessKeyID, accessKeySecret):
-//      阿里云 OSS Go SDK 的客户端构造方法。
-//      endpoint 格式为 "oss-cn-hangzhou.aliyuncs.com"（不带 https://），
-//      SDK 会自动补充协议前缀。支持内网 endpoint（如 "oss-cn-hangzhou-internal.aliyuncs.com"）。
-//      如果使用 STS 临时凭证，应使用 oss.NewWithSTS 方法。
 //
-//   2. client.Bucket(bucketName):
-//      通过 Bucket 方法获取 bucket 引用，后续的 SignURL、GetObjectDetailedMeta 等操作
-//      都是 Bucket 对象的方法。bucket 引用是轻量级的，多次调用不产生网络开销。
-func NewOssStorageService(cfg *config.OssConfig) (*OssStorageService, error) {
+//  1. oss.New(endpoint, accessKeyID, accessKeySecret):
+//     阿里云 OSS Go SDK 的客户端构造方法。
+//     endpoint 格式为 "oss-cn-hangzhou.aliyuncs.com"（不带 https://），
+//     SDK 会自动补充协议前缀。支持内网 endpoint（如 "oss-cn-hangzhou-internal.aliyuncs.com"）。
+//     如果使用 STS 临时凭证，应使用 oss.NewWithSTS 方法。
+//
+//  2. client.Bucket(bucketName):
+//     通过 Bucket 方法获取 bucket 引用，后续的 SignURL、GetObjectDetailedMeta 等操作
+//     都是 Bucket 对象的方法。bucket 引用是轻量级的，多次调用不产生网络开销。
+func NewOssStorageService(cfg *config.OssConfig) (StorageServicer, error) {
 	client, err := oss.New(cfg.Endpoint, cfg.AccessKeyID, cfg.AccessKeySecret)
 	if err != nil {
 		return nil, fmt.Errorf("create oss client: %w", err)
@@ -52,7 +52,7 @@ func NewOssStorageService(cfg *config.OssConfig) (*OssStorageService, error) {
 		return nil, fmt.Errorf("get bucket: %w", err)
 	}
 
-	return &OssStorageService{client: client, bucket: bucket, cfg: cfg}, nil
+	return &OssStorageService{bucket: bucket, cfg: cfg}, nil
 }
 
 // GeneratePresignedPutURL 生成一个限时有效的 PUT 预签名 URL。
@@ -67,14 +67,16 @@ func NewOssStorageService(cfg *config.OssConfig) (*OssStorageService, error) {
 //   - error: 签名失败时返回
 //
 // OSS SDK 调用说明:
-//   s.bucket.SignURL(objectKey, oss.HTTPPut, int64(expiry.Seconds())):
-//   阿里云 OSS SDK 的 SignURL 方法在 URL 末尾附加 AWSAccessKeyId、Expires、Signature 等查询参数。
-//   签名过程使用 HMAC-SHA1 算法，由 SDK 内部自动完成。
-//   生成的 URL 可以直接用于 curl、浏览器或任何 HTTP 客户端发起 PUT 请求。
+//
+//	s.bucket.SignURL(objectKey, oss.HTTPPut, int64(expiry.Seconds())):
+//	阿里云 OSS SDK 的 SignURL 方法在 URL 末尾附加 AWSAccessKeyId、Expires、Signature 等查询参数。
+//	签名过程使用 HMAC-SHA1 算法，由 SDK 内部自动完成。
+//	生成的 URL 可以直接用于 curl、浏览器或任何 HTTP 客户端发起 PUT 请求。
 //
 // 使用场景:
-//   客户端（Web/移动端）请求预签名 URL 后，直接通过 PUT 方法上传文件。
-//   这种方式避免了文件数据经过业务服务器，减少了带宽消耗和延迟。
+//
+//	客户端（Web/移动端）请求预签名 URL 后，直接通过 PUT 方法上传文件。
+//	这种方式避免了文件数据经过业务服务器，减少了带宽消耗和延迟。
 //
 // 边界情况:
 //   - expiry <= 0 时 SDK 行为不确定，建议传入至少 1 分钟
@@ -99,8 +101,9 @@ func (s *OssStorageService) GeneratePresignedPutURL(objectKey string, expiry tim
 //     例如: https://my-bucket.oss-cn-hangzhou.aliyuncs.com/images/abc123_photo.jpg
 //
 // 说明:
-//   自定义域名通常指向 CDN 加速节点，可以提升图片等静态资源的加载速度。
-//   OSS 控制台中需要配置 Bucket 绑定自定义域名并开启 CDN 加速。
+//
+//	自定义域名通常指向 CDN 加速节点，可以提升图片等静态资源的加载速度。
+//	OSS 控制台中需要配置 Bucket 绑定自定义域名并开启 CDN 加速。
 //
 // 边界情况:
 //   - PublicDomain 末尾可能带 "/"，函数通过 TrimRight 统一去除
@@ -129,8 +132,9 @@ func (s *OssStorageService) PublicURL(objectKey string) string {
 //     对于当前业务场景已足够，无需完整 UUID 或雪花 ID
 //
 // 注意:
-//   uuid.UUID 来自 google/uuid 包，基于 crypto/rand 生成的随机 UUIDv4。
-//   .String()[:8] 取了短前缀，若需完整唯一性可改用完整 uuid.New().String()。
+//
+//	uuid.UUID 来自 google/uuid 包，基于 crypto/rand 生成的随机 UUIDv4。
+//	.String()[:8] 取了短前缀，若需完整唯一性可改用完整 uuid.New().String()。
 func (s *OssStorageService) GenerateObjectKey(folder, fileName string) string {
 	f := folder
 	if f == "" {

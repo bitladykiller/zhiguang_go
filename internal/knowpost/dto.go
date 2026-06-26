@@ -1,6 +1,10 @@
 package knowpost
 
-import "time"
+import (
+	"time"
+
+	"github.com/zhiguang/app/internal/model"
+)
 
 // ============================================================================
 // 响应 DTO（Data Transfer Object）
@@ -25,8 +29,8 @@ type KnowPostDetailResponse struct {
 	AuthorTagJson  *string    `json:"author_tag_json"`
 	LikeCount      int64      `json:"like_count"`
 	FavoriteCount  int64      `json:"favorite_count"`
-	Liked          *bool      `json:"liked,omitempty"`    // 当前用户是否已点赞（动态补齐，不入缓存）
-	Faved          *bool      `json:"faved,omitempty"`    // 当前用户是否已收藏（动态补齐，不入缓存）
+	Liked          *bool      `json:"liked,omitempty"` // 当前用户是否已点赞（动态补齐，不入缓存）
+	Faved          *bool      `json:"faved,omitempty"` // 当前用户是否已收藏（动态补齐，不入缓存）
 	IsTop          bool       `json:"is_top"`
 	Visible        string     `json:"visible"`
 	Type           string     `json:"type"`
@@ -46,9 +50,49 @@ type FeedItemResponse struct {
 	TagJson        *string  `json:"tag_json"`
 	LikeCount      int64    `json:"like_count"`
 	FavoriteCount  int64    `json:"favorite_count"`
-	Liked          *bool    `json:"liked,omitempty"`     // 当前用户是否点赞（动态补齐）
-	Faved          *bool    `json:"faved,omitempty"`     // 当前用户是否收藏（动态补齐）
-	IsTop          *bool    `json:"is_top,omitempty"`    // 仅"我的已发布"列表包含此字段
+	Liked          *bool    `json:"liked,omitempty"`  // 当前用户是否点赞（动态补齐）
+	Faved          *bool    `json:"faved,omitempty"`  // 当前用户是否收藏（动态补齐）
+	IsTop          *bool    `json:"is_top,omitempty"` // 仅"我的已发布"列表包含此字段
+}
+
+// FeedItemFromModel 将共享的 model.FeedItem 转换为 knowpost 的 FeedItemResponse。
+// 用于 knowpost 作为数据提供方时，将内部模型映射为 HTTP 响应 DTO。
+func FeedItemFromModel(item model.FeedItem) FeedItemResponse {
+	return FeedItemResponse{
+		ID:             item.ID,
+		Title:          item.Title,
+		Description:    item.Description,
+		CoverImage:     item.CoverImage,
+		Tags:           item.Tags,
+		AuthorAvatar:   item.AuthorAvatar,
+		AuthorNickname: item.AuthorNickname,
+		TagJson:        item.TagJson,
+		LikeCount:      item.LikeCount,
+		FavoriteCount:  item.FavoriteCount,
+		Liked:          item.Liked,
+		Faved:          item.Faved,
+		IsTop:          item.IsTop,
+	}
+}
+
+// ToModel 将 FeedItemResponse 转换为共享的 model.FeedItem。
+// 用于 knowpost 作为数据提供方时，将 DTO 映射为跨模块共享模型。
+func (r FeedItemResponse) ToModel() model.FeedItem {
+	return model.FeedItem{
+		ID:             r.ID,
+		Title:          r.Title,
+		Description:    r.Description,
+		CoverImage:     r.CoverImage,
+		Tags:           r.Tags,
+		AuthorAvatar:   r.AuthorAvatar,
+		AuthorNickname: r.AuthorNickname,
+		TagJson:        r.TagJson,
+		LikeCount:      r.LikeCount,
+		FavoriteCount:  r.FavoriteCount,
+		Liked:          r.Liked,
+		Faved:          r.Faved,
+		IsTop:          r.IsTop,
+	}
 }
 
 // FeedPageResponse 表示带分页信息的 feed 列表。

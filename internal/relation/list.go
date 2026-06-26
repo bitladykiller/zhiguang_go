@@ -6,13 +6,14 @@ import (
 	"strconv"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zhiguang/app/pkg/rediskey"
 	"go.uber.org/zap"
 )
 
 // getListWithOffset 以 Offset 分页方式读取关注/粉丝列表（含三级缓存）。
 func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, listType string, limit, offset int) ([]uint64, error) {
 	if s.isBigV(ctx, userID) {
-		l1Key := s.l1KeyStr(listType, userID)
+		l1Key := s.zsetKey(listType, userID)
 		if data, err := s.l1.Get([]byte(l1Key)); err == nil {
 			ids := s.toLongList(string(data))
 			if offset < len(ids) {
@@ -116,7 +117,7 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 
 // zsetKey 生成 Redis ZSet 的缓存键。
 func (s *RelationService) zsetKey(listType string, userID uint64) string {
-	return fmt.Sprintf("z:%s:%d", listType, userID)
+	return rediskey.RelationZSet(listType, userID)
 }
 
 // readFromDB 从数据库读取用户的关注/粉丝列表。

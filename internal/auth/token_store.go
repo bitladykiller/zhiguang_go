@@ -2,10 +2,10 @@ package auth
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zhiguang/app/pkg/rediskey"
 	"go.uber.org/zap"
 )
 
@@ -52,7 +52,7 @@ func NewRedisRefreshTokenStore(redisClient *redis.Client) *RedisRefreshTokenStor
 // 返回值:
 //   - error: Redis 操作异常时返回
 func (s *RedisRefreshTokenStore) StoreToken(ctx context.Context, userID uint64, tokenID string, ttl time.Duration) error {
-	key := fmt.Sprintf("rt:%d:%s", userID, tokenID)
+	key := rediskey.AuthRefreshToken(userID, tokenID)
 	return s.redis.Set(ctx, key, "1", ttl).Err()
 }
 
@@ -71,7 +71,7 @@ func (s *RedisRefreshTokenStore) StoreToken(ctx context.Context, userID uint64, 
 // 边界情况:
 //   - Redis 连接异常时 s.redis.Exists 返回 error，代码忽略后 exists 为 0，返回 false（fail-closed 策略）
 func (s *RedisRefreshTokenStore) IsTokenValid(ctx context.Context, userID uint64, tokenID string) bool {
-	key := fmt.Sprintf("rt:%d:%s", userID, tokenID)
+	key := rediskey.AuthRefreshToken(userID, tokenID)
 	exists, err := s.redis.Exists(ctx, key).Result()
 	if err != nil {
 		zap.L().Warn("failed to check token existence", zap.String("key", key), zap.Error(err))
@@ -91,7 +91,7 @@ func (s *RedisRefreshTokenStore) IsTokenValid(ctx context.Context, userID uint64
 // 返回值:
 //   - error: Redis 操作异常时返回
 func (s *RedisRefreshTokenStore) RevokeToken(ctx context.Context, userID uint64, tokenID string) error {
-	key := fmt.Sprintf("rt:%d:%s", userID, tokenID)
+	key := rediskey.AuthRefreshToken(userID, tokenID)
 	return s.redis.Del(ctx, key).Err()
 }
 
@@ -121,7 +121,7 @@ func (s *RedisRefreshTokenStore) RevokeToken(ctx context.Context, userID uint64,
 //   - 如果用户没有任何白名单令牌，迭代器直接结束，不执行任何操作，返回 nil
 //   - 遍历过程中新创建的令牌可能不会被本次扫描到（弱一致性），可忽略
 func (s *RedisRefreshTokenStore) RevokeAll(ctx context.Context, userID uint64) error {
-	pattern := fmt.Sprintf("rt:%d:*", userID)
+	pattern := rediskey.AuthRefreshTokenPattern(userID)
 	iter := s.redis.Scan(ctx, 0, pattern, 100).Iterator()
 	for iter.Next(ctx) {
 		if err := s.redis.Del(ctx, iter.Val()).Err(); err != nil {

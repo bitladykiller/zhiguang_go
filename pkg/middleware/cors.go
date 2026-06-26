@@ -10,8 +10,9 @@ import (
 // CorsMiddleware 返回一个处理跨域资源共享的 Gin 中间件。
 //
 // 功能：
-//   通过 gin-contrib/cors 库创建 CORS 中间件，配置允许的来源、方法、
-//   请求头、暴露的响应头和预检缓存时间。
+//
+//	通过 gin-contrib/cors 库创建 CORS 中间件，配置允许的来源、方法、
+//	请求头、暴露的响应头和预检缓存时间。
 //
 // 当前配置对开发环境较宽松，生产环境应进一步收紧允许来源。
 // 具体来说应考虑以下调整：
@@ -39,7 +40,7 @@ import (
 //   - AllowOrigins[]{"*"} 与 AllowCredentials(true) 不兼容：
 //     浏览器在 AllowCredentials=true 时会忽略 AllowOrigins="*"。
 //     生产环境建议改为显式的域名白名单：
-//       AllowOrigins: []string{"https://your-app.com"}
+//     AllowOrigins: []string{"https://your-app.com"}
 //     或者使用 AllowedOriginFunc 做动态判断。
 //   - AllowAllOrigins 为 true 时，实际不会发送 Access-Control-Allow-Origin: *
 //     头，而是会回显请求的 Origin 值（配合 AllowCredentials）。

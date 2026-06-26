@@ -19,8 +19,8 @@ import (
 //
 // 设计决策：
 //   - 使用 RS256（非对称签名）而非 HS256（对称签名）：
-//     + 公钥可以安全分发给其他微服务或前端 SDK 用于本地校验
-//     + 私钥仅在当前服务持有，降低了密钥泄漏的影响范围
+//   - 公钥可以安全分发给其他微服务或前端 SDK 用于本地校验
+//   - 私钥仅在当前服务持有，降低了密钥泄漏的影响范围
 //   - 双令牌模式：短期 access token + 长期 refresh token 的组合
 //   - 刷新令牌使用 Redis 白名单管理，支持主动吊销
 //   - Access Token 中嵌入用户昵称（Nickname），避免每次请求都查一次数据库
@@ -205,7 +205,7 @@ func (s *JwtService) encode(user *User, issuedAt, expiresAt time.Time, tokenType
 //     这是 RSA 私钥的传统格式，只支持 RSA。
 //     如果 PKCS#8 解析失败，会回退尝试此格式。
 func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
-data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("load private key: read file: %w", err)
 	}

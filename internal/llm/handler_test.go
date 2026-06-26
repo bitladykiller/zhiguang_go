@@ -72,7 +72,7 @@ func (m *mockRagSvc) Query(ctx context.Context, postID uint64, question string, 
 // Helpers
 // ============================================================================
 
-func setupHandler(descSvc DescriptionServiceInterface, ragSvc RagQueryServiceInterface) *LlmHandler {
+func setupHandler(descSvc DescriptionServicer, ragSvc RagQueryServicer) *LlmHandler {
 	gin.SetMode(gin.TestMode)
 	return NewLlmHandler(descSvc, ragSvc)
 }
@@ -376,7 +376,7 @@ func TestRagQuery_ClientDisconnects(t *testing.T) {
 }
 
 func TestRagQuery_RecoverFromPanicInGoroutine(t *testing.T) {
-	ragSvc := &RagQueryServiceInterfaceMock{
+	ragSvc := &RagQueryServicerMock{
 		QueryFunc: func(_ context.Context, _ uint64, _ string, _ chan<- string) error {
 			// Don't close the channel — handler's recover will handle it
 			panic("unexpected error in rag query")
@@ -404,14 +404,14 @@ func TestRagQuery_RecoverFromPanicInGoroutine(t *testing.T) {
 }
 
 // ============================================================================
-// RagQueryServiceInterface mock with panic support
+// RagQueryServicer mock with panic support
 // ============================================================================
 
-type RagQueryServiceInterfaceMock struct {
+type RagQueryServicerMock struct {
 	QueryFunc func(ctx context.Context, postID uint64, question string, streamChan chan<- string) error
 }
 
-func (m *RagQueryServiceInterfaceMock) Query(ctx context.Context, postID uint64, question string, streamChan chan<- string) error {
+func (m *RagQueryServicerMock) Query(ctx context.Context, postID uint64, question string, streamChan chan<- string) error {
 	return m.QueryFunc(ctx, postID, question, streamChan)
 }
 
@@ -587,9 +587,9 @@ func BenchmarkRagQuery(b *testing.B) {
 
 // ensure mock implements interfaces
 var (
-	_ DescriptionServiceInterface = (*mockDescSvc)(nil)
-	_ RagQueryServiceInterface    = (*mockRagSvc)(nil)
-	_ RagQueryServiceInterface    = (*RagQueryServiceInterfaceMock)(nil)
+	_ DescriptionServicer = (*mockDescSvc)(nil)
+	_ RagQueryServicer    = (*mockRagSvc)(nil)
+	_ RagQueryServicer    = (*RagQueryServicerMock)(nil)
 )
 
 // 流式读取 helper

@@ -1,10 +1,10 @@
 package auth
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/rediskey"
 	"github.com/zhiguang/app/pkg/redislock"
 )
 
@@ -21,7 +21,7 @@ const (
 //   - SendCode 和 Verify 都会读写同一组 codeKey / intervalKey / attemptKey。
 //   - 不同用户或不同场景之间不应互相阻塞。
 func verificationFlowLockKey(scene VerificationScene, identifier string) string {
-	return fmt.Sprintf("lock:auth:verification:send:%s:%s", scene, identifier)
+	return rediskey.AuthLockVerification(string(scene), identifier)
 }
 
 // refreshSessionLockKey 返回用户 refresh token 会话操作使用的分布式锁键。
@@ -30,7 +30,7 @@ func verificationFlowLockKey(scene VerificationScene, identifier string) string 
 //   - Refresh、ResetPassword.RevokeAll 本质上都在修改同一用户的 refresh token 白名单。
 //   - 用 user 级别串行化，才能同时覆盖“并发 refresh”和“refresh 与全量吊销并发”两类竞态。
 func refreshSessionLockKey(userID uint64) string {
-	return fmt.Sprintf("lock:auth:refresh:user:%d", userID)
+	return rediskey.AuthLockRefresh(userID)
 }
 
 func verificationSendLockOptions(cfg *config.VerificationConfig) redislock.Options {

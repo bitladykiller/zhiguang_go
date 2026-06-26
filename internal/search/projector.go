@@ -195,7 +195,7 @@ WHERE know_posts.id = ?
 		ImgURLs:       jsonutil.ParseStringArray(row.ImgURLs),
 		LikeCount:     int64(metrics["like"]),
 		FavCount:      int64(metrics["fav"]),
-		ViewCount:     0,
+		ViewCount:     int64(metrics["view"]),
 		IsTop:         row.IsTop,
 		Status:        row.Status,
 		Visible:       row.Visible,

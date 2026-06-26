@@ -244,7 +244,7 @@ func TestNewAggregationConsumer_NilReader(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	c := NewAggregationConsumer(nil, svc, nil, nil)
 	if c != nil {
 		t.Fatal("expected nil consumer for nil reader")
@@ -262,7 +262,7 @@ func TestNewAggregationConsumer_DefaultConfig(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	_ = NewAggregationConsumer(nil, svc, nil, nil)
 }
 
@@ -270,10 +270,10 @@ func TestAcceptMessage_ValidEvent(t *testing.T) {
 	svc := &CounterService{}
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
-		service:          svc,
-		commitFn:         commit.commit,
-		batchSize:        10,
-		batches:          make(map[int]*counterBatch),
+		service:   svc,
+		commitFn:  commit.commit,
+		batchSize: 10,
+		batches:   make(map[int]*counterBatch),
 	}
 
 	evt := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
@@ -293,16 +293,16 @@ func TestAcceptMessage_MalformedEvent(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
-		service:          svc,
-		commitFn:         commit.commit,
-		batchSize:        10,
-		groupID:          "test-group",
-		topic:            "test-topic",
-		batches:          make(map[int]*counterBatch),
-		logger:           nil,
+		service:   svc,
+		commitFn:  commit.commit,
+		batchSize: 10,
+		groupID:   "test-group",
+		topic:     "test-topic",
+		batches:   make(map[int]*counterBatch),
+		logger:    nil,
 	}
 
 	msg := makeMalformedMessage(0, 1)
@@ -319,7 +319,7 @@ func TestAcceptMessage_TriggersFlushOnBatchFull(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -350,7 +350,7 @@ func TestAcceptMessage_FlushOnPartitionChange(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	commit := &stubCommitFn{}
 	batches := make(map[int]*counterBatch)
 	consumer := &AggregationConsumer{
@@ -394,7 +394,7 @@ func TestAcceptMessage_FlushOnMalformedWithExistingBatch(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -433,7 +433,7 @@ func TestFlushPartitionBatch_FlushesAndCleans(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -481,7 +481,7 @@ func TestFlushExpiredBatches_Expired(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -555,14 +555,14 @@ func TestSkipMalformedMessage(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
-		service:          svc,
-		commitFn:         commit.commit,
-		groupID:          "test-group",
-		topic:            "test-topic",
-		batches:          make(map[int]*counterBatch),
+		service:  svc,
+		commitFn: commit.commit,
+		groupID:  "test-group",
+		topic:    "test-topic",
+		batches:  make(map[int]*counterBatch),
 	}
 
 	msg := makeMalformedMessage(1, 5)

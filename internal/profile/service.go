@@ -20,7 +20,7 @@ type Service struct {
 }
 
 // NewProfileService 创建资料服务实例。
-func NewProfileService(repo Repo) *Service {
+func NewProfileService(repo Repo) ProfileServicer {
 	return &Service{repo: repo}
 }
 

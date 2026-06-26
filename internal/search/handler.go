@@ -9,7 +9,7 @@ import (
 
 // SearchHandler 暴露内容搜索相关的 HTTP 接口。
 type SearchHandler struct {
-	svc SearchServiceInterface
+	svc SearchServicer
 }
 
 // NewSearchHandler 创建搜索 HTTP 处理器。
@@ -21,9 +21,10 @@ type SearchHandler struct {
 //   - *SearchHandler: 处理器实例
 //
 // 说明:
-//   svc 可能为 nil（当 ES 配置不完整时），此时所有接口返回 503 Service Unavailable。
-//   这样设计是为了避免启动时因 ES 不可用而拒绝服务，让其他模块正常工作。
-func NewSearchHandler(svc SearchServiceInterface) *SearchHandler {
+//
+//	svc 可能为 nil（当 ES 配置不完整时），此时所有接口返回 503 Service Unavailable。
+//	这样设计是为了避免启动时因 ES 不可用而拒绝服务，让其他模块正常工作。
+func NewSearchHandler(svc SearchServicer) *SearchHandler {
 	return &SearchHandler{svc: svc}
 }
 
@@ -37,8 +38,9 @@ func NewSearchHandler(svc SearchServiceInterface) *SearchHandler {
 //   - GET /search/suggest: 自动补全建议 (Suggest)
 //
 // 说明:
-//   所有搜索接口均注册为 GET 方法，符合 RESTful 查询语义。
-//   搜索参数（关键词、标签、游标）通过查询字符串传递。
+//
+//	所有搜索接口均注册为 GET 方法，符合 RESTful 查询语义。
+//	搜索参数（关键词、标签、游标）通过查询字符串传递。
 func (h *SearchHandler) RegisterRoutes(r *gin.RouterGroup) {
 	sr := r.Group("/search")
 	{
@@ -60,8 +62,9 @@ func (h *SearchHandler) RegisterRoutes(r *gin.RouterGroup) {
 //   - 失败: HTTP 400（缺少 q 参数）、HTTP 500（搜索内部错误）、HTTP 503（服务不可用）
 //
 // 鉴权:
-//   搜索接口不强制要求登录，但会尝试从上下文中获取用户信息。
-//   如果用户已登录，搜索结果中会包含每个结果的点赞/收藏状态。
+//
+//	搜索接口不强制要求登录，但会尝试从上下文中获取用户信息。
+//	如果用户已登录，搜索结果中会包含每个结果的点赞/收藏状态。
 //
 // 边界情况:
 //   - svc 为 nil 时返回 503（ES 配置缺失或连接失败）
@@ -107,8 +110,9 @@ func (h *SearchHandler) Search(c *gin.Context) {
 //   - 失败: HTTP 500（搜索内部错误）、HTTP 503（服务不可用）
 //
 // 说明:
-//   建议来源包括知文的标题和标签，
-//   使用 ES completion suggester 在 FST 数据结构上执行前缀匹配。
+//
+//	建议来源包括知文的标题和标签，
+//	使用 ES completion suggester 在 FST 数据结构上执行前缀匹配。
 //
 // 边界情况:
 //   - svc 为 nil 时返回 503

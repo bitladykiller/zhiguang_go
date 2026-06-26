@@ -15,9 +15,9 @@ import (
 // --- mock service ---
 
 type mockProfileSvc struct {
-	getUser  *UserProfile
-	getErr   *errcode.AppError
-	updateOK bool
+	getUser   *UserProfile
+	getErr    *errcode.AppError
+	updateOK  bool
 	updateErr *errcode.AppError
 }
 
@@ -37,7 +37,7 @@ func (m *mockProfileSvc) UpdateProfile(ctx context.Context, callerID, targetID u
 
 // --- helpers ---
 
-func setupRouter(svc ProfileServiceInterface) *gin.Engine {
+func setupRouter(svc ProfileServicer) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := NewProfileHandler(svc)

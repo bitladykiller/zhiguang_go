@@ -85,8 +85,8 @@ func TestZsetKey(t *testing.T) {
 
 func TestL1KeyStr(t *testing.T) {
 	svc := newTestService(nil)
-	key := svc.l1KeyStr("followers", 1001)
-	if key != "l1:followers:1001" {
+	key := svc.zsetKey("followers", 1001)
+	if key != "z:followers:1001" {
 		t.Fatalf("unexpected l1 key: %s", key)
 	}
 }
@@ -432,5 +432,5 @@ func TestFollowingCursor_Empty(t *testing.T) {
 }
 
 func TestRelationServiceImplementsInterface(t *testing.T) {
-	var _ RelationServiceInterface = (*RelationService)(nil)
+	var _ RelationServicer = (*RelationService)(nil)
 }

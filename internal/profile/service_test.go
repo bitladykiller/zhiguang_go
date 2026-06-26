@@ -217,12 +217,12 @@ func TestSvcUpdateProfile_SameUser(t *testing.T) {
 
 func TestNewProfileService(t *testing.T) {
 	repo := &Repository{}
-	svc := NewProfileService(repo)
+	svc := NewProfileService(repo).(*Service)
 	if svc.repo != repo {
 		t.Error("repo not set")
 	}
 }
 
 func TestServiceImplementsInterface(t *testing.T) {
-	var _ ProfileServiceInterface = (*Service)(nil)
+	var _ ProfileServicer = (*Service)(nil)
 }

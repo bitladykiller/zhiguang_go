@@ -9,6 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/rediskey"
 	"github.com/zhiguang/app/pkg/redislock"
 	"go.uber.org/zap"
 )
@@ -110,7 +111,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	defer lock.Release()
 
 	// 检查发送间隔，防止短信轰炸
-	intervalKey := fmt.Sprintf("%s%s:%s", prefixInterval, scene, identifier)
+	intervalKey := rediskey.AuthVerificationInterval(string(scene), identifier)
 	exists, err := s.redis.Exists(ctx, intervalKey).Result()
 	if err != nil {
 		return nil, fmt.Errorf("send code: check interval: %w", err)
@@ -121,7 +122,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	}
 
 	// 检查每日发送上限
-	dailyKey := fmt.Sprintf("%s%s:%s:%s", prefixDaily, scene, identifier, time.Now().Format("20060102"))
+	dailyKey := rediskey.AuthVerificationDaily(string(scene), identifier, time.Now().Format("20060102"))
 	dailyCount, err := s.redis.Get(ctx, dailyKey).Int()
 	if err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("send code: get daily count: %w", err)
@@ -131,10 +132,13 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	}
 
 	// 生成验证码
-	code := generateCode(s.config.CodeLength)
+	code, err := generateCode(s.config.CodeLength)
+	if err != nil {
+		return nil, fmt.Errorf("send code: generate: %w", err)
+	}
 
 	// 通过 pipeline 批量写入 Redis（验证码 + 间隔锁 + 日计数原子递增）
-	codeKey := fmt.Sprintf("%s%s:%s", prefixCode, scene, identifier)
+	codeKey := rediskey.AuthVerificationCode(string(scene), identifier)
 	pipe := s.redis.Pipeline()
 	pipe.Set(ctx, codeKey, code, s.config.TTL)
 	pipe.Set(ctx, intervalKey, "1", s.config.SendInterval)
@@ -149,7 +153,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	}
 
 	// 重置尝试次数计数器（新验证码意味着新的尝试配额）
-	attemptKey := fmt.Sprintf("%s%s:%s", prefixAttempts, scene, identifier)
+	attemptKey := rediskey.AuthVerificationAttempts(string(scene), identifier)
 	if err := s.redis.Del(ctx, attemptKey).Err(); err != nil {
 		zap.L().Warn("failed to reset attempt counter", zap.String("attemptKey", attemptKey), zap.Error(err))
 	}
@@ -214,8 +218,8 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 	}
 	defer lock.Release()
 
-	attemptKey := fmt.Sprintf("%s%s:%s", prefixAttempts, scene, identifier)
-	codeKey := fmt.Sprintf("%s%s:%s", prefixCode, scene, identifier)
+	attemptKey := rediskey.AuthVerificationAttempts(string(scene), identifier)
+	codeKey := rediskey.AuthVerificationCode(string(scene), identifier)
 
 	// 原子操作：检查尝试次数 + 递增 + 获取验证码
 	luaResult, err := verifyAndCountScript.Run(
@@ -266,17 +270,17 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 //   - length <= 0 时返回空字符串（调用方保证传入合法参数）
 //   - crypto/rand 读取失败时 n 为 0，极端情况下可能影响安全性，但 rand.Int 错误已被忽略
 //     （实际生产中 /dev/urandom 极少失败，忽略错误以简化代码）
-func generateCode(length int) string {
+func generateCode(length int) (string, error) {
 	code := make([]byte, length)
 	for i := range code {
 		n, err := rand.Int(rand.Reader, big.NewInt(10))
-	if err != nil {
-		zap.L().Warn("failed to generate secure random code digit", zap.Error(err))
-		n = big.NewInt(0)
+		if err != nil {
+			zap.L().Warn("failed to generate secure random code digit", zap.Error(err))
+			n = big.NewInt(0)
+		}
+		code[i] = byte('0' + n.Int64())
 	}
-	code[i] = byte('0' + n.Int64())
-	}
-	return string(code)
+	return string(code), nil
 }
 
 // fail 构造一个失败状态的验证码检查结果。

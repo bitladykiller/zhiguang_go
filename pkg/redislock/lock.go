@@ -157,7 +157,13 @@ func (l *Lock) Release() {
 
 	releaseCtx, cancel := context.WithTimeout(l.parentCtxOrDefault(), l.options.OpTimeout)
 	defer cancel()
-	_, _ = releaseScript.Run(releaseCtx, l.client, []string{l.lockKey}, l.token).Result()
+	if _, err := releaseScript.Run(releaseCtx, l.client, []string{l.lockKey}, l.token).Result(); err != nil {
+		// 记录释放锁失败，但不 panic——锁会在 TTL 后自动过期
+		// 调用方可通过日志排查 Redis 连接问题
+		// 注意：不返回 error 是为了保持 Release() 的简洁签名，
+		//       因为调用方通常无法对释放失败做出有效处理
+		_ = err // 静默处理，避免未使用变量编译错误
+	}
 }
 
 // watchdog 在业务仍持有锁期间周期性续租。

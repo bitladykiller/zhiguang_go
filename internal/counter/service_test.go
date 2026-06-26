@@ -98,7 +98,7 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 		t.Fatalf("seed sds: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
 	batch := newCounterBatch(2)
 	if err := batch.add(mustCounterMessageAt(t, 3, 10, CounterEvent{
@@ -159,7 +159,7 @@ func TestApplyBatchSkipsAlreadyAppliedPrefix(t *testing.T) {
 		t.Fatalf("seed applied offset: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
 	batch := newCounterBatch(4)
 	for offset := int64(9); offset <= 12; offset++ {
@@ -205,7 +205,7 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 	entityType := "knowpost"
 	entityID := "77"
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil).(*CounterService)
 	if _, err := svc.Like(ctx, 1001, entityType, entityID); err != nil {
 		t.Fatalf("like first user: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 	}
 
 	recorder := &stubCounterFailureRecorder{}
-	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil).(*CounterService)
 	commitCalls := 0
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -337,7 +337,7 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 	}
 
 	recorder := &stubCounterFailureRecorder{}
-	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil).(*CounterService)
 
 	commitCalls := 0
 	consumer := &AggregationConsumer{

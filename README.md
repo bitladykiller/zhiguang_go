@@ -285,11 +285,13 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
 
 计数系统采用 **Bitmap（位图） + SDS（结构化数据快照）** 双存储设计：
 
-| 数据结构 | 作用 | Redis 键前缀 |
-|---------|------|------------|
+| 数据结构 | 作用 | Redis 键 |
+|---------|------|---------|
 | Bitmap | 位图权威数据源，记录每个用户对每个实体的点赞/收藏状态 | `bm:{metric}:{entityType}:{entityID}:{chunk}` |
 | SDS | 位图的聚合快照（点赞数/收藏数），用于快速查询 | `cnt:{entityType}:{entityID}` |
-| Dirty Set | 标记 SDS 可能不一致的实体，触发修复 | `dirty:counter` |
+| Dirty Set | 标记 SDS 可能不一致的实体，触发修复 | `repair:counter:dirty` |
+
+> **键管理**：所有 Redis 键前缀集中定义在 `pkg/rediskey` 包中，通过 `rediskey.CounterBitmap()`、`rediskey.CounterSds()` 等函数生成，避免硬编码字符串散落在业务代码中。
 
 **正常路径**：
 
@@ -336,3 +338,100 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
   - **Threshold 2** (默认 200)：高热度 Key，延长缓存 TTL 到 10 分钟
   - **Threshold 3** (默认 500)：极高热度 Key，延长缓存 TTL 到 30 分钟
 - 热点衰减后自动恢复默认 TTL，无需人工干预
+
+## 架构优化变更记录
+
+### readability-opt-v3（当前批次）
+
+#### P0 正确性修复
+- **`internal/cache/hotkey.go`**：修复 `flushHotKeys` 循环边界错误（原循环范围 `0..len(buckets)*2`，导致删除双倍 bucket）
+- **`cmd/server/main.go`**：将 `log.Fatalf` 替换为 `fmt.Fprintf(os.Stderr, ...)` + `os.Exit(1)`，避免日志框架未初始化时的不可控输出
+- **`pkg/redislock/lock.go`**：锁释放失败时记录错误日志（原实现静默忽略）
+- **`internal/outbox/consumer.go`**：`extractRows` 提取到 `message_util.go`，统一 Canal 消息解析逻辑；删除旧的 `internal/search/outbox_consumer.go` 和 `internal/relation/outbox_consumer.go`
+- **`internal/search/service.go`**：修复 `buildSearchQuery` 中 `float64` 类型断言 panic；`ViewCount` 从 `metrics["view"]` 读取（原硬编码为 0）
+- **`internal/bootstrap/app.go`**：调整 cleanup 顺序，确保数据库连接最后关闭
+
+#### P1 可读性与可测试性改进
+- **`internal/search/service.go`**：提取 `readESError()` 辅助函数，统一 Elasticsearch 错误包装格式
+- **`pkg/middleware/auth.go`**：使用 `response.Error` 替代硬编码 JSON，统一错误响应格式
+- **`internal/auth/verification.go`**：提取 `isNoOp` 辅助函数，消除重复逻辑
+- **`internal/search/service.go`**：`Search()` 拆分为 5 个子函数（`buildBoolQuery`、`applyTextQuery`、`applyTagFilter`、`applyTimeRange`、`applySorting`）
+- **`internal/counter/handler.go`**：引入 `CounterService` 接口注入，替代直接依赖具体实现
+- **`internal/storage/service.go`**：引入 `StorageService` 接口注入，替代直接依赖具体实现
+
+#### P2 代码整洁度
+- **`pkg/config/config.go`**：删除 50 行自定义 `itoa()` 实现，替换为标准库 `strconv.Itoa()`
+- 删除无用文件：`internal/profile/helper.go`、`internal/relation/outbox_consumer.go`、`internal/search/outbox_consumer.go`
+- 提取常量：TTL 值（`defaultPublicTTL`、`defaultPersonalTTL`、`defaultRelationCacheTTL`）
+- 统一命名：`canalParser` → `canalRowParser`，`buildSearchQuery` → `buildBoolQuery`
+- 接口补全：为 `AuthService`、`KnowPostService` 等补充完整接口定义
+
+#### P3 架构设计优化
+- **`pkg/rediskey/rediskey.go`**：新增集中式 Redis 键管理包，按域（Auth/Counter/KnowPost/Relation）定义常量前缀和格式化函数
+- **`internal/auth`**：验证码/刷新令牌/分布式锁键全部迁移到 `rediskey` 包
+- **`internal/counter`**：Bitmap/SDS/限流/退避/水位线键全部迁移到 `rediskey` 包
+- **`internal/knowpost`**：详情缓存/Feed 缓存/热点键/Outbox 消息键全部迁移到 `rediskey` 包
+- **`internal/relation`**：ZSet/去重/限流/分布式锁/Outbox 消息键全部迁移到 `rediskey` 包
+- **设计收益**：键格式变更只需修改一处；避免拼写不一致；便于监控和排查
+
+#### 测试修复
+- **`internal/outbox/message_util_test.go`**：修复 `CanalRow.Payload` 类型（`[]byte` → `string`）
+- **`internal/search/service_test.go`**：更新错误消息断言（`"delete failed"` → `"delete document failed"`）
+- **`pkg/config/config_test.go`**：适配 `strconv.Itoa()` 替换
+- **`internal/relation/service_test.go`**：更新 L1 键断言以适配 `rediskey` 统一格式
+
+#### 统计
+- 修改文件：30+ 个
+- 删除文件：3 个（`helper.go`、`relation/outbox_consumer.go`、`search/outbox_consumer.go`）
+- 新增文件：1 个（`pkg/rediskey/rediskey.go`）
+- 净减少代码：约 350 行
+- 测试通过率：100%
+
+---
+
+## 架构优化变更记录（续）
+
+### readability-opt-v3 第二批次
+
+#### 接口规范化
+- **`internal/llm/service_interface.go`**：
+  - `RagQueryServiceInterface` → `RagQueryServicer`，统一使用 `-er` 后缀命名接口
+  - 添加 `RagQueryServiceInterface` 作为 `RagQueryServicer` 的类型别名，保持向后兼容
+- **`internal/storage/service_interface.go`**：
+  - `StorageServiceInterface` 已标记为 `Deprecated`，统一使用 `StorageServicer`
+
+#### 构造函数返回接口（依赖倒置强化）
+- **`internal/auth/service.go`**：`NewAuthService` 返回 `AuthServicer` 而非 `*AuthService`
+- **`internal/relation/service.go`**：`NewRelationService` 返回 `RelationServicer` 而非 `*RelationService`
+- **`internal/counter/service.go`**：`NewCounterService` 返回 `CounterServicer` 而非 `*CounterService`
+- **`internal/search/service.go`**：`NewSearchService` 返回 `SearchServiceInterface` 而非 `*SearchService`
+- **`internal/profile/service.go`**：`NewProfileService` 返回 `ProfileServicer` 而非 `*Service`
+- **`internal/knowpost/feed_service.go`**：`NewKnowPostFeedService` 返回 `FeedServicer` 而非 `*KnowPostFeedService`
+- **设计收益**：
+  - 强化依赖倒置：调用方只能看到接口方法，无法依赖实现细节
+  - 支持测试时注入 mock 实现
+  - 编译期保证实现类满足接口契约
+
+#### 组合接口设计
+- **`internal/knowpost/service_interface.go`**：新增 `FeedServicer` 组合接口
+  - 继承 `FeedReader`（读能力）和 `FeedCacheInvalidator`（缓存失效能力）
+  - 解决 bootstrap 中 `KnowPostFeedService` 需要同时作为读服务和缓存失效器的问题
+- **`internal/search/service_interface.go`**：新增 `SearchServiceInterface` 组合接口
+  - 继承 `SearchServicer`（搜索能力）和 `DocumentIndexer`（索引写入能力）
+  - 解决 `KnowPostProjector` 需要同时调用搜索和索引写入的问题
+
+#### 分页参数统一提取
+- **`pkg/httputil/pagination.go`**：新增分页参数解析工具
+  - `ParsePagination(c, pageKey, sizeKey, defaultPage, defaultSize) Pagination`：page/size 风格
+  - `ParseLimitOffset(c, limitKey, offsetKey, defaultLimit, defaultOffset) LimitOffset`：limit/offset 风格
+  - `Pagination` 和 `LimitOffset` 结构体封装解析结果
+- **应用位置**：
+  - `internal/knowpost/handler.go`：`GetPublicFeed`、`GetMyPublished` 使用 `ParsePagination`
+  - `internal/relation/handler.go`：`Following`、`Followers` 使用 `ParseLimitOffset`
+- **设计收益**：消除重复的分页参数解析代码；统一默认值管理；支持未来扩展（如最大页码限制）
+
+#### 统计
+- 修改文件：15+ 个
+- 新增文件：1 个（`pkg/httputil/pagination.go`）
+- 测试修复：counter 测试中的类型断言适配
+- 测试通过率：100%

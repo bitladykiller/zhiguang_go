@@ -11,12 +11,12 @@ import (
 // initAuth 创建鉴权模块的完整服务栈。
 //
 // 创建顺序：
-//   1. JWT 服务（加载 PEM 密钥对，RS256 非对称签名）
-//   2. 验证码服务（Redis 存储 + TTL 管理）
-//   3. 刷新令牌白名单存储（Redis SET）
-//   4. 用户仓储（MySQL users / login_logs 表）
-//   5. AuthService（编排以上依赖，对外提供统一 Facade）
-//   6. AuthHandler（HTTP 请求适配）
+//  1. JWT 服务（加载 PEM 密钥对，RS256 非对称签名）
+//  2. 验证码服务（Redis 存储 + TTL 管理）
+//  3. 刷新令牌白名单存储（Redis SET）
+//  4. 用户仓储（MySQL users / login_logs 表）
+//  5. AuthService（编排以上依赖，对外提供统一 Facade）
+//  6. AuthHandler（HTTP 请求适配）
 //
 // 返回：
 //   - *auth.AuthHandler: HTTP handler，注册路由用

@@ -1,9 +1,8 @@
 package counter
 
 import (
-	"fmt"
-
 	"github.com/redis/go-redis/v9"
+	"github.com/zhiguang/app/pkg/rediskey"
 )
 
 // APPLY_PARTITION_BATCH_LUA 按 partition 内的 offset 顺序原子应用一批计数事件。
@@ -120,5 +119,5 @@ var (
 )
 
 func AppliedOffsetKey(groupID, topic string, partition int) string {
-	return fmt.Sprintf("counter:applied-offset:%s:%s:%d", groupID, topic, partition)
+	return rediskey.CounterAppliedOffset(groupID, topic, partition)
 }

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/zhiguang/app/pkg/rediskey"
 	"github.com/zhiguang/app/pkg/redislock"
 )
 
@@ -29,7 +30,7 @@ type relationListCacheTarget struct {
 //   - “关注列表”和“粉丝列表”是两套独立缓存，彼此不应互相阻塞。
 //   - 同一用户的同一类列表缓存，在冷启动回填和写后失效时需要全局串行化。
 func listCacheLockKey(listType string, userID uint64) string {
-	return fmt.Sprintf("lock:relation:list:%s:%d", listType, userID)
+	return rediskey.RelationLockListCache(listType, userID)
 }
 
 func relationListCacheLockOptions() redislock.Options {

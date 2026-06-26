@@ -27,14 +27,14 @@ type UserProfile struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
-// ProfileServiceInterface 定义资料模块对外暴露的业务方法。
+// ProfileServicer 定义资料模块对外暴露的业务方法。
 //
 // Handler 依赖此接口而非具体 *Service，使得 handler 可以独立于
 // service 实现进行单元测试。
-type ProfileServiceInterface interface {
+type ProfileServicer interface {
 	GetProfile(ctx context.Context, id uint64) (*UserProfile, *errcode.AppError)
 	UpdateProfile(ctx context.Context, callerID, targetID uint64, req *ProfilePatchRequest) *errcode.AppError
 }
 
-// 编译期断言：*Service 实现了 ProfileServiceInterface。
-var _ ProfileServiceInterface = (*Service)(nil)
+// 编译期断言：*Service 实现了 ProfileServicer。
+var _ ProfileServicer = (*Service)(nil)
