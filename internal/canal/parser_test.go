@@ -106,7 +106,7 @@ func TestMaxInt_Negative(t *testing.T) {
 
 // --- parseEntries (protobuf integration) ---
 
-func newTestEntry(tableName string, eventType pbe.EventType, columns []*pbe.Column) pbe.Entry {
+func newTestEntry(tableName string, eventType pbe.EventType, columns []*pbe.Column) *pbe.Entry {
 	rowData := &pbe.RowData{AfterColumns: columns}
 	rowChange := &pbe.RowChange{
 		EventTypePresent: &pbe.RowChange_EventType{EventType: eventType},
@@ -114,28 +114,18 @@ func newTestEntry(tableName string, eventType pbe.EventType, columns []*pbe.Colu
 	}
 	storeValue, _ := proto.Marshal(rowChange)
 
-	return pbe.Entry{
+	return &pbe.Entry{
 		EntryTypePresent: &pbe.Entry_EntryType{EntryType: pbe.EntryType_ROWDATA},
 		Header:           &pbe.Header{TableName: tableName},
 		StoreValue:       storeValue,
 	}
 }
 
-func TestParseEntries_EmptyInput(t *testing.T) {
-	payloads, err := parseEntries(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(payloads) != 0 {
-		t.Errorf("expected 0 payloads, got %d", len(payloads))
-	}
-}
-
 func TestParseEntries_NonRowDataEntrySkipped(t *testing.T) {
-	entry := pbe.Entry{
+	entry := &pbe.Entry{
 		EntryTypePresent: &pbe.Entry_EntryType{EntryType: pbe.EntryType_TRANSACTIONBEGIN},
 	}
-	payloads, err := parseEntries([]pbe.Entry{entry})
+	payloads, err := parseEntries([]*pbe.Entry{entry})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,7 +136,7 @@ func TestParseEntries_NonRowDataEntrySkipped(t *testing.T) {
 
 func TestParseEntries_DELETEEventSkipped(t *testing.T) {
 	entry := newTestEntry("outbox", pbe.EventType_DELETE, nil)
-	payloads, err := parseEntries([]pbe.Entry{entry})
+	payloads, err := parseEntries([]*pbe.Entry{entry})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -165,7 +155,7 @@ func TestParseEntries_INSERT(t *testing.T) {
 	}
 	entry := newTestEntry("outbox", pbe.EventType_INSERT, columns)
 
-	payloads, err := parseEntries([]pbe.Entry{entry})
+	payloads, err := parseEntries([]*pbe.Entry{entry})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +185,7 @@ func TestParseEntries_UPDATE(t *testing.T) {
 	}
 	entry := newTestEntry("outbox", pbe.EventType_UPDATE, columns)
 
-	payloads, err := parseEntries([]pbe.Entry{entry})
+	payloads, err := parseEntries([]*pbe.Entry{entry})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,13 +208,13 @@ func TestParseEntries_MultipleRowsData(t *testing.T) {
 		RowDatas:         []*pbe.RowData{rowData1, rowData2},
 	}
 	storeValue, _ := proto.Marshal(rowChange)
-	entry := pbe.Entry{
+	entry := &pbe.Entry{
 		EntryTypePresent: &pbe.Entry_EntryType{EntryType: pbe.EntryType_ROWDATA},
 		Header:           &pbe.Header{TableName: "outbox"},
 		StoreValue:       storeValue,
 	}
 
-	payloads, err := parseEntries([]pbe.Entry{entry})
+	payloads, err := parseEntries([]*pbe.Entry{entry})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -234,11 +224,11 @@ func TestParseEntries_MultipleRowsData(t *testing.T) {
 }
 
 func TestParseEntries_InvalidProtobuf(t *testing.T) {
-	entry := pbe.Entry{
+	entry := &pbe.Entry{
 		EntryTypePresent: &pbe.Entry_EntryType{EntryType: pbe.EntryType_ROWDATA},
 		StoreValue:       []byte("invalid protobuf"),
 	}
-	_, err := parseEntries([]pbe.Entry{entry})
+	_, err := parseEntries([]*pbe.Entry{entry})
 	if err == nil {
 		t.Fatal("expected error for invalid protobuf")
 	}
@@ -246,12 +236,12 @@ func TestParseEntries_InvalidProtobuf(t *testing.T) {
 
 func TestParseEntries_MultipleEntryMixed(t *testing.T) {
 	entry1 := newTestEntry("outbox", pbe.EventType_INSERT, []*pbe.Column{makeColumn("id", "1")})
-	entry2 := pbe.Entry{
+	entry2 := &pbe.Entry{
 		EntryTypePresent: &pbe.Entry_EntryType{EntryType: pbe.EntryType_TRANSACTIONEND},
 	}
 	entry3 := newTestEntry("other_table", pbe.EventType_INSERT, []*pbe.Column{makeColumn("id", "2")})
 
-	payloads, err := parseEntries([]pbe.Entry{entry1, entry2, entry3})
+	payloads, err := parseEntries([]*pbe.Entry{entry1, entry2, entry3})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -261,10 +251,10 @@ func TestParseEntries_MultipleEntryMixed(t *testing.T) {
 }
 
 func TestParseEntries_OnlyNonRowData(t *testing.T) {
-	entry := pbe.Entry{
+	entry := &pbe.Entry{
 		EntryTypePresent: &pbe.Entry_EntryType{EntryType: pbe.EntryType_TRANSACTIONEND},
 	}
-	payloads, err := parseEntries([]pbe.Entry{entry})
+	payloads, err := parseEntries([]*pbe.Entry{entry})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

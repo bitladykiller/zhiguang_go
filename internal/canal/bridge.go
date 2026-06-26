@@ -21,6 +21,7 @@ import (
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/contextutil"
+	pbe "github.com/withlin/canal-go/protocol/entry"
 )
 
 const (
@@ -216,7 +217,7 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		}
 
 		batchID := message.Id
-		payloads, err := parseEntries(message.Entries)
+		payloads, err := parseEntries(entryPtrSlice(message.Entries))
 		if err != nil {
 			_ = connector.RollBack(batchID)
 			return err
@@ -274,5 +275,14 @@ func maxInt(value, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+// entryPtrSlice 将 []pbe.Entry 转为 []*pbe.Entry，避免值拷贝锁问题。
+func entryPtrSlice(entries []pbe.Entry) []*pbe.Entry {
+	result := make([]*pbe.Entry, len(entries))
+	for i := range entries {
+		result[i] = &entries[i]
+	}
+	return result
 }
 

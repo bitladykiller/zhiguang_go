@@ -366,10 +366,13 @@ type HotKeyConfig struct {
 
 // LLMConfig 配置 AI 模型连接信息。
 type LLMConfig struct {
-	Enabled   *bool          `yaml:"enabled"`   // 显式功能开关，nil 表示跟随配置完整性判断
-	DeepSeek  DeepSeekConfig `yaml:"deepseek"`
-	OpenAI    OpenAIConfig   `yaml:"openai"`
-	TimeoutMs int            `yaml:"timeout_ms"` // HTTP 客户端超时（毫秒），默认 30000
+	Enabled       *bool          `yaml:"enabled"`    // 显式功能开关，nil 表示跟随配置完整性判断
+	DeepSeek      DeepSeekConfig `yaml:"deepseek"`
+	OpenAI        OpenAIConfig   `yaml:"openai"`
+	TimeoutMs     int            `yaml:"timeout_ms"`     // HTTP 客户端超时（毫秒），默认 30000
+	MaxContentLen int            `yaml:"max_content_len"` // 内容截断长度，默认 2000
+	MaxTokens     int            `yaml:"max_tokens"`      // 生成最大 token 数，默认 100
+	SystemPrompt  string         `yaml:"system_prompt"`   // 系统提示词
 }
 
 // DeepSeekConfig 配置 DeepSeek 对话模型 API。

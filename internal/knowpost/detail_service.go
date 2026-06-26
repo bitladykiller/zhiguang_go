@@ -252,24 +252,6 @@ func (s *KnowPostService) enrichDetail(ctx context.Context, base *KnowPostDetail
 }
 
 // parseDetail 将 JSON 字节序列反序列化为 KnowPostDetailResponse。
-//
-// 功能：从缓存字节流解析详情结构体。在 L1（freecache）和 L2（Redis）缓存中，
-// 详情数据以 JSON 字符串形式存储，此方法负责将其还原为 Go 结构体。
-//
-// 参数：
-//   - data: []byte，从缓存读出的 JSON 字节数据。
-//
-// 返回值：
-//   - *KnowPostDetailResponse: 反序列化成功后的详情对象。
-//   - error: 如果 JSON 格式错误（例如缓存数据损坏）则返回解析错误。
-//
-// 边界情况：
-//   - data 为空或格式非法：返回 nil 和 err，调用方会忽略此缓存数据，继续查下一层缓存或回源 DB。
-//   - 不 panic：即使 data 格式完全破坏，也只是返回 nil + error，不会导致服务崩溃。
 func (s *KnowPostService) parseDetail(data []byte) (*KnowPostDetailResponse, error) {
-	var resp KnowPostDetailResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("parse detail: unmarshal: %w", err)
-	}
-	return &resp, nil
+	return parseJSON[*KnowPostDetailResponse](data)
 }

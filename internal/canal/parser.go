@@ -26,10 +26,9 @@ import (
 //
 // WHY：需要区分事件类型是因为 outbox 消费端只关心「数据有变化」的情况，
 // 而 DELETE 的 outbox 行已经在原事务结束时被标记，不必再消费一次。
-func parseEntries(entries []pbe.Entry) ([][]byte, error) {
+func parseEntries(entries []*pbe.Entry) ([][]byte, error) {
 	payloads := make([][]byte, 0, len(entries))
-	for i := range entries {
-		entry := &entries[i]
+	for _, entry := range entries {
 		if entry.GetEntryType() != pbe.EntryType_ROWDATA {
 			continue
 		}

@@ -2,6 +2,8 @@ package knowpost
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
@@ -10,6 +12,15 @@ import (
 	"github.com/zhiguang/app/internal/cache"
 	"github.com/zhiguang/app/pkg/config"
 )
+
+// parseJSON 泛型 JSON 反序列化辅助函数。
+func parseJSON[T any](data []byte) (T, error) {
+	var result T
+	if err := json.Unmarshal(data, &result); err != nil {
+		return result, fmt.Errorf("parse json: unmarshal: %w", err)
+	}
+	return result, nil
+}
 
 // detailLayoutVer 定义知文详情缓存的布局版本号。
 // 用于缓存键编码，递增版本号可使旧缓存整体失效。

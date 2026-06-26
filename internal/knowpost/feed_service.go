@@ -706,21 +706,8 @@ func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, 
 }
 
 // parseFeedPage 将 feed 页的 JSON 缓存数据反序列化为 FeedPageResponse。
-//
-// 功能：与 parseDetail 类似，用于从 L1（freecache）或 L2（Redis）的 JSON 缓存中解析分页数据。
-//
-// 参数：
-//   - data: []byte，JSON 格式的缓存数据。
-//
-// 返回值：
-//   - *FeedPageResponse: 反序列化成功后的分页响应。
-//   - error: JSON 解析失败时返回错误。
 func (s *KnowPostFeedService) parseFeedPage(data []byte) (*FeedPageResponse, error) {
-	var resp FeedPageResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("map rows to items: %w", err)
-	}
-	return &resp, nil
+	return parseJSON[*FeedPageResponse](data)
 }
 
 // clamp 将一个整数值限制在 [lo, hi] 范围内。

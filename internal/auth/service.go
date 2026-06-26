@@ -2,9 +2,7 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"regexp"
 	"strings"
 	"time"
@@ -628,12 +626,12 @@ func generateNickname(logger *zap.Logger) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	suffix := make([]byte, 8)
 	for i := range suffix {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-	if err != nil {
-		logger.Warn("failed to generate secure random number for nickname", zap.Error(err))
-		n = big.NewInt(0)
-	}
-	suffix[i] = charset[n.Int64()]
+		n, err := randomInt(int64(len(charset)))
+		if err != nil {
+			logger.Warn("failed to generate secure random number for nickname", zap.Error(err))
+			n = 0
+		}
+		suffix[i] = charset[n]
 	}
 	return "知光用户" + string(suffix)
 }

@@ -2,9 +2,7 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -274,12 +272,12 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 func generateCode(length int, logger *zap.Logger) string {
 	code := make([]byte, length)
 	for i := range code {
-		n, err := rand.Int(rand.Reader, big.NewInt(10))
-	if err != nil {
-		logger.Warn("failed to generate secure random code digit", zap.Error(err))
-		n = big.NewInt(0)
-	}
-	code[i] = byte('0' + n.Int64())
+		n, err := randomInt(10)
+		if err != nil {
+			logger.Warn("failed to generate secure random code digit", zap.Error(err))
+			n = 0
+		}
+		code[i] = byte('0' + n)
 	}
 	return string(code)
 }

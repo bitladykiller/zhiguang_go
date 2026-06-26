@@ -31,10 +31,24 @@ func NewKnowPostDescriptionService(cfg *config.LLMConfig) *KnowPostDescriptionSe
 }
 
 func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, title, content string) (string, error) {
-	if utf8.RuneCountInString(content) > 2000 {
-		content = string([]rune(content)[:2000])
-	} else if len(content) > 2000 {
-		content = content[:2000]
+	maxLen := 2000
+	if s.cfg != nil && s.cfg.MaxContentLen > 0 {
+		maxLen = s.cfg.MaxContentLen
+	}
+	if utf8.RuneCountInString(content) > maxLen {
+		content = string([]rune(content)[:maxLen])
+	} else if len(content) > maxLen {
+		content = content[:maxLen]
+	}
+
+	maxTokens := 100
+	if s.cfg != nil && s.cfg.MaxTokens > 0 {
+		maxTokens = s.cfg.MaxTokens
+	}
+
+	systemPrompt := "你是一个专业的内容摘要助手，请用简洁的语言为以下文章生成一段不超过50字的摘要描述。"
+	if s.cfg != nil && s.cfg.SystemPrompt != "" {
+		systemPrompt = s.cfg.SystemPrompt
 	}
 
 	reqBody := map[string]interface{}{
@@ -42,7 +56,7 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 		"messages": []map[string]string{
 			{
 				"role":    "system",
-				"content": "你是一个专业的内容摘要助手，请用简洁的语言为以下文章生成一段不超过50字的摘要描述。",
+				"content": systemPrompt,
 			},
 			{
 				"role":    "user",
@@ -50,7 +64,7 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 			},
 		},
 		"temperature": s.cfg.DeepSeek.Temperature,
-		"max_tokens":  100,
+		"max_tokens":  maxTokens,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
