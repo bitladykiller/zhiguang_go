@@ -1,9 +1,11 @@
 package server
 
 import (
+	"net/http/pprof"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/middleware"
 	"go.uber.org/zap"
 )
@@ -77,7 +79,7 @@ type RouteRegistrar interface {
 //   - tokenValidator 为 nil → 不挂载 OptionalAuthMiddleware
 //     （所有接口均匿名访问）
 //   - healthChecker 为 nil → 使用默认的简单健康检查端点
-func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middleware.TokenValidator, healthChecker *HealthChecker) *gin.Engine {
+func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middleware.TokenValidator, healthChecker *HealthChecker, cfg *config.Config) *gin.Engine {
 	r := gin.New()
 
 	// --- 全局中间件 ---
@@ -99,6 +101,24 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 		r.GET("/health", func(c *gin.Context) {
 			c.JSON(200, gin.H{"status": "ok"})
 		})
+	}
+
+	if cfg != nil && cfg.Server.Mode == "debug" {
+		dbg := r.Group("/debug/pprof")
+		{
+			dbg.GET("/", gin.WrapF(pprof.Index))
+			dbg.GET("/cmdline", gin.WrapF(pprof.Cmdline))
+			dbg.GET("/profile", gin.WrapF(pprof.Profile))
+			dbg.POST("/symbol", gin.WrapF(pprof.Symbol))
+			dbg.GET("/symbol", gin.WrapF(pprof.Symbol))
+			dbg.GET("/trace", gin.WrapF(pprof.Trace))
+			dbg.GET("/allocs", gin.WrapH(pprof.Handler("allocs")))
+			dbg.GET("/block", gin.WrapH(pprof.Handler("block")))
+			dbg.GET("/goroutine", gin.WrapH(pprof.Handler("goroutine")))
+			dbg.GET("/heap", gin.WrapH(pprof.Handler("heap")))
+			dbg.GET("/mutex", gin.WrapH(pprof.Handler("mutex")))
+			dbg.GET("/threadcreate", gin.WrapH(pprof.Handler("threadcreate")))
+		}
 	}
 
 	// --- API v1 路由 ---

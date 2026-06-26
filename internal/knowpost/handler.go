@@ -72,7 +72,8 @@ func (h *KnowPostHandler) CreateDraft(c *gin.Context) {
 	}
 	id, err := h.svc.CreateDraft(c.Request.Context(), userID)
 	if err != nil {
-		response.Error(c, errcode.ErrInternal.WithMsg("internal server error"))
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Created(c, gin.H{"id": strconv.FormatUint(id, 10)})
@@ -102,11 +103,11 @@ func (h *KnowPostHandler) ConfirmContent(c *gin.Context) {
 	}
 	var req KnowPostContentConfirmRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 	if err := h.svc.ConfirmContent(c.Request.Context(), userID, id, req.ObjectKey, req.Etag, req.Sha256, req.Size); err != nil {
-		response.Error(c, toAppErr(err))
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true})
@@ -132,11 +133,11 @@ func (h *KnowPostHandler) UpdateMetadata(c *gin.Context) {
 	}
 	var req KnowPostPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 	if err := h.svc.UpdateMetadata(c.Request.Context(), userID, id, &req); err != nil {
-		response.Error(c, toAppErr(err))
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true})
@@ -162,7 +163,7 @@ func (h *KnowPostHandler) Publish(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Publish(c.Request.Context(), userID, id); err != nil {
-		response.Error(c, toAppErr(err))
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true})
@@ -187,11 +188,11 @@ func (h *KnowPostHandler) UpdateTop(c *gin.Context) {
 	}
 	var req KnowPostTopPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 	if err := h.svc.UpdateTop(c.Request.Context(), userID, id, req.IsTop); err != nil {
-		response.Error(c, toAppErr(err))
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true})
@@ -216,11 +217,11 @@ func (h *KnowPostHandler) UpdateVisibility(c *gin.Context) {
 	}
 	var req KnowPostVisibilityPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request: "+err.Error())
+		response.Fail(c, 400, "invalid request")
 		return
 	}
 	if err := h.svc.UpdateVisibility(c.Request.Context(), userID, id, req.Visible); err != nil {
-		response.Error(c, toAppErr(err))
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true})
@@ -246,7 +247,7 @@ func (h *KnowPostHandler) Delete(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Delete(c.Request.Context(), userID, id); err != nil {
-		response.Error(c, toAppErr(err))
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"success": true})
@@ -270,7 +271,7 @@ func (h *KnowPostHandler) GetDetail(c *gin.Context) {
 	}
 	resp, err := h.readSvc.GetDetail(c.Request.Context(), id, userID)
 	if err != nil {
-		response.Error(c, toAppErr(err))
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, resp)
@@ -294,7 +295,8 @@ func (h *KnowPostHandler) GetPublicFeed(c *gin.Context) {
 	}
 	resp, err := h.feedSvc.GetPublicFeed(c.Request.Context(), page, size, userID)
 	if err != nil {
-		response.Error(c, errcode.ErrInternal.WithMsg("internal server error"))
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, resp)
@@ -319,29 +321,9 @@ func (h *KnowPostHandler) GetMyPublished(c *gin.Context) {
 	size := httputil.QueryInt(c, "size", 20)
 	resp, err := h.feedSvc.GetMyPublished(c.Request.Context(), userID, page, size)
 	if err != nil {
-		response.Error(c, errcode.ErrInternal.WithMsg("internal server error"))
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, resp)
-}
-
-// toAppErr 将任意 error 转换为 *errcode.AppError。
-//
-// 功能：如果原始错误已经是 AppError 类型，直接原样返回。
-// 如果是其他类型的 error（如数据库查询错误），包装为 ErrInternal。
-//
-// 这样设计的原因：
-//   服务层的业务逻辑可能返回 *errcode.AppError（如 ErrNotFound、ErrForbidden），
-//   也可能返回普通的 error（如数据库连接错误）。在转换成 HTTP 响应时，
-//   handler 通过 toAppErr 统一处理，确保非业务错误不会泄露内部细节。
-//
-// 参数：
-//   - err: error，原始错误。
-//
-// 返回值：*errcode.AppError，始终非 nil。
-func toAppErr(err error) *errcode.AppError {
-	if appErr, ok := err.(*errcode.AppError); ok {
-		return appErr
-	}
-	return errcode.ErrInternal.WithMsg(err.Error())
 }

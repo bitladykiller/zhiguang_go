@@ -126,7 +126,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 	}
 
 	healthChecker := server.NewHealthChecker(db, redisClient)
-	router := server.NewRouter(handlerSet, logger, jwtSvc, healthChecker)
+	router := server.NewRouter(handlerSet, logger, jwtSvc, healthChecker, cfg)
 
 	backgroundRunners := make([]server.BackgroundRunner, 0, 4)
 	backgroundRunners = append(backgroundRunners, counterAggConsumer, &hotKeyRunner{d: hotKeyDetector})

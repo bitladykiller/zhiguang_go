@@ -7,6 +7,7 @@ import (
 
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 )
 
 // --- helper ---
@@ -214,14 +215,14 @@ func TestEnrichDetail_Anonymous(t *testing.T) {
 
 func TestToAppErr_AppError(t *testing.T) {
 	appErr := errcode.ErrNotFound.WithMsg("test")
-	result := toAppErr(appErr)
+	result := httputil.ToAppError(appErr)
 	if result != appErr {
-		t.Error("toAppErr should return the same AppError instance")
+		t.Error("ToAppError should return the same AppError instance")
 	}
 }
 
 func TestToAppErr_PlainError(t *testing.T) {
-	result := toAppErr(errors.New("some db error"))
+	result := httputil.ToAppError(errors.New("some db error"))
 	if result.Code != errcode.CodeInternalError {
 		t.Errorf("code = %d, want %d", result.Code, errcode.CodeInternalError)
 	}
