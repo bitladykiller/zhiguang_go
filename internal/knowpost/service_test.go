@@ -165,6 +165,18 @@ func (s *stubCounter) BatchIsFaved(_ context.Context, _ uint64, _ string, hits [
 	}
 	return m, nil
 }
+func (s *stubCounter) Fav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounter) Unfav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounter) Like(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounter) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
 
 func TestEnrichDetail_NilCounter(t *testing.T) {
 	svc := &KnowPostService{}

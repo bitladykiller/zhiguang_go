@@ -30,7 +30,8 @@ import (
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/zhiguang/app/internal/knowpost"
+	"github.com/zhiguang/app/internal/counter"
+	"github.com/zhiguang/app/internal/model"
 	"github.com/zhiguang/app/pkg/jsonutil"
 	"go.uber.org/zap"
 )
@@ -67,18 +68,13 @@ type SuggestField struct {
 
 // SearchResponse 是搜索接口的响应结构，对齐 Java 版返回。
 type SearchResponse struct {
-	Items     []knowpost.FeedItemResponse `json:"items"`
-	NextAfter *string                     `json:"next_after,omitempty"`
-	HasMore   bool                        `json:"has_more"`
+	Items     []model.FeedItem `json:"items"`
+	NextAfter *string          `json:"next_after,omitempty"`
+	HasMore   bool             `json:"has_more"`
 }
 
 // SearchCounterClient 定义搜索结果需要的用户态计数读取接口。
-type SearchCounterClient interface {
-	IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
-	IsFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
-	BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
-	BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
-}
+type SearchCounterClient = counter.CounterServiceInterface
 
 // indexMapping 是知文搜索索引的 ES mapping 模板。
 const indexMapping = `{
@@ -433,9 +429,9 @@ func (s *SearchService) executeSearch(ctx context.Context, query map[string]inte
 	return result.Hits.Hits, nil
 }
 
-// decodeAndEnrich 将 ES 结果解析为 FeedItemResponse 列表，并返回 liked/faved 状态映射。
-func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, currentUserID *uint64) ([]knowpost.FeedItemResponse, map[string]bool, map[string]bool) {
-	items := make([]knowpost.FeedItemResponse, 0, len(hits))
+// decodeAndEnrich 将 ES 结果解析为 FeedItem 列表，并返回 liked/faved 状态映射。
+func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, currentUserID *uint64) ([]model.FeedItem, map[string]bool, map[string]bool) {
+	items := make([]model.FeedItem, 0, len(hits))
 
 	var likedMap, favedMap map[string]bool
 	if currentUserID != nil && s.counter != nil && len(hits) > 0 {
@@ -464,7 +460,7 @@ func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, c
 		if len(source.ImgURLs) > 0 {
 			coverImage = &source.ImgURLs[0]
 		}
-		items = append(items, knowpost.FeedItemResponse{
+		items = append(items, model.FeedItem{
 			ID:             source.ID,
 			Title:          jsonutil.StrPtr(source.Title),
 			Description:    jsonutil.StrPtr(description),
@@ -482,7 +478,7 @@ func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, c
 }
 
 // applyLikedFaved 为每篇结果填充当前用户的点赞/收藏状态。
-func (s *SearchService) applyLikedFaved(items []knowpost.FeedItemResponse, likedMap, favedMap map[string]bool) []knowpost.FeedItemResponse {
+func (s *SearchService) applyLikedFaved(items []model.FeedItem, likedMap, favedMap map[string]bool) []model.FeedItem {
 	if likedMap == nil && favedMap == nil {
 		return items
 	}

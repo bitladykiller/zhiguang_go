@@ -452,6 +452,18 @@ func (s *stubCounterFailing) BatchIsLiked(_ context.Context, _ uint64, _ string,
 func (s *stubCounterFailing) BatchIsFaved(_ context.Context, _ uint64, _ string, _ []string) (map[string]bool, error) {
 	return nil, nil
 }
+func (s *stubCounterFailing) Fav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterFailing) Unfav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterFailing) Like(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterFailing) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
 
 func TestEnrichItems_CounterFails(t *testing.T) {
 	userID := uint64(1)
@@ -482,6 +494,18 @@ func (s *stubCounterReturnsNil) BatchIsLiked(_ context.Context, _ uint64, _ stri
 }
 func (s *stubCounterReturnsNil) BatchIsFaved(_ context.Context, _ uint64, _ string, _ []string) (map[string]bool, error) {
 	return nil, nil
+}
+func (s *stubCounterReturnsNil) Fav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterReturnsNil) Unfav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterReturnsNil) Like(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterReturnsNil) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
 }
 
 func TestEnrichItems_CounterReturnsNil(t *testing.T) {

@@ -69,6 +69,18 @@ func (s *stubHandlerCounter) IsFaved(ctx context.Context, userID uint64, entityT
 	return s.isFavedFn(ctx, userID, entityType, entityID)
 }
 
+func (s *stubHandlerCounter) GetCountsBatch(ctx context.Context, entityType string, entityIDs, metrics []string) (map[string]map[string]int32, error) {
+	return nil, nil
+}
+
+func (s *stubHandlerCounter) BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error) {
+	return nil, nil
+}
+
+func (s *stubHandlerCounter) BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error) {
+	return nil, nil
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================

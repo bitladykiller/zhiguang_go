@@ -1,7 +1,6 @@
 package knowpost
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -10,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/cache"
+	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/pkg/config"
 )
 
@@ -26,19 +26,9 @@ func parseJSON[T any](data []byte) (T, error) {
 // 用于缓存键编码，递增版本号可使旧缓存整体失效。
 const detailLayoutVer = 1
 
-// CounterClient 定义 KnowPostService 所依赖的计数器读写接口。
-//
-// 使用接口而非具体类型注入的原因：
-//   - 解耦：knowpost 包无需 import counter 包，避免循环依赖。
-//   - 可测试：测试时可以传入 MockCounterClient 避免依赖 Redis 和 Kafka。
-type CounterClient interface {
-	GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
-	GetCountsBatch(ctx context.Context, entityType string, entityIDs, metrics []string) (map[string]map[string]int32, error)
-	IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
-	IsFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
-	BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
-	BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
-}
+// CounterClient 为 counter.CounterServiceInterface 的别名。
+// knowpost 只依赖读/写计数接口，由 bootstrap 注入 *counter.CounterService。
+type CounterClient = counter.CounterServiceInterface
 
 // KnowPostService 负责 knowpost 的写路径、详情读取编排以及缓存协同。
 //

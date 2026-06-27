@@ -12,8 +12,11 @@ type CounterServiceInterface interface {
 	Fav(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	Unfav(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
+	GetCountsBatch(ctx context.Context, entityType string, entityIDs, metrics []string) (map[string]map[string]int32, error)
 	IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	IsFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+	BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
+	BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
 }
 
 // 编译期断言：*CounterService 实现了 CounterServiceInterface。

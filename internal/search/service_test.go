@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/zhiguang/app/internal/knowpost"
+	"github.com/zhiguang/app/internal/model"
 	"go.uber.org/zap"
 )
 
@@ -96,6 +96,30 @@ func (s *stubSearchCounter) BatchIsFaved(_ context.Context, _ uint64, _ string, 
 		m[id] = false
 	}
 	return m, nil
+}
+
+func (s *stubSearchCounter) Like(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, s.err
+}
+
+func (s *stubSearchCounter) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, s.err
+}
+
+func (s *stubSearchCounter) Fav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, s.err
+}
+
+func (s *stubSearchCounter) Unfav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, s.err
+}
+
+func (s *stubSearchCounter) GetCounts(_ context.Context, _, _ string, _ []string) (map[string]int32, error) {
+	return nil, s.err
+}
+
+func (s *stubSearchCounter) GetCountsBatch(_ context.Context, _ string, _, _ []string) (map[string]map[string]int32, error) {
+	return nil, s.err
 }
 
 // ---------------------------------------------------------------------------
@@ -884,7 +908,7 @@ func TestDeleteDocument_NetworkError(t *testing.T) {
 
 func TestSearchResponse_JSONRoundTrip(t *testing.T) {
 	resp := &SearchResponse{
-		Items: []knowpost.FeedItemResponse{
+		Items: []model.FeedItem{
 			{
 				ID:             "1",
 				Title:          strPtr("t"),

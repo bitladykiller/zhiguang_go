@@ -33,6 +33,10 @@ import (
 //   - id: uint64，知文 ID。
 var invalidateCacheScript = redis.NewScript(`
 local ver = redis.call('INCR', KEYS[1])
+if ver < 1 then
+  redis.call('SET', KEYS[1], 1)
+  ver = 1
+end
 local pageKey = KEYS[2] .. ver
 redis.call('DEL', pageKey)
 return ver

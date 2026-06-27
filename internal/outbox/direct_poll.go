@@ -90,6 +90,14 @@ func (c *DirectPollConsumer) pollOnce(ctx context.Context, query, deleteQuery st
 			continue
 		}
 
+		if c.logger != nil {
+			c.logger.Info("direct poll outbox row processed",
+				zap.String("topic", c.topicName),
+				zap.Uint64("id", id),
+				zap.String("uuid", uuid),
+				zap.Time("created_at", createdAt),
+			)
+		}
 		if _, err := c.db.ExecContext(ctx, deleteQuery, id); err != nil {
 			c.logWarn("delete outbox row failed", err)
 		}
