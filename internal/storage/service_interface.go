@@ -10,7 +10,10 @@
 // 未来可扩展：MinioStorageService、S3StorageService 等
 package storage
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ObjectStorage 定义对象存储服务的抽象接口。
 //
@@ -20,9 +23,12 @@ import "time"
 //   - 便于单元测试（可注入 mock 实现）
 type ObjectStorage interface {
 	GeneratePresignedPutURL(objectKey string, expiry time.Duration) (string, error)
+	GeneratePresignedGetURL(objectKey string, expiry time.Duration) (string, error)
 	GenerateObjectKey(folder, fileName string) string
 	PublicURL(objectKey string) string
 	PresignExpiry() time.Duration
+	DeleteObject(ctx context.Context, objectKey string) error
+	HeadObject(ctx context.Context, objectKey string) (map[string]string, error)
 }
 
 // StorageServiceInterface 定义了 OSS 存储服务的接口。

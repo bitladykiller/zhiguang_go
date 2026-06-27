@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -150,4 +151,28 @@ func (s *OssStorageService) PresignExpiry() time.Duration {
 		return time.Duration(s.cfg.PresignExpiryMs) * time.Millisecond
 	}
 	return 10 * time.Minute
+}
+
+// GeneratePresignedGetURL 生成一个限时有效的 GET 预签名 URL。
+// 客户端可用此 URL 直接下载 OSS 对象，无需经过业务服务中转。
+func (s *OssStorageService) GeneratePresignedGetURL(objectKey string, expiry time.Duration) (string, error) {
+	return s.bucket.SignURL(objectKey, oss.HTTPGet, int64(expiry.Seconds()))
+}
+
+// DeleteObject 删除 OSS 中指定的对象。
+func (s *OssStorageService) DeleteObject(ctx context.Context, objectKey string) error {
+	return s.bucket.DeleteObject(objectKey)
+}
+
+// HeadObject 获取 OSS 对象的元信息（Content-Type、Content-Length、ETag 等）。
+func (s *OssStorageService) HeadObject(ctx context.Context, objectKey string) (map[string]string, error) {
+	props, err := s.bucket.GetObjectDetailedMeta(objectKey)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(props))
+	for k, v := range props {
+		result[k] = v[0]
+	}
+	return result, nil
 }

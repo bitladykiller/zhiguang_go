@@ -13,10 +13,11 @@
 package middleware
 
 import (
-	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/response"
 )
 
 // TokenClaims 是鉴权中间件要求 JWT Claims 实现的最小接口。
@@ -80,19 +81,13 @@ func AuthMiddleware(validator TokenValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractBearerToken(c)
 		if token == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":    401,
-				"message": "missing authorization header",
-			})
+			response.Abort(c, errcode.ErrUnauthorized.WithMsg("missing authorization header"))
 			return
 		}
 
 		claims, err := validator.ValidateToken(token)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":    401,
-				"message": "invalid or expired token",
-			})
+			response.Abort(c, errcode.ErrUnauthorized.WithMsg("invalid or expired token"))
 			return
 		}
 

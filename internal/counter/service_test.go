@@ -518,3 +518,61 @@ func startTestRedis(t *testing.T) (*redis.Client, func()) {
 		mr.Close()
 	}
 }
+
+func TestGetCounts(t *testing.T) {
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	svc := NewCounterService(rdb, &stubCounterPublisher{}, nil, nil, "", nil, nil)
+	ctx := context.Background()
+
+	_, err := svc.Like(ctx, 1001, "knowpost", "42")
+	if err != nil {
+		t.Fatalf("like: %v", err)
+	}
+
+	counts, err := svc.GetCounts(ctx, "knowpost", "42", []string{"like", "fav"})
+	if err != nil {
+		t.Fatalf("get counts: %v", err)
+	}
+	if counts["like"] != 1 {
+		t.Fatalf("expected like=1, got %d", counts["like"])
+	}
+	if counts["fav"] != 0 {
+		t.Fatalf("expected fav=0, got %d", counts["fav"])
+	}
+
+	emptyCounts, err := svc.GetCounts(ctx, "knowpost", "999", []string{"like"})
+	if err != nil {
+		t.Fatalf("get counts for non-existent: %v", err)
+	}
+	if emptyCounts["like"] != 0 {
+		t.Fatalf("expected like=0 for non-existent, got %d", emptyCounts["like"])
+	}
+}
+
+func TestBatchIsLiked(t *testing.T) {
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	svc := NewCounterService(rdb, &stubCounterPublisher{}, nil, nil, "", nil, nil)
+	ctx := context.Background()
+
+	svc.Like(ctx, 1001, "knowpost", "42")
+	svc.Like(ctx, 1001, "knowpost", "43")
+	svc.Like(ctx, 1002, "knowpost", "42")
+
+	liked, err := svc.BatchIsLiked(ctx, 1001, "knowpost", []string{"42", "43", "44"})
+	if err != nil {
+		t.Fatalf("batch is liked: %v", err)
+	}
+	if !liked["42"] {
+		t.Fatalf("expected 42 to be liked")
+	}
+	if !liked["43"] {
+		t.Fatalf("expected 43 to be liked")
+	}
+	if liked["44"] {
+		t.Fatalf("expected 44 not to be liked")
+	}
+}

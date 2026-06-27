@@ -18,7 +18,8 @@ import (
 // ============================================================================
 
 func newTestDescService(cfg *config.LLMConfig) *KnowPostDescriptionService {
-	return NewKnowPostDescriptionService(cfg)
+	svc, _ := NewKnowPostDescriptionService(cfg)
+	return svc
 }
 
 func defaultLLMConfig() *config.LLMConfig {
@@ -266,18 +267,21 @@ func TestSuggestDescription_ShortContent(t *testing.T) {
 // ============================================================================
 
 func TestNewKnowPostDescriptionService_NilConfig(t *testing.T) {
-	svc := NewKnowPostDescriptionService(nil)
-	if svc == nil {
-		t.Fatal("NewKnowPostDescriptionService(nil) should not return nil")
+	svc, err := NewKnowPostDescriptionService(nil)
+	if err == nil {
+		t.Fatal("NewKnowPostDescriptionService(nil) should return error")
 	}
-	if svc.cfg != nil {
-		t.Error("cfg should be nil")
+	if svc != nil {
+		t.Fatal("NewKnowPostDescriptionService(nil) should return nil svc")
 	}
 }
 
 func TestNewKnowPostDescriptionService_Config(t *testing.T) {
 	cfg := defaultLLMConfig()
-	svc := NewKnowPostDescriptionService(cfg)
+	svc, err := NewKnowPostDescriptionService(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if svc.cfg != cfg {
 		t.Error("cfg pointer should match")
 	}
@@ -513,24 +517,30 @@ func TestRagQueryService_ConcurrentQueries(t *testing.T) {
 // ============================================================================
 
 func TestDefaultTimeout_ZeroMs(t *testing.T) {
-	svc := NewKnowPostDescriptionService(&config.LLMConfig{
+	svc, err := NewKnowPostDescriptionService(&config.LLMConfig{
 		DeepSeek: config.DeepSeekConfig{BaseURL: "http://localhost:1"},
 		TimeoutMs: 0,
 	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	_, err := svc.SuggestDescription(context.Background(), "t", "c")
+	_, err = svc.SuggestDescription(context.Background(), "t", "c")
 	if err == nil {
 		t.Fatal("expected error (zero TimeoutMs should use default 30s, server unreachable)")
 	}
 }
 
 func TestDefaultTimeout_PositiveMs(t *testing.T) {
-	svc := NewKnowPostDescriptionService(&config.LLMConfig{
+	svc, err := NewKnowPostDescriptionService(&config.LLMConfig{
 		DeepSeek: config.DeepSeekConfig{BaseURL: "http://localhost:1"},
 		TimeoutMs: 100,
 	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	_, err := svc.SuggestDescription(context.Background(), "t", "c")
+	_, err = svc.SuggestDescription(context.Background(), "t", "c")
 	if err == nil {
 		t.Fatal("expected error (short timeout, server unreachable)")
 	}

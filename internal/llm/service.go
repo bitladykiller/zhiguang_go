@@ -20,18 +20,21 @@ type KnowPostDescriptionService struct {
 	client *http.Client
 }
 
-func NewKnowPostDescriptionService(cfg *config.LLMConfig) *KnowPostDescriptionService {
+func NewKnowPostDescriptionService(cfg *config.LLMConfig) (*KnowPostDescriptionService, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("llm config is nil")
+	}
 	timeout := 30 * time.Second
-	if cfg != nil && cfg.TimeoutMs > 0 {
+	if cfg.TimeoutMs > 0 {
 		timeout = time.Duration(cfg.TimeoutMs) * time.Millisecond
 	}
-	if cfg == nil || cfg.DeepSeek.APIKey == "" {
+	if cfg.DeepSeek.APIKey == "" {
 		zap.L().Warn("llm deepseek api_key is empty, description service will fail at runtime")
 	}
 	return &KnowPostDescriptionService{
 		cfg:    cfg,
 		client: &http.Client{Timeout: timeout},
-	}
+	}, nil
 }
 
 func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, title, content string) (string, error) {
@@ -133,6 +136,8 @@ func NewRagQueryService(llmCfg *config.LLMConfig, esURL string) *RagQueryService
 
 func (s *RagQueryService) Query(ctx context.Context, postID uint64, question string, streamChan chan<- string) error {
 	defer close(streamChan)
+	// TODO: implement real RAG retrieval + LLM streaming generation
+	// Current implementation is a placeholder that returns a fixed message.
 
 	if err := ctx.Err(); err != nil {
 		return err

@@ -6,7 +6,6 @@
 //   - 所有配置字段都定义了 yaml tag，与 config.yaml / config-local.yaml 一一对应。
 //   - 可选依赖（搜索、LLM、OSS）配置不完整时不会阻止服务启动，
 //     而是由调用方自行检测并降级（返回 503）。
-//   - itoa 不使用 strconv.Itoa 是为了最小化启动依赖链。
 //
 // 使用方式：
 //
@@ -17,6 +16,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,17 +100,17 @@ type DatabaseConfig struct {
 //   - 超时参数（dial_timeout_ms、read_timeout_ms、write_timeout_ms）会添加到 DSN 参数中。
 func (c *DatabaseConfig) DSN() string {
 	dsn := c.User + ":" + url.QueryEscape(c.Password) + "@tcp(" + c.Host + ":" +
-		itoa(c.Port) + ")/" + c.Name + "?charset=" + c.Charset + "&parseTime=True&loc=Local"
+		strconv.Itoa(c.Port) + ")/" + c.Name + "?charset=" + c.Charset + "&parseTime=True&loc=Local"
 
 	// 添加超时参数
 	if c.DialTimeoutMs > 0 {
-		dsn += "&timeout=" + itoa(c.DialTimeoutMs) + "ms"
+		dsn += "&timeout=" + strconv.Itoa(c.DialTimeoutMs) + "ms"
 	}
 	if c.ReadTimeoutMs > 0 {
-		dsn += "&readTimeout=" + itoa(c.ReadTimeoutMs) + "ms"
+		dsn += "&readTimeout=" + strconv.Itoa(c.ReadTimeoutMs) + "ms"
 	}
 	if c.WriteTimeoutMs > 0 {
-		dsn += "&writeTimeout=" + itoa(c.WriteTimeoutMs) + "ms"
+		dsn += "&writeTimeout=" + strconv.Itoa(c.WriteTimeoutMs) + "ms"
 	}
 
 	return dsn
@@ -121,6 +121,7 @@ type RedisConfig struct {
 	Host            string `yaml:"host"`
 	Port            int    `yaml:"port"`
 	Password        string `yaml:"password"`
+	RequirePass     bool   `yaml:"require_pass"`
 	DB              int    `yaml:"db"`                // Redis database number (0-15)
 	PoolSize        int    `yaml:"pool_size"`         // connection pool size
 	MinIdleConns    int    `yaml:"min_idle_conns"`    // 最小空闲连接数
@@ -157,7 +158,7 @@ type IDGeneratorConfig struct {
 //	如果 Host 是域名（如 "redis.example.com"），直接拼接；
 //	如果 Host 是空字符串，返回 ":port"（go-redis 会尝试连接本地）。
 func (c *RedisConfig) Addr() string {
-	return c.Host + ":" + itoa(c.Port)
+	return c.Host + ":" + strconv.Itoa(c.Port)
 }
 
 // KafkaConfig 配置 Kafka 生产者与消费者。
@@ -473,6 +474,42 @@ func (c *Config) Validate() error {
 	if len(errs) > 0 {
 		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
 	}
+
+	// 7. Redis — 如果 RequirePass 为 true，密码不能为空
+	// 8. Kafka — Broker 列表不能为空，至少配置一个 topic
+	// 9. HotKey — BucketCount 必须 > 0
+	// 10. Elasticsearch — Addresses 不能为空
+	// 11. OSS — 若配置了任一字段，则所有必填字段不能为空
+	if c.Redis.RequirePass && c.Redis.Password == "" {
+		errs = append(errs, "redis: require_pass is true but password is empty")
+	}
+	if len(c.Kafka.Brokers) == 0 {
+		errs = append(errs, "kafka: at least one broker is required")
+	}
+	if c.Cache.HotKey.BucketCount <= 0 {
+		errs = append(errs, "hotkey: bucket_count must be > 0")
+	}
+	if len(c.Elasticsearch.URIs) == 0 {
+		errs = append(errs, "elasticsearch: uris is required")
+	}
+	if c.OSS.Endpoint != "" || c.OSS.Bucket != "" || c.OSS.AccessKeyID != "" || c.OSS.AccessKeySecret != "" {
+		if c.OSS.Endpoint == "" {
+			errs = append(errs, "oss: endpoint is required when oss is configured")
+		}
+		if c.OSS.Bucket == "" {
+			errs = append(errs, "oss: bucket is required when oss is configured")
+		}
+		if c.OSS.AccessKeyID == "" {
+			errs = append(errs, "oss: access_key_id is required when oss is configured")
+		}
+		if c.OSS.AccessKeySecret == "" {
+			errs = append(errs, "oss: access_key_secret is required when oss is configured")
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
+	}
 	return nil
 }
 
@@ -518,53 +555,4 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// itoa 在不引入 strconv 的前提下把 int 转成字符串。
-//
-// 功能：
-//
-//	将整数 n 通过除 10 取余的方式逐位分解，然后拼接为字符串。
-//	支持负数和零。
-//
-// 参数：
-//   - n: 待转换的整数
-//
-// 返回值：
-//   - string: 整数的十进制字符串表示
-//
-// WHY 不使用 strconv.Itoa：
-//
-//	官方说明是在启动路径上减少一个标准库依赖能略微缩短编译时间。
-//	该函数仅在 DSN() 和 Addr() 中被调用，性能不敏感，
-//	因此自实现的开销可以忽略。
-//
-// 边界情况：
-//   - n == 0 → 返回 "0"
-//   - n < 0 → 返回 "-" + 绝对值的字符串（如 -42 → "-42"）
-//   - n == math.MinInt → 取绝对值会溢出，但该函数仅在端口号上使用，
-//     端口号始终为正数，因此不会有负值极端情况。
-//
-// 实现说明：
-//
-//	使用 [20]byte 固定长度数组作为缓冲区（最大 int64 十进制 19 位 + 负号），
-//	从尾部往前填充，最后切片转换为字符串。这比多次字符串拼接更高效。
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}
+// Validate 校验配置中的关键字段是否合法。

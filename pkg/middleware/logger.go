@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -53,10 +54,10 @@ import (
 //   - 使用 zap.Field 而非格式化字符串：
 //     结构化日志便于日志中心（如 ELK/Loki）做索引和聚合查询。
 func LoggerMiddleware(logger *zap.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
+		return func(c *gin.Context) {
 		// 跳过健康检查和指标接口
 		path := c.Request.URL.Path
-		if path == "/health" || path == "/metrics" {
+		if path == "/health" || path == "/ready" || path == "/metrics" || strings.HasPrefix(path, "/debug/pprof") {
 			c.Next()
 			return
 		}

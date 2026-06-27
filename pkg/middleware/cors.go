@@ -27,12 +27,26 @@ func CorsMiddleware(origins []string) gin.HandlerFunc {
 	if len(origins) == 0 {
 		origins = []string{"*"}
 	}
-	return cors.New(cors.Config{
-		AllowOrigins:     origins,
+
+	allowCredentials := true
+	for _, o := range origins {
+		if o == "*" {
+			allowCredentials = false
+			break
+		}
+	}
+
+	config := cors.Config{
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With"},
-		ExposeHeaders:    []string{"Content-Length", "Content-Type"},
-		AllowCredentials: false,
+		ExposeHeaders:    []string{"Content-Length", "X-RateLimit-Remaining"},
+		AllowCredentials: allowCredentials,
 		MaxAge:           12 * time.Hour,
-	})
+	}
+	if allowCredentials {
+		config.AllowOrigins = origins
+	} else {
+		config.AllowAllOrigins = true
+	}
+	return cors.New(config)
 }

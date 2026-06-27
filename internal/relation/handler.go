@@ -128,6 +128,7 @@ func (h *RelationHandler) Status(c *gin.Context) {
 // Following 处理 GET /relations/following?user_id=12345&limit=20&offset=0。
 //
 // 功能：使用 offset 分页查询某用户关注的人列表。
+// 注意：此接口为公开接口，无需鉴权即可访问。
 func (h *RelationHandler) Following(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
 	limit := httputil.QueryInt(c, "limit", 20)
@@ -145,6 +146,7 @@ func (h *RelationHandler) Following(c *gin.Context) {
 // Followers 处理 GET /relations/followers?user_id=12345&limit=20&offset=0。
 //
 // 功能：使用 offset 分页查询某用户的粉丝列表。
+// 注意：此接口为公开接口，无需鉴权即可访问。
 func (h *RelationHandler) Followers(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
 	limit := httputil.QueryInt(c, "limit", 20)
@@ -162,6 +164,7 @@ func (h *RelationHandler) Followers(c *gin.Context) {
 // FollowingCursor 处理 GET /relations/following/cursor?user_id=12345&limit=20&cursor=0。
 //
 // 功能：使用游标分页查询某用户关注的人列表。
+// 注意：此接口为公开接口，无需鉴权即可访问。
 //
 // 游标基于关注时间的毫秒时间戳。cursor=0 表示从头开始（获取最新关注）。
 // 响应中包含 next_cursor 可用于后续请求。
@@ -182,6 +185,7 @@ func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 // FollowersCursor 处理 GET /relations/followers/cursor?user_id=12345&limit=20&cursor=0。
 //
 // 功能：使用游标分页查询某用户的粉丝列表。
+// 注意：此接口为公开接口，无需鉴权即可访问。
 func (h *RelationHandler) FollowersCursor(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
 	limit := httputil.QueryInt(c, "limit", 20)

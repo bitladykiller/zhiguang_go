@@ -15,20 +15,20 @@ import (
 // --- mock service ---
 
 type mockProfileSvc struct {
-	getUser  *UserProfile
-	getErr   *errcode.AppError
-	updateOK bool
-	updateErr *errcode.AppError
+	getUser   *UserProfile
+	getErr    error
+	updateOK  bool
+	updateErr error
 }
 
-func (m *mockProfileSvc) GetProfile(ctx context.Context, id uint64) (*UserProfile, *errcode.AppError) {
+func (m *mockProfileSvc) GetProfile(ctx context.Context, id uint64) (*UserProfile, error) {
 	if m.getErr != nil {
 		return nil, m.getErr
 	}
 	return m.getUser, nil
 }
 
-func (m *mockProfileSvc) UpdateProfile(ctx context.Context, callerID, targetID uint64, req *ProfilePatchRequest) *errcode.AppError {
+func (m *mockProfileSvc) UpdateProfile(ctx context.Context, callerID, targetID uint64, req *ProfilePatchRequest) error {
 	if m.updateErr != nil {
 		return m.updateErr
 	}

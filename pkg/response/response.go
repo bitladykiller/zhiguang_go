@@ -155,3 +155,15 @@ func Fail(c *gin.Context, httpStatus int, msg string) {
 		Message: msg,
 	})
 }
+
+// Abort 使用 AppError 直接中止请求，不包裹 ApiResponse 结构。
+//
+// 与 Error 的区别：
+//   - Error 返回标准的 ApiResponse 包裹体（{ code, message }）
+//   - Abort 直接将 AppError 结构体作为 JSON 返回（{ code, message }，不含 data）
+//
+// 适用场景：
+//   - middleware 层鉴权失败时使用，保持与业务 handler 层一致的错误格式
+func Abort(c *gin.Context, appErr *errcode.AppError) {
+	c.AbortWithStatusJSON(errcode.HTTPStatusFromCode(appErr.Code), appErr)
+}

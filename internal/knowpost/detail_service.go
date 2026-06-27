@@ -231,11 +231,11 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			if s.hotKey != nil {
 				targetTTL = s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 			}
-			if targetTTL < baseTTL {
-				targetTTL = baseTTL
-			}
 			s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
 			s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
+			if s.hotKey != nil {
+				s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
+			}
 
 			return s.enrichDetail(ctx, resp, currentUserID, false), nil
 		},

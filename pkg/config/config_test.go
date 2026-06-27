@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -146,7 +147,7 @@ func TestItoa(t *testing.T) {
 		{999999, "999999"},
 	}
 	for _, tt := range tests {
-		got := itoa(tt.n)
+		got := strconv.Itoa(tt.n)
 		if got != tt.want {
 			t.Errorf("itoa(%d) = %q, want %q", tt.n, got, tt.want)
 		}
@@ -170,6 +171,11 @@ func TestValidate_OK(t *testing.T) {
 		Redis: RedisConfig{Host: "127.0.0.1", Port: 6379},
 		Auth: AuthConfig{
 			Jwt: JwtConfig{PrivateKeyPath: "/keys/private.pem", PublicKeyPath: "/keys/public.pem"},
+		},
+		Kafka:         KafkaConfig{Brokers: []string{"127.0.0.1:9092"}},
+		Elasticsearch: ElasticsearchConfig{URIs: []string{"http://127.0.0.1:9200"}},
+		Cache: CacheConfig{
+			HotKey: HotKeyConfig{BucketCount: 10},
 		},
 	}
 	if err := cfg.Validate(); err != nil {

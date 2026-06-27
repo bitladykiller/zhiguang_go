@@ -58,7 +58,12 @@ func buildDescriptionService(cfg *config.Config, logger *zap.Logger) *llm.KnowPo
 		logger.Warn("LLM description service disabled: DeepSeek config is incomplete")
 		return nil
 	}
-	return llm.NewKnowPostDescriptionService(&cfg.LLM)
+	svc, err := llm.NewKnowPostDescriptionService(&cfg.LLM)
+	if err != nil {
+		logger.Warn("LLM description service disabled: failed to create service", zap.Error(err))
+		return nil
+	}
+	return svc
 }
 
 // buildRagQueryService 根据配置创建 RAG 问答服务。

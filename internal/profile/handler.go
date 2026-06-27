@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
@@ -64,9 +65,9 @@ func (h *ProfileHandler) GetProfile(c *gin.Context) {
 		return
 	}
 
-	user, appErr := h.svc.GetProfile(c.Request.Context(), id)
-	if appErr != nil {
-		response.Error(c, appErr)
+	user, err := h.svc.GetProfile(c.Request.Context(), id)
+	if err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 
@@ -126,8 +127,8 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	if appErr := h.svc.UpdateProfile(c.Request.Context(), userID, id, &req); appErr != nil {
-		response.Error(c, appErr)
+	if err := h.svc.UpdateProfile(c.Request.Context(), userID, id, &req); err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 

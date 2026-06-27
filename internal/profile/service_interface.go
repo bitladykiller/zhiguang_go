@@ -3,8 +3,6 @@ package profile
 import (
 	"context"
 	"time"
-
-	"github.com/zhiguang/app/pkg/errcode"
 )
 
 // UserProfile 是 profile 模块导出的用户公开资料 DTO。
@@ -32,8 +30,8 @@ type UserProfile struct {
 // Handler 依赖此接口而非具体 *Service，使得 handler 可以独立于
 // service 实现进行单元测试。
 type ProfileServiceInterface interface {
-	GetProfile(ctx context.Context, id uint64) (*UserProfile, *errcode.AppError)
-	UpdateProfile(ctx context.Context, callerID, targetID uint64, req *ProfilePatchRequest) *errcode.AppError
+	GetProfile(ctx context.Context, id uint64) (*UserProfile, error)
+	UpdateProfile(ctx context.Context, callerID, targetID uint64, req *ProfilePatchRequest) error
 }
 
 // 编译期断言：*Service 实现了 ProfileServiceInterface。

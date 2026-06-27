@@ -12,14 +12,15 @@ import (
 )
 
 const (
-	l1CacheTTL          = 600
-	fallbackExhaustedTTL = 10 * time.Minute
+	l1CacheTTL             = 600
+	fallbackExhaustedTTL   = 10 * time.Minute
+	defaultFillL1Limit     = 500
 )
 
 // fillL1 将 BigV 用户的前 500 个关注/粉丝 ID 写入 freecache（L1）。
 func (s *RelationService) fillL1(ctx context.Context, listType string, userID uint64) {
 	key := s.l1KeyStr(listType, userID)
-	entries, err := s.readFromDB(ctx, listType, userID, 500, 0)
+	entries, err := s.readFromDB(ctx, listType, userID, defaultFillL1Limit, 0)
 	if err != nil || len(entries) == 0 {
 		return
 	}

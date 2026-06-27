@@ -17,7 +17,7 @@ func NewProfileService(repo Repo) *Service {
 }
 
 // GetProfile 根据用户 ID 查询用户公开资料。
-func (s *Service) GetProfile(ctx context.Context, id uint64) (*UserProfile, *errcode.AppError) {
+func (s *Service) GetProfile(ctx context.Context, id uint64) (*UserProfile, error) {
 	user, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, errcode.ErrNotFound
@@ -26,7 +26,7 @@ func (s *Service) GetProfile(ctx context.Context, id uint64) (*UserProfile, *err
 }
 
 // UpdateProfile 更新用户资料信息。只有资料所有者本人可以更新。
-func (s *Service) UpdateProfile(ctx context.Context, callerID, targetID uint64, req *ProfilePatchRequest) *errcode.AppError {
+func (s *Service) UpdateProfile(ctx context.Context, callerID, targetID uint64, req *ProfilePatchRequest) error {
 	if callerID != targetID {
 		return errcode.ErrForbidden
 	}

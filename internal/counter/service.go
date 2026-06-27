@@ -13,6 +13,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const defaultMaxChunk = uint64(128)
+
 // CounterService 提供原子化的计数开关操作。
 type CounterService struct {
 	redis              *redis.Client
@@ -104,7 +106,7 @@ func (s *CounterService) buildLikersFromCache(ctx context.Context, entityType st
 
 func (s *CounterService) scanBitmapForLikers(ctx context.Context, entityType string, entityID uint64, prefix string, cursor uint64, limit int, cacheKey string) (*LikersResponse, error) {
 	items := make([]LikerItem, 0)
-	maxChunk := uint64(128)
+	maxChunk := defaultMaxChunk
 
 	for chunk := uint64(0); chunk < maxChunk; chunk++ {
 		bmKey := fmt.Sprintf("bm:%s:%s:%d:%d", prefix, entityType, entityID, chunk)
