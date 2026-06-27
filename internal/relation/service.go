@@ -62,6 +62,12 @@ func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDG
 	if logger == nil {
 		logger = zap.L()
 	}
+
+	var tokenBucketCfg *config.RelationTokenBucketConfig
+	if cfg != nil {
+		tokenBucketCfg = &cfg.TokenBucket
+	}
+
 	return &RelationService{
 		db:     db,
 		redis:  rdb,
@@ -69,6 +75,7 @@ func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDG
 		l1:     freecache.NewCache(cacheSize),
 		idGen:  idGen,
 		logger: logger,
+		tokenBucketCfg: tokenBucketCfg,
 	}
 }
 

@@ -52,6 +52,10 @@ type AggregationConsumer struct {
 	repairInterval   time.Duration
 	repairBatch      int
 
+	partitionMask   uint8
+
+	flushCh chan *counterBatch
+
 	mu      sync.Mutex
 	batches map[int]*counterBatch
 	wg      sync.WaitGroup
@@ -105,6 +109,8 @@ func NewAggregationConsumer(
 
 	readerCfg := reader.Config()
 
+	flushCh := make(chan *counterBatch, 16)
+
 	return &AggregationConsumer{
 		reader:           reader,
 		service:          service,
@@ -119,6 +125,7 @@ func NewAggregationConsumer(
 		repairEnabled:    repairEnabled,
 		repairInterval:   repairInterval,
 		repairBatch:      repairBatch,
+		flushCh:          flushCh,
 		batches:          make(map[int]*counterBatch),
 	}
 }
@@ -129,12 +136,25 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 	}
 	defer c.reader.Close()
 
+	flushWg := sync.WaitGroup{}
+	for i := 0; i < 2; i++ {
+		flushWg.Add(1)
+		go func() {
+			defer flushWg.Done()
+			for batch := range c.flushCh {
+				c.flushAndReset(context.Background(), batch)
+			}
+		}()
+	}
+
 	if c.repairEnabled {
 		c.wg.Add(1)
 		go c.repairLoop(ctx)
 	}
 
 	c.consumeLoop(ctx)
+	close(c.flushCh)
+	flushWg.Wait()
 	c.wg.Wait()
 }
 
@@ -147,7 +167,7 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 
 	for {
 		if batch := c.takeExpiredBatch(ctx); batch != nil {
-			c.flushAndReset(ctx, batch)
+			c.flushCh <- batch
 			continue
 		}
 
@@ -183,7 +203,7 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 		}
 
 		if batch := c.handleMessage(ctx, msg); batch != nil {
-			c.flushAndReset(ctx, batch)
+			c.flushCh <- batch
 		}
 	}
 }
@@ -511,28 +531,30 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 	if !locked {
 		return errLockNotAcquired
 	}
-	defer lock.Release()
 
-	// Set rebuild marker to block concurrent flush
 	rebuildMarker := RebuildMarkerKey(entityType, entityID)
-	markerCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	watchDone := make(chan struct{})
 	go func() {
+		defer close(watchDone)
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-markerCtx.Done():
+			case <-watchCtx.Done():
 				return
 			case <-ticker.C:
-				_ = c.service.redis.Expire(markerCtx, rebuildMarker, 30*time.Second)
+				_ = c.service.redis.Expire(watchCtx, rebuildMarker, 30*time.Second)
 			}
 		}
 	}()
 	_ = c.service.redis.Set(ctx, rebuildMarker, "1", 30*time.Second)
 	defer func() {
-		cancel()
-		c.service.redis.Del(ctx, rebuildMarker)
+		watchCancel()
+		<-watchDone
+		lock.Release()
+		_ = c.service.redis.Del(ctx, rebuildMarker)
 	}()
 
 	sdsRaw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)
@@ -547,7 +569,6 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 		return fmt.Errorf("repair dirty member: set sds: %w", err)
 	}
 
-	// Clear dirty member and backoff after rebuild is done
 	if err := c.service.clearDirtyMembers(ctx, []string{member}); err != nil {
 		return fmt.Errorf("repair dirty member: clear dirty: %w", err)
 	}
@@ -691,11 +712,7 @@ func (b *counterBatch) reset() {
 	b.endOffset = 0
 	b.messages = b.messages[:0]
 	b.events = b.events[:0]
-	if len(b.entities) > 32 {
-		b.entities = make(map[string]struct{}, cap(b.messages))
-	} else {
-		clear(b.entities)
-	}
+	clear(b.entities)
 }
 
 // parseCounterEvent 将 Kafka 消息的 Value (JSON bytes) 反序列化为 CounterEvent。

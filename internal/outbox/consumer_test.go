@@ -224,14 +224,14 @@ func TestHandleMessage_InvalidEnvelope(t *testing.T) {
 
 func TestRecordFailedMessage_NilRecorder(t *testing.T) {
 	c := NewConsumer(&kafka.Reader{}, &mockHandler{}, nil)
-	c.recordFailedMessage(context.Background(), []byte("data"), errors.New("cause"))
+	c.recordFailedMessage(context.Background(), kafka.Message{Value: []byte("data")}, errors.New("cause"))
 }
 
 func TestRecordFailedMessage_WithRecorder(t *testing.T) {
 	rec := &mockRecorder{}
 	c := NewConsumer(&kafka.Reader{}, &mockHandler{}, nil)
 	c.SetFailedMessageRecorder(rec)
-	c.recordFailedMessage(context.Background(), []byte("data"), errors.New("cause"))
+	c.recordFailedMessage(context.Background(), kafka.Message{Value: []byte("data")}, errors.New("cause"))
 	if !rec.created {
 		t.Error("expected recorder to be called")
 	}

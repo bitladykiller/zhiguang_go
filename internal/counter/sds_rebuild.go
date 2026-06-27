@@ -13,10 +13,12 @@ package counter
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"github.com/zhiguang/app/pkg/redislock"
+	"golang.org/x/sync/errgroup"
 )
 
 // rebuildSds 从位图重建 SDS 计数。
@@ -124,14 +126,27 @@ func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType,
 
 // buildSnapshotFromBitmap 遍历所有指标，从位图构建完整快照并写入 Redis Hash。
 func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType, entityID string) (map[string]int32, error) {
-	snapshot := make(map[string]int32)
+	snapshot := make(map[string]int32, SchemaLen)
+	var mu sync.Mutex
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(5)
 	for i := 0; i < SchemaLen; i++ {
-		metric := indexToName[i]
-		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
-		if err != nil {
-			return nil, fmt.Errorf("build snapshot: bit count: %w", err)
-		}
-		snapshot[metric] = int32(total)
+		idx := i
+		metric := indexToName[idx]
+		g.Go(func() error {
+			total, err := s.bitCountShards(ctx, metric, entityType, entityID)
+			if err != nil {
+				return fmt.Errorf("build snapshot: bit count %s: %w", metric, err)
+			}
+			mu.Lock()
+			snapshot[metric] = int32(total)
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return snapshot, nil
 }

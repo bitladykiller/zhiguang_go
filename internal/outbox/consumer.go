@@ -121,8 +121,14 @@ func (c *Consumer) Start(ctx context.Context) {
 		}
 
 		if err := c.handleMessageWithRetry(ctx, msg); err != nil {
-			c.logWarn("process outbox kafka message exhausted retries, will skip", err)
-			c.recordFailedMessage(ctx, msg.Value, err)
+			c.logger.Warn("process outbox kafka message exhausted retries, will skip",
+				zap.String("topic", msg.Topic),
+				zap.Int("partition", msg.Partition),
+				zap.Int64("offset", msg.Offset),
+				zap.String("key", string(msg.Key)),
+				zap.Error(err),
+			)
+			c.recordFailedMessage(ctx, msg, err)
 			if err := c.reader.CommitMessages(ctx, msg); err != nil {
 				c.logWarn("commit skipped outbox kafka message failed", err)
 			}
@@ -154,13 +160,13 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, msg kafka.Message
 }
 
 // recordFailedMessage 将失败消息写入死信记录。
-func (c *Consumer) recordFailedMessage(ctx context.Context, value []byte, cause error) {
+func (c *Consumer) recordFailedMessage(ctx context.Context, msg kafka.Message, cause error) {
 	if c.failureRecorder == nil {
 		return
 	}
 	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	_ = c.failureRecorder.Create(pubCtx, CanalOutboxTopic, "", value, cause)
+	_ = c.failureRecorder.Create(pubCtx, CanalOutboxTopic, "", msg.Value, cause)
 }
 
 // handleMessage 解析一条 Kafka 消息，提取 outbox 行并逐行处理。

@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/zhiguang/app/internal/knowpost"
@@ -155,9 +156,20 @@ func NewSearchService(cfg ESConfig, counter SearchCounterClient, logger *zap.Log
 
 	svc := &SearchService{client: client, indexName: cfg.IndexName, counter: counter, logger: logger}
 
-	// 启动时确保索引已存在
-	if err := svc.EnsureIndex(); err != nil {
-		return nil, fmt.Errorf("ensure index: %w", err)
+	// 启动时确保索引已存在，失败重试 3 次
+	var ensureErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		ensureErr = svc.EnsureIndex()
+		if ensureErr == nil {
+			break
+		}
+		if attempt < 3 {
+			logger.Warn("ensure index failed, retrying", zap.Int("attempt", attempt), zap.Error(ensureErr))
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+	}
+	if ensureErr != nil {
+		return nil, fmt.Errorf("ensure index after retries: %w", ensureErr)
 	}
 
 	return svc, nil

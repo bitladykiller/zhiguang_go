@@ -127,13 +127,25 @@ func (s *RelationService) cacheEndReached(ctx context.Context, zsetKey string, o
 }
 
 // isBigV 判断某个用户是否是 BigV（粉丝数 >= 500）。
+// 使用本地 L1 缓存 5 分钟，避免每次都查 Redis ZCard。
 func (s *RelationService) isBigV(ctx context.Context, userID uint64) bool {
+	cacheKey := fmt.Sprintf("bigv:%d", userID)
+	if data, err := s.l1.Get([]byte(cacheKey)); err == nil && len(data) > 0 {
+		return string(data) == "1"
+	}
+
 	key := s.zsetKey("followers", userID)
 	size, err := s.redis.ZCard(ctx, key).Result()
 	if err != nil {
 		return false
 	}
-	return size >= bigVThreshold
+	bigV := size >= bigVThreshold
+	val := []byte("0")
+	if bigV {
+		val = []byte("1")
+	}
+	_ = s.l1.Set([]byte(cacheKey), val, 300)
+	return bigV
 }
 
 // shouldFallbackToFollowing 判断是否需要从 following 表降级查询粉丝。

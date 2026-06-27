@@ -31,17 +31,22 @@ import (
 // 参数：
 //   - ctx: context.Context，用于传递请求上下文和控制超时。
 //   - id: uint64，知文 ID。
+var invalidateCacheScript = redis.NewScript(`
+local ver = redis.call('INCR', KEYS[1])
+local pageKey = KEYS[2] .. ver
+redis.call('DEL', pageKey)
+return ver
+`)
+
 func (s *KnowPostService) invalidateCache(ctx context.Context, id uint64) {
-	version, err := s.redis.Incr(ctx, fmt.Sprintf("knowpost:ver:%d", id)).Result()
+	verKey := fmt.Sprintf("knowpost:ver:%d", id)
+	detailPrefix := fmt.Sprintf("knowpost:detail:%d:v%d:ver", id, detailLayoutVer)
+	_, err := invalidateCacheScript.Run(ctx, s.redis, []string{verKey, detailPrefix}).Result()
 	if err != nil {
-		s.logger.Warn("failed to increment post cache version", zap.Uint64("id", id), zap.Error(err))
-		version = detailLayoutVer
+		s.logger.Warn("failed to invalidate post cache", zap.Uint64("id", id), zap.Error(err))
 	}
-	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d:ver%d", id, detailLayoutVer, version)
-	if err := s.redis.Del(ctx, pageKey).Err(); err != nil {
-		s.logger.Warn("failed to delete L2 detail cache after version incr", zap.String("pageKey", pageKey), zap.Error(err))
-	}
-	s.l1Cache.Del([]byte(pageKey))
+	l1Key := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
+	s.l1Cache.Del([]byte(l1Key))
 }
 
 // invalidateFeedCaches 在知文发生变更后失效对应的 Feed 缓存。

@@ -323,11 +323,11 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 	if !ok || jwtClaims.TokenKind != "refresh" {
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
 	}
-	lock, appErr := s.acquireRefreshSessionLock(ctx, jwtClaims.UID)
+	_, release, appErr := s.acquireRefreshSessionLock(ctx, jwtClaims.UID)
 	if appErr != nil {
 		return AuthResponse{}, appErr
 	}
-	defer lock.Release()
+	defer release()
 	if !s.tokenStore.IsTokenValid(ctx, jwtClaims.UID, jwtClaims.ID) {
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
 	}
@@ -416,11 +416,11 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 		return errcode.ErrInternal.WithMsg("failed to hash password")
 	}
 
-	lock, appErr := s.acquireRefreshSessionLock(ctx, user.ID)
+	_, release, appErr := s.acquireRefreshSessionLock(ctx, user.ID)
 	if appErr != nil {
 		return appErr
 	}
-	defer lock.Release()
+	defer release()
 
 	if err := s.repo.UpdatePassword(ctx, user.ID, string(hash)); err != nil {
 		return errcode.ErrInternal.WithMsg("failed to update password")
@@ -436,27 +436,33 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 // WHY 抽成单独辅助函数：
 //   - Refresh 与 ResetPassword 需要共享同一把 user 级别锁，避免策略漂移。
 //   - 错误统一映射为内部错误，业务流程只关注“是否拿到锁”。
-func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint64) (*redislock.Lock, *errcode.AppError) {
+func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint64) (*redislock.Lock, context.CancelFunc, *errcode.AppError) {
 	if s.redis == nil {
-		return nil, errcode.ErrInternal.WithMsg("redis client is unavailable")
+		return nil, nil, errcode.ErrInternal.WithMsg("redis client is unavailable")
 	}
+
+	acquireCtx := ctx
+	var cancel context.CancelFunc
 	if s.refreshLockTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.refreshLockTimeout)
-		defer cancel()
+		acquireCtx, cancel = context.WithTimeout(ctx, s.refreshLockTimeout)
 	}
 
 	lock, err := redislock.AcquireWithRetry(
-		ctx,
+		acquireCtx,
 		s.redis,
 		refreshSessionLockKey(userID),
 		s.refreshLockOptions,
 		s.refreshLockRetryWait,
 	)
-	if err != nil {
-		return nil, errcode.ErrInternal.WithMsg("failed to acquire refresh session lock")
+	if cancel != nil {
+		cancel()
 	}
-	return lock, nil
+	if err != nil {
+		return nil, nil, errcode.ErrInternal.WithMsg("failed to acquire refresh session lock")
+	}
+	return lock, func() {
+		lock.Release()
+	}, nil
 }
 
 // CurrentUser 返回当前登录用户的资料。

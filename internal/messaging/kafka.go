@@ -27,6 +27,7 @@ const (
 	outboxWriterMaxAttempts  = 10
 	outboxBackoffMin         = 200 * time.Millisecond
 	outboxBackoffMax         = 2 * time.Second
+	defaultWriteTimeout      = 30 * time.Second
 )
 
 // NewKafkaWriter 创建一个 Kafka Writer，默认用于计数事件 topic。
@@ -117,6 +118,8 @@ func NewTopicWriter(cfg *config.KafkaConfig, topic string, async bool) *kafka.Wr
 	// 应用超时配置
 	if cfg.WriteTimeoutMs > 0 {
 		writer.WriteTimeout = time.Duration(cfg.WriteTimeoutMs) * time.Millisecond
+	} else {
+		writer.WriteTimeout = defaultWriteTimeout
 	}
 
 	// 应用全局重试次数配置（仅对非 outbox topic 生效）

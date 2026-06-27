@@ -1,7 +1,18 @@
 // Package knowpost 提供带前缀的 freecache 适配器。
 package knowpost
 
-import "github.com/coocood/freecache"
+import (
+	"sync"
+
+	"github.com/coocood/freecache"
+)
+
+var bufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 256)
+		return &buf
+	},
+}
 
 // PrefixCache 在 freecache 的 key 上自动添加前缀，实现单一缓存池的多用途隔离。
 //
@@ -35,10 +46,26 @@ func (p *PrefixCache) Del(key []byte) bool {
 	return p.Cache.Del(p.prefixed(key))
 }
 
-// prefixed 返回带前缀的 key。
+// prefixed 返回带前缀的 key，使用 sync.Pool 减少分配。
 func (p *PrefixCache) prefixed(key []byte) []byte {
-	prefixed := make([]byte, len(p.Prefix)+len(key))
-	copy(prefixed, p.Prefix)
-	copy(prefixed[len(p.Prefix):], key)
-	return prefixed
+	plen := len(p.Prefix)
+	klen := len(key)
+	total := plen + klen
+
+	bufPtr := bufPool.Get().(*[]byte)
+	buf := *bufPtr
+	if cap(buf) < total {
+		buf = make([]byte, total)
+	} else {
+		buf = buf[:total]
+	}
+	copy(buf, p.Prefix)
+	copy(buf[plen:], key)
+
+	result := make([]byte, total)
+	copy(result, buf)
+
+	*bufPtr = buf[:0]
+	bufPool.Put(bufPtr)
+	return result
 }
