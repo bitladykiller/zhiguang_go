@@ -2,6 +2,7 @@ package knowpost
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -40,7 +41,10 @@ INSERT INTO know_posts (
     :id, :tag_id, :tags, :title, :description, :content_url, :content_object_key, :content_etag, :content_size, :content_sha256,
     :creator_id, :is_top, :type, :visible, :img_urls, :video_url, :status, :create_time, :update_time, :publish_time
 )`, post)
-	return err
+	if err != nil {
+		return fmt.Errorf("insert draft: %w", err)
+	}
+	return nil
 }
 
 // UpdateContent 更新内容元数据，WHERE id = ? AND creator_id = ? 确保权限。
@@ -52,7 +56,7 @@ func (r *KnowPostRepository) UpdateContent(ctx context.Context, post *KnowPost) 
 		post.ContentObjectKey, post.ContentEtag, post.ContentSize, post.ContentSha256, post.ContentUrl, time.Now(), post.ID, post.CreatorID,
 	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("update content: %w", err)
 	}
 	return result.RowsAffected()
 }
@@ -96,7 +100,7 @@ func (r *KnowPostRepository) UpdateMetadata(ctx context.Context, post *KnowPost)
 		args...,
 	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("update metadata: %w", err)
 	}
 	return result.RowsAffected()
 }
@@ -109,7 +113,7 @@ func (r *KnowPostRepository) Publish(ctx context.Context, id, creatorID uint64) 
 		KnowPostStatusPublished, now, now, id, creatorID, KnowPostStatusDraft,
 	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("publish: %w", err)
 	}
 	return result.RowsAffected()
 }
@@ -125,7 +129,7 @@ func (r *KnowPostRepository) UpdateTop(ctx context.Context, id, creatorID uint64
 		topVal, time.Now(), id, creatorID,
 	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("update top: %w", err)
 	}
 	return result.RowsAffected()
 }
@@ -137,7 +141,7 @@ func (r *KnowPostRepository) UpdateVisibility(ctx context.Context, id, creatorID
 		visible, time.Now(), id, creatorID,
 	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("update visibility: %w", err)
 	}
 	return result.RowsAffected()
 }
@@ -149,7 +153,7 @@ func (r *KnowPostRepository) SoftDelete(ctx context.Context, id, creatorID uint6
 		KnowPostStatusDeleted, time.Now(), id, creatorID,
 	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("soft delete: %w", err)
 	}
 	return result.RowsAffected()
 }
@@ -179,7 +183,7 @@ LEFT JOIN users ON know_posts.creator_id = users.id
 WHERE know_posts.id = ?
 `, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find detail by id: %w", err)
 	}
 	return &row, nil
 }
@@ -203,7 +207,10 @@ WHERE know_posts.status = ? AND know_posts.visible = ?
 ORDER BY know_posts.publish_time DESC
 LIMIT ? OFFSET ?
 `, KnowPostStatusPublished, KnowPostVisibilityPublic, limit, offset)
-	return rows, err
+	if err != nil {
+		return rows, fmt.Errorf("list feed public: %w", err)
+	}
+	return rows, nil
 }
 
 // ListMyPublished 分页查询某用户的已发布知文，使用 sqlx.SelectContext。
@@ -226,5 +233,8 @@ WHERE know_posts.creator_id = ? AND know_posts.status != ?
 ORDER BY know_posts.is_top DESC, know_posts.create_time DESC
 LIMIT ? OFFSET ?
 `, userID, KnowPostStatusDeleted, limit, offset)
-	return rows, err
+	if err != nil {
+		return rows, fmt.Errorf("list my published: %w", err)
+	}
+	return rows, nil
 }

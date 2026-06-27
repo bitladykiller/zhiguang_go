@@ -81,6 +81,8 @@ func MessageKey(row CanalRow) string {
 
 	switch aggType {
 	case "knowpost":
+		// 优先使用 aggID（自 2025-06 起的推送均已携带）。
+		// 只有在 aggID 为空时才回退到解析 Payload 兼容历史数据。
 		if aggID != "" {
 			return "knowpost:" + aggID
 		}
@@ -92,6 +94,8 @@ func MessageKey(row CanalRow) string {
 			return fmt.Sprintf("knowpost:%d", payload.ID)
 		}
 	case "following":
+		// 先尝试从 Payload 中提取 from_user_id / to_user_id（主流场景），
+		// 避免以 aggID 为键导致同一用户的关系事件散列到多个分区。
 		var evt struct {
 			FromUserID uint64 `json:"from_user_id"`
 			ToUserID   uint64 `json:"to_user_id"`
@@ -99,6 +103,7 @@ func MessageKey(row CanalRow) string {
 		if err := json.Unmarshal([]byte(row.Payload), &evt); err == nil && evt.FromUserID != 0 && evt.ToUserID != 0 {
 			return fmt.Sprintf("following:%d:%d", evt.FromUserID, evt.ToUserID)
 		}
+		// 解析失败时回退到 aggID，确保至少可以路由。
 		if aggID != "" {
 			return "following:" + aggID
 		}

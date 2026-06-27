@@ -94,11 +94,9 @@ func NewVerificationService(redisClient *redis.Client, cfg *config.VerificationC
 //   - 在发送间隔内调用时不会生成新验证码，但返回与成功相同的结果（避免暴露限流细节给调用方）
 //   - 每日上限计数键（prefixDaily）按日期后缀组织，每天凌晨自动重置
 func (s *VerificationService) SendCode(ctx context.Context, scene VerificationScene, identifier string) (*SendCodeResult, error) {
-	if s.operationTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.operationTimeout)
-		defer cancel()
-	}
+	var cancel context.CancelFunc
+	ctx, cancel = s.wrapWithTimeout(ctx)
+	defer cancel()
 
 	lock, err := redislock.AcquireWithRetry(
 		ctx,
@@ -196,11 +194,9 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 //   - 达到最大尝试次数后即使输入正确验证码也拒绝校验（防暴力破解）
 //   - 每次校验无论结果都递增尝试计数，但成功后会立刻删除计数键
 func (s *VerificationService) Verify(ctx context.Context, scene VerificationScene, identifier, code string) *VerificationCheckResult {
-	if s.operationTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.operationTimeout)
-		defer cancel()
-	}
+	var cancel context.CancelFunc
+	ctx, cancel = s.wrapWithTimeout(ctx)
+	defer cancel()
 
 	lock, err := redislock.AcquireWithRetry(
 		ctx,
@@ -296,4 +292,19 @@ func fail(status VerificationCodeStatus) *VerificationCheckResult {
 //   - *VerificationCheckResult: Success=true，Status=StatusSuccess 的结果对象
 func success() *VerificationCheckResult {
 	return &VerificationCheckResult{Success: true, Status: StatusSuccess}
+}
+
+// wrapWithTimeout 为 context 设置超时，如果 operationTimeout 为 0 则透传原 context。
+//
+// 参数：
+//   - ctx: 父 context
+//
+// 返回值：
+//   - context.Context: 带超时的 context 或原 context
+//   - context.CancelFunc: 取消函数，无超时时为空操作
+func (s *VerificationService) wrapWithTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.operationTimeout > 0 {
+		return context.WithTimeout(ctx, s.operationTimeout)
+	}
+	return ctx, func() {}
 }

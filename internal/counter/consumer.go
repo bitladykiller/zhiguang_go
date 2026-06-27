@@ -136,6 +136,12 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 }
 
 func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Error("panic in consumeLoop", zap.Any("recover", r))
+		}
+	}()
+
 	for {
 		c.mu.Lock()
 		if flushed := c.flushExpiredBatches(ctx, c.batches, time.Now()); flushed {
@@ -181,6 +187,12 @@ func (c *AggregationConsumer) consumeLoop(ctx context.Context) {
 }
 
 func (c *AggregationConsumer) flushAndReset(ctx context.Context, batch *counterBatch) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Error("panic in flushAndReset", zap.Any("recover", r))
+		}
+	}()
+
 	if batch.size() == 0 {
 		return
 	}
@@ -191,13 +203,13 @@ func (c *AggregationConsumer) flushAndReset(ctx context.Context, batch *counterB
 			c.logWarn(fmt.Sprintf("flush counter batch failed (attempt %d/%d)", attempt, maxAttempts), err)
 			if attempt == maxAttempts {
 				recordCtx, cancel := context.WithTimeout(ctx, time.Second)
+				defer cancel()
 				if recordErr := c.service.recordFailedKafkaMessages(recordCtx, counterFailureStageFlush, batch.messages, err); recordErr != nil {
 					c.logWarn("persist counter failed messages failed", recordErr)
 				}
 				if markErr := c.service.markDirtyMembers(recordCtx, batch.collectDirtyMembers()); markErr != nil {
 					c.logWarn("mark dirty members after exhausted retries failed", markErr)
 				}
-				cancel()
 				c.logError(
 					fmt.Sprintf("flush counter batch exhausted retries and will drop batch (attempts=%d, messages=%d)", maxAttempts, batch.size()),
 					err,

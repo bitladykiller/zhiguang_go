@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -82,6 +84,11 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 		return
 	}
 
+	if !isValidFileName(req.FileName) {
+		response.Fail(c, 400, "invalid file name")
+		return
+	}
+
 	objectKey := h.svc.GenerateObjectKey(req.Folder, req.FileName)
 	expiry := h.svc.PresignExpiry()
 
@@ -98,4 +105,34 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 		PublicURL: h.svc.PublicURL(objectKey),
 		ExpireAt:  time.Now().Add(expiry),
 	})
+}
+
+// isValidFileName 对上传文件名称做白名单校验，防止路径遍历和非法扩展名。
+//
+// 规则：
+//   - 不为空
+//   - 不包含路径遍历字符（../、..\、/、\）
+//   - 长度不超过 255
+//   - 扩展名在允许的白名单中
+func isValidFileName(fileName string) bool {
+	if fileName == "" {
+		return false
+	}
+	if len(fileName) > 255 {
+		return false
+	}
+	if strings.Contains(fileName, "../") || strings.Contains(fileName, "..\\") ||
+		strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") {
+		return false
+	}
+
+	ext := strings.ToLower(filepath.Ext(fileName))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp",
+		".mp4", ".mov", ".avi",
+		".pdf", ".doc", ".docx":
+		return true
+	default:
+		return false
+	}
 }

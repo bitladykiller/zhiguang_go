@@ -271,7 +271,10 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 	tags := parseCSV(tagsCSV)
 	afterValues := parseAfter(after)
 
-	query := s.buildSearchQuery(keyword, tags, afterValues, size)
+	query, err := s.buildSearchQuery(keyword, tags, afterValues, size)
+	if err != nil {
+		return nil, err
+	}
 
 	raw, err := s.executeSearch(ctx, query)
 	if err != nil {
@@ -291,7 +294,7 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 }
 
 // buildSearchQuery 构造 ES 搜索请求体 JSON。
-func (s *SearchService) buildSearchQuery(keyword string, tags []string, afterValues []interface{}, size int) map[string]interface{} {
+func (s *SearchService) buildSearchQuery(keyword string, tags []string, afterValues []interface{}, size int) (map[string]interface{}, error) {
 	query := map[string]interface{}{
 		"query": map[string]interface{}{
 			"function_score": map[string]interface{}{
@@ -333,34 +336,45 @@ func (s *SearchService) buildSearchQuery(keyword string, tags []string, afterVal
 	}
 
 	if len(tags) > 0 {
-		s.addTagFilter(query, tags)
+		if err := s.addTagFilter(query, tags); err != nil {
+			return nil, err
+		}
 	}
 	if len(afterValues) > 0 {
 		query["search_after"] = afterValues
 	}
-	return query
+	return query, nil
 }
 
 // addTagFilter 向已构建的 ES query 中添加 tags 过滤条件。
-func (s *SearchService) addTagFilter(query map[string]interface{}, tags []string) {
+func (s *SearchService) addTagFilter(query map[string]interface{}, tags []string) error {
 	fs, ok := query["query"].(map[string]interface{})["function_score"].(map[string]interface{})
 	if !ok {
-		return
+		err := fmt.Errorf("addTagFilter: query[query][function_score] type assertion failed")
+		s.logger.Error(err.Error())
+		return err
 	}
 	inner, ok := fs["query"].(map[string]interface{})
 	if !ok {
-		return
+		err := fmt.Errorf("addTagFilter: function_score[query] type assertion failed")
+		s.logger.Error(err.Error())
+		return err
 	}
 	bq, ok := inner["bool"].(map[string]interface{})
 	if !ok {
-		return
+		err := fmt.Errorf("addTagFilter: query[bool] type assertion failed")
+		s.logger.Error(err.Error())
+		return err
 	}
 	filter, ok := bq["filter"].([]map[string]interface{})
 	if !ok {
-		return
+		err := fmt.Errorf("addTagFilter: bool[filter] type assertion failed")
+		s.logger.Error(err.Error())
+		return err
 	}
 	filter = append(filter, map[string]interface{}{"terms": map[string]interface{}{"tags": tags}})
 	bq["filter"] = filter
+	return nil
 }
 
 // searchHit 表示 ES 搜索结果中的单个 hit。
