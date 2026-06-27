@@ -38,10 +38,9 @@ func (u *UserCounter) IncrementFollowers(ctx context.Context, userID uint64, del
 
 // incrementUserMetric 增量更新用户维度的计数指标。
 func (u *UserCounter) incrementUserMetric(ctx context.Context, userID uint64, metric string, delta int) error {
-	idx, ok := nameToIdx[metric]
-	if !ok {
+	if _, ok := nameToIdx[metric]; !ok {
 		return fmt.Errorf("unknown metric: %s", metric)
 	}
 	key := SdsKey("user", strconv.FormatUint(userID, 10))
-	return u.svc.redis.Eval(ctx, INCR_SDS_FIELD_LUA, []string{key}, SchemaLen, FieldSize, idx+1, delta).Err()
+	return u.svc.redis.HIncrBy(ctx, key, metric, int64(delta)).Err()
 }

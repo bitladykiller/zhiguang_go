@@ -24,6 +24,29 @@ const (
 
 // --- [详情读取链路] --- //
 
+// detailCacheKey 构造知文详情页的缓存键，并返回当前版本号。
+//
+// 功能：缓存键格式为 "knowpost:detail:{id}:v{detailLayoutVer}:ver{postVersion}"。
+//   - detailLayoutVer 是全局布局版本号，用于整体爆破缓存。
+//   - postVersion 是每个知文独立的版本号，每次写操作递增。
+//     当多实例部署时，某实例执行写操作会 INCR 该版本号，
+//     其他实例 L1 中的旧版本键自然失效（键不匹配）。
+//
+// 参数：
+//   - ctx: context.Context，用于 Redis 操作。
+//   - id: uint64，知文 ID。
+//
+// 返回值：
+//   - string: 缓存键字符串。
+//   - int64: 当前版本号（读取时使用）。
+func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) (string, int64) {
+	version, err := s.redis.Get(ctx, fmt.Sprintf("knowpost:ver:%d", id)).Int64()
+	if err != nil {
+		version = detailLayoutVer
+	}
+	return fmt.Sprintf("knowpost:detail:%d:v%d:ver%d", id, detailLayoutVer, version), version
+}
+
 // GetDetail 返回知文详情，并补充当前用户维度的点赞/收藏状态。
 //
 // 功能：通过三级缓存 + Redis 看门狗分布式锁机制获取知文详情。
@@ -63,7 +86,7 @@ const (
 //   - error: 错误对象。可能的值包括 errcode.ErrNotFound（内容不存在/已删除）、
 //     errcode.ErrForbidden（无权限查看）。
 func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
-	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
+	pageKey, _ := s.detailCacheKey(ctx, id)
 
 	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {
 		if s.hotKey != nil {

@@ -266,48 +266,50 @@ func TestNewAggregationConsumer_DefaultConfig(t *testing.T) {
 	_ = NewAggregationConsumer(nil, svc, nil, nil)
 }
 
-func TestAcceptMessage_ValidEvent(t *testing.T) {
-	svc := &CounterService{}
-	commit := &stubCommitFn{}
+// ============================================================================
+// handleMessage tests (replaces acceptMessage)
+// ============================================================================
+
+func TestHandleMessage_ValidEvent(t *testing.T) {
 	consumer := &AggregationConsumer{
-		service:          svc,
-		commitFn:         commit.commit,
-		batchSize:        10,
-		batches:          make(map[int]*counterBatch),
+		batchSize: 10,
+		batches:   make(map[int]*counterBatch),
 	}
 
 	evt := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
 	msg := makeCounterEventMessage(t, 0, 1, evt)
 
-	if err := consumer.acceptMessage(context.Background(), consumer.batches, msg); err != nil {
-		t.Fatalf("acceptMessage: %v", err)
+	batch := consumer.handleMessage(context.Background(), msg)
+	if batch != nil {
+		t.Fatal("expected nil batch (not full yet)")
 	}
 
-	batch := consumer.batches[0]
+	batch = consumer.batches[0]
 	if batch == nil || batch.size() != 1 {
 		t.Fatalf("expected batch with 1 event, got %v", batch)
 	}
 }
 
-func TestAcceptMessage_MalformedEvent(t *testing.T) {
+func TestHandleMessage_MalformedEvent(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
 	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
-		service:          svc,
-		commitFn:         commit.commit,
-		batchSize:        10,
-		groupID:          "test-group",
-		topic:            "test-topic",
-		batches:          make(map[int]*counterBatch),
-		logger:           nil,
+		service:   svc,
+		commitFn:  commit.commit,
+		batchSize: 10,
+		groupID:   "test-group",
+		topic:     "test-topic",
+		batches:   make(map[int]*counterBatch),
+		logger:    nil,
 	}
 
 	msg := makeMalformedMessage(0, 1)
-	if err := consumer.acceptMessage(context.Background(), consumer.batches, msg); err != nil {
-		t.Fatalf("acceptMessage should not return error for malformed: %v", err)
+	batch := consumer.handleMessage(context.Background(), msg)
+	if batch != nil {
+		t.Fatal("handleMessage should return nil for malformed with no existing batch")
 	}
 
 	if commit.called.Load() != 1 {
@@ -315,7 +317,7 @@ func TestAcceptMessage_MalformedEvent(t *testing.T) {
 	}
 }
 
-func TestAcceptMessage_TriggersFlushOnBatchFull(t *testing.T) {
+func TestHandleMessage_TriggersFlushOnBatchFull(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
@@ -335,18 +337,23 @@ func TestAcceptMessage_TriggersFlushOnBatchFull(t *testing.T) {
 	evt1 := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
 	evt2 := CounterEvent{EntityType: "post", EntityID: "2", Index: IdxLike, Delta: 1}
 
-	_ = consumer.acceptMessage(context.Background(), consumer.batches, makeCounterEventMessage(t, 0, 1, evt1))
-	_ = consumer.acceptMessage(context.Background(), consumer.batches, makeCounterEventMessage(t, 0, 2, evt2))
-
-	if commit.called.Load() == 0 {
-		t.Fatal("expected commit to be called on batch full")
+	batch1 := consumer.handleMessage(context.Background(), makeCounterEventMessage(t, 0, 1, evt1))
+	if batch1 != nil {
+		t.Fatal("expected nil for first message")
 	}
+
+	batch2 := consumer.handleMessage(context.Background(), makeCounterEventMessage(t, 0, 2, evt2))
+	if batch2 == nil {
+		t.Fatal("expected non-nil batch on batch full")
+	}
+
+	// The batch should have been removed from map
 	if consumer.batches[0] != nil {
-		t.Fatal("expected batch to be flushed")
+		t.Fatal("expected batch to be removed from map")
 	}
 }
 
-func TestAcceptMessage_FlushOnPartitionChange(t *testing.T) {
+func TestHandleMessage_FlushOnPartitionChange(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
@@ -367,30 +374,31 @@ func TestAcceptMessage_FlushOnPartitionChange(t *testing.T) {
 	evt1 := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
 	evt2 := CounterEvent{EntityType: "post", EntityID: "2", Index: IdxLike, Delta: 1}
 
-	_ = consumer.acceptMessage(context.Background(), consumer.batches, makeCounterEventMessage(t, 0, 1, evt1))
-	// First message creates partition 0 batch — confirm it's there
+	_ = consumer.handleMessage(context.Background(), makeCounterEventMessage(t, 0, 1, evt1))
 	if _, ok := consumer.batches[0]; !ok {
 		t.Fatal("expected partition 0 batch after first message")
 	}
 
-	// Calling acceptMessage with same partition should NOT flush
-	_ = consumer.acceptMessage(context.Background(), consumer.batches, makeCounterEventMessage(t, 0, 2, evt1))
-	// Still only one batch (partition 0)
+	_ = consumer.handleMessage(context.Background(), makeCounterEventMessage(t, 0, 2, evt1))
 	if _, ok := consumer.batches[1]; ok {
 		t.Fatal("unexpected partition 1 batch")
 	}
 
-	// Second message with partition 1 — this triggers flush of partition 0
-	err := consumer.acceptMessage(context.Background(), consumer.batches, makeCounterEventMessage(t, 1, 3, evt2))
-	if err != nil {
-		t.Fatalf("acceptMessage: %v", err)
+	// Second message with partition 1 — creates new batch, does NOT flush 0 batch
+	// (cross-partition messages don't trigger flush in current design)
+	batch := consumer.handleMessage(context.Background(), makeCounterEventMessage(t, 1, 3, evt2))
+	if batch != nil {
+		t.Fatal("expected nil batch when adding to new partition")
 	}
-	if commit.called.Load() == 0 {
-		t.Log("note: commit not called (may be expected if no flush needed)")
+	if _, ok := consumer.batches[0]; !ok {
+		t.Fatal("expected partition 0 batch to remain after partition 1 message")
+	}
+	if _, ok := consumer.batches[1]; !ok {
+		t.Fatal("expected partition 1 batch to be created")
 	}
 }
 
-func TestAcceptMessage_FlushOnMalformedWithExistingBatch(t *testing.T) {
+func TestHandleMessage_FlushOnMalformedWithExistingBatch(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
@@ -408,113 +416,85 @@ func TestAcceptMessage_FlushOnMalformedWithExistingBatch(t *testing.T) {
 	}
 
 	evt := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
-	_ = consumer.acceptMessage(context.Background(), consumer.batches, makeCounterEventMessage(t, 0, 1, evt))
-	_ = consumer.acceptMessage(context.Background(), consumer.batches, makeMalformedMessage(0, 2))
+	_ = consumer.handleMessage(context.Background(), makeCounterEventMessage(t, 0, 1, evt))
 
-	if commit.called.Load() == 0 {
-		t.Fatal("expected commit on malformed with existing batch")
+	// Malformed on same partition should return existing batch
+	batch := consumer.handleMessage(context.Background(), makeMalformedMessage(0, 2))
+	if batch == nil {
+		t.Fatal("expected non-nil batch on malformed with existing batch")
 	}
 }
 
 // ============================================================================
-// flushPartitionBatch tests
+// takeExpiredBatch tests (replaces flushExpiredBatches)
 // ============================================================================
 
-func TestFlushPartitionBatch_EmptyBatch(t *testing.T) {
-	consumer := &AggregationConsumer{}
-	batches := map[int]*counterBatch{0: nil}
-	consumer.flushPartitionBatch(context.Background(), batches, 0)
-	if _, exists := batches[0]; exists {
-		t.Fatal("expected nil batch to be removed")
-	}
-}
-
-func TestFlushPartitionBatch_FlushesAndCleans(t *testing.T) {
-	rdb, shutdown := startTestRedis(t)
-	defer shutdown()
-
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
-	commit := &stubCommitFn{}
+func TestTakeExpiredBatch_NoBatches(t *testing.T) {
 	consumer := &AggregationConsumer{
-		service:          svc,
-		commitFn:         commit.commit,
-		flushMaxAttempts: 1,
-		flushRetryDelay:  time.Millisecond,
-		groupID:          "test-group",
-		topic:            "test-topic",
-		batches:          make(map[int]*counterBatch),
+		batches: make(map[int]*counterBatch),
 	}
-
-	batch := newCounterBatch(10)
-	_ = batch.addEvent(makeCounterEventMessage(t, 0, 1, CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}), CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1})
-	batches := map[int]*counterBatch{0: batch}
-
-	consumer.flushPartitionBatch(context.Background(), batches, 0)
-	if _, exists := batches[0]; exists {
-		t.Fatal("expected batch to be removed after flush")
+	batch := consumer.takeExpiredBatch(context.Background())
+	if batch != nil {
+		t.Fatal("expected nil for no batches")
 	}
 }
 
-// ============================================================================
-// flushExpiredBatches tests
-// ============================================================================
-
-func TestFlushExpiredBatches_NoBatches(t *testing.T) {
-	consumer := &AggregationConsumer{}
-	if consumer.flushExpiredBatches(context.Background(), make(map[int]*counterBatch), time.Now()) {
-		t.Fatal("expected false for no batches")
+func TestTakeExpiredBatch_NoneExpired(t *testing.T) {
+	consumer := &AggregationConsumer{
+		flushInterval: time.Minute,
+		batches:       make(map[int]*counterBatch),
 	}
-}
-
-func TestFlushExpiredBatches_NoneExpired(t *testing.T) {
-	consumer := &AggregationConsumer{}
 	batch := newCounterBatch(10)
 	batch.openedAt = time.Now()
-	batches := map[int]*counterBatch{0: batch}
-
-	if consumer.flushExpiredBatches(context.Background(), batches, time.Now()) {
-		t.Fatal("expected false before interval expired")
-	}
-}
-
-func TestFlushExpiredBatches_Expired(t *testing.T) {
-	rdb, shutdown := startTestRedis(t)
-	defer shutdown()
-
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
-	commit := &stubCommitFn{}
-	consumer := &AggregationConsumer{
-		service:          svc,
-		commitFn:         commit.commit,
-		flushMaxAttempts: 1,
-		flushRetryDelay:  time.Millisecond,
-		groupID:          "test-group",
-		topic:            "test-topic",
-		batches:          make(map[int]*counterBatch),
-	}
-
-	batch := newCounterBatch(10)
-	batch.openedAt = time.Now().Add(-10 * time.Second)
+	// Add event so size() > 0
 	_ = batch.addEvent(makeCounterEventMessage(t, 0, 1, CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}), CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1})
-	batches := map[int]*counterBatch{0: batch}
+	consumer.batches[0] = batch
 
-	if !consumer.flushExpiredBatches(context.Background(), batches, time.Now()) {
-		t.Fatal("expected true for expired batch")
+	result := consumer.takeExpiredBatch(context.Background())
+	if result != nil {
+		t.Fatal("expected nil before interval expired")
 	}
-	if _, exists := batches[0]; exists {
-		t.Fatal("expected batch removed after expiration flush")
+	if consumer.batches[0] == nil {
+		t.Fatal("expected batch to remain in map")
 	}
 }
 
-func TestFlushExpiredBatches_ClearsEmptyBatches(t *testing.T) {
-	consumer := &AggregationConsumer{}
-	batches := map[int]*counterBatch{
-		0: newCounterBatch(10),
-		1: {partition: -1, messages: make([]kafka.Message, 0)},
+func TestTakeExpiredBatch_Expired(t *testing.T) {
+	consumer := &AggregationConsumer{
+		flushInterval: time.Minute,
+		batches:       make(map[int]*counterBatch),
 	}
-	consumer.flushExpiredBatches(context.Background(), batches, time.Now())
-	if _, exists := batches[1]; exists {
-		t.Fatal("expected empty batch to be cleaned")
+	batch := newCounterBatch(10)
+	batch.openedAt = time.Now().Add(-2 * time.Minute)
+	consumer.batches[0] = batch
+
+	result := consumer.takeExpiredBatch(context.Background())
+	// Empty batch (size()==0) gets cleaned, not returned
+	if result != nil {
+		t.Fatal("expected nil for expired empty batch (cleaned)")
+	}
+	if consumer.batches[0] != nil {
+		t.Fatal("expected batch removed from map after expiration")
+	}
+}
+
+func TestTakeExpiredBatch_ClearsEmptyBatches(t *testing.T) {
+	consumer := &AggregationConsumer{
+		flushInterval: time.Minute,
+		batches:       make(map[int]*counterBatch),
+	}
+	consumer.batches[0] = newCounterBatch(10) // empty
+	consumer.batches[1] = &counterBatch{partition: -1, messages: make([]kafka.Message, 0)} // empty
+
+	batch := consumer.takeExpiredBatch(context.Background())
+	if batch != nil {
+		t.Fatal("expected nil for empty batches")
+	}
+	if _, exists := consumer.batches[0]; exists {
+		t.Fatal("expected empty batch 0 to be cleaned")
+	}
+	if _, exists := consumer.batches[1]; exists {
+		t.Fatal("expected empty batch 1 to be cleaned")
 	}
 }
 
@@ -558,11 +538,11 @@ func TestSkipMalformedMessage(t *testing.T) {
 	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
-		service:          svc,
-		commitFn:         commit.commit,
-		groupID:          "test-group",
-		topic:            "test-topic",
-		batches:          make(map[int]*counterBatch),
+		service:   svc,
+		commitFn:  commit.commit,
+		groupID:   "test-group",
+		topic:     "test-topic",
+		batches:   make(map[int]*counterBatch),
 	}
 
 	msg := makeMalformedMessage(1, 5)
@@ -583,7 +563,6 @@ func TestAggregationConsumer_NilMethods(t *testing.T) {
 	ctx := context.Background()
 	c.Start(ctx)
 	c.flushAndReset(ctx, nil)
-	c.flushPartitionBatch(ctx, nil, 0)
 	c.flushBatch(ctx, nil)
 
 	if c.maxFlushAttempts() != defaultCounterFlushMaxAttempts {
@@ -633,4 +612,43 @@ func TestFlushAndReset_EmptyBatch(t *testing.T) {
 func TestFlushAndReset_NilBatch(t *testing.T) {
 	var consumer *AggregationConsumer
 	consumer.flushAndReset(context.Background(), nil)
+}
+
+// ============================================================================
+// addToBatch tests
+// ============================================================================
+
+func TestAddToBatch_NewBatch(t *testing.T) {
+	consumer := &AggregationConsumer{
+		batchSize: 10,
+		batches:   make(map[int]*counterBatch),
+	}
+
+	evt := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
+	msg := makeCounterEventMessage(t, 0, 1, evt)
+
+	consumer.addToBatch(msg, evt)
+
+	batch := consumer.batches[0]
+	if batch == nil || batch.size() != 1 {
+		t.Fatalf("expected batch with 1 event, got %v", batch)
+	}
+}
+
+func TestAddToBatch_ExistingBatch(t *testing.T) {
+	consumer := &AggregationConsumer{
+		batchSize: 10,
+		batches:   make(map[int]*counterBatch),
+	}
+
+	evt1 := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
+	evt2 := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
+
+	consumer.addToBatch(makeCounterEventMessage(t, 0, 1, evt1), evt1)
+	consumer.addToBatch(makeCounterEventMessage(t, 0, 2, evt2), evt2)
+
+	batch := consumer.batches[0]
+	if batch == nil || batch.size() != 2 {
+		t.Fatalf("expected batch with 2 events, got %d", batch.size())
+	}
 }

@@ -85,7 +85,7 @@ func TestGetDetail_CacheMiss_NilRepo(t *testing.T) {
 func TestGetDetail_L2Hit(t *testing.T) {
 	srv := miniredis.RunT(t)
 	cached := `{"id":"1","title":"来自缓存","author_id":"42","author_nickname":"n","like_count":7,"favorite_count":3}`
-	srv.Set("knowpost:detail:1:v1", cached)
+	srv.Set("knowpost:detail:1:v1:ver1", cached)
 	svc := newTestDetailService(t, srv)
 
 	resp, err := svc.GetDetail(context.Background(), 1, nil)
@@ -102,7 +102,7 @@ func TestGetDetail_L2Hit(t *testing.T) {
 		t.Errorf("FavoriteCount = %d, want 3", resp.FavoriteCount)
 	}
 	// L1 should be populated after L2 hit
-	_, l1Err := svc.l1Cache.Get([]byte("knowpost:detail:1:v1"))
+	_, l1Err := svc.l1Cache.Get([]byte("knowpost:detail:1:v1:ver1"))
 	if l1Err != nil {
 		t.Error("L1 should be populated after L2 hit")
 	}
@@ -110,7 +110,7 @@ func TestGetDetail_L2Hit(t *testing.T) {
 
 func TestGetDetail_L2NULLHit(t *testing.T) {
 	srv := miniredis.RunT(t)
-	srv.Set("knowpost:detail:1:v1", "NULL")
+	srv.Set("knowpost:detail:1:v1:ver1", "NULL")
 	svc := newTestDetailService(t, srv)
 
 	_, err := svc.GetDetail(context.Background(), 1, nil)
@@ -121,7 +121,7 @@ func TestGetDetail_L2NULLHit(t *testing.T) {
 
 func TestGetDetail_L2Cache_InvalidJSON(t *testing.T) {
 	srv := miniredis.RunT(t)
-	srv.Set("knowpost:detail:1:v1", "{invalid}")
+	srv.Set("knowpost:detail:1:v1:ver1", "{invalid}")
 	svc := newTestDetailService(t, srv)
 
 	// should fall through to DB which is nil repo -> ErrNotFound
@@ -139,7 +139,7 @@ func TestGetDetail_L1Hit(t *testing.T) {
 	srv := miniredis.RunT(t)
 	cached := `{"id":"1","title":"来自L1","author_id":"42","author_nickname":"n","like_count":3,"favorite_count":1}`
 	svc := newTestDetailService(t, srv)
-	svc.l1Cache.Set([]byte("knowpost:detail:1:v1"), []byte(cached), 60)
+	svc.l1Cache.Set([]byte("knowpost:detail:1:v1:ver1"), []byte(cached), 60)
 
 	resp, err := svc.GetDetail(context.Background(), 1, nil)
 	if err != nil {
@@ -153,9 +153,9 @@ func TestGetDetail_L1Hit(t *testing.T) {
 func TestGetDetail_L1InvalidJSON(t *testing.T) {
 	srv := miniredis.RunT(t)
 	svc := newTestDetailService(t, srv)
-	svc.l1Cache.Set([]byte("knowpost:detail:1:v1"), []byte("{invalid}"), 60)
+	svc.l1Cache.Set([]byte("knowpost:detail:1:v1:ver1"), []byte("{invalid}"), 60)
 	// set valid L2 cache
-	srv.Set("knowpost:detail:1:v1", `{"id":"1","title":"来自L2","author_id":"42","author_nickname":"n"}`)
+	srv.Set("knowpost:detail:1:v1:ver1", `{"id":"1","title":"来自L2","author_id":"42","author_nickname":"n"}`)
 
 	resp, err := svc.GetDetail(context.Background(), 1, nil)
 	if err != nil {
@@ -173,7 +173,7 @@ func TestGetDetail_L1InvalidJSON(t *testing.T) {
 func TestGetDetail_CacheMiss_WritesNULL(t *testing.T) {
 	srv := miniredis.RunT(t)
 	// Pre-set the lock key so getDetailUnderLock can acquire it
-	lockKey := "lock:knowpost:detail:1:v1"
+	lockKey := "lock:knowpost:detail:1:v1:ver1"
 	srv.Set(lockKey, "fake")
 	srv.Del(lockKey) // ensure lock is available
 	svc := newTestDetailService(t, srv)
@@ -183,7 +183,7 @@ func TestGetDetail_CacheMiss_WritesNULL(t *testing.T) {
 	// NULL 标记应写入缓存（通过 getDetailUnderLock 的 missHandler）
 	// But since repo is nil, queryDetailFromDB returns ErrNotFound
 	// and the missHandler writes NULL to cache.
-	val, err := srv.Get("knowpost:detail:1:v1")
+	val, err := srv.Get("knowpost:detail:1:v1:ver1")
 	if err != nil {
 		t.Fatalf("cache should exist: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestGetDetail_CacheMiss_WritesNULL(t *testing.T) {
 func TestGetDetail_AnonymousViaL2(t *testing.T) {
 	srv := miniredis.RunT(t)
 	cached := `{"id":"1","title":"t","author_id":"42","author_nickname":"n"}`
-	srv.Set("knowpost:detail:1:v1", cached)
+	srv.Set("knowpost:detail:1:v1:ver1", cached)
 	svc := newTestDetailService(t, srv)
 
 	resp, err := svc.GetDetail(context.Background(), 1, nil)
@@ -222,7 +222,7 @@ func TestKnowPostDetailCacheContent(t *testing.T) {
 	srv := miniredis.RunT(t)
 	// 预先写入 L2 作为模拟 DB 回源后的缓存
 	cached := `{"id":"1","title":"t","author_id":"42","author_nickname":"n","author_id":"1001"}`
-	srv.Set("knowpost:detail:1:v1", cached)
+	srv.Set("knowpost:detail:1:v1:ver1", cached)
 	svc := newTestDetailService(t, srv)
 
 	resp, err := svc.GetDetail(context.Background(), 1, nil)

@@ -91,10 +91,7 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 	entityID := "99"
 	cntKey := SdsKey(entityType, entityID)
 
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 5)
-	writeInt32BE(raw, IdxFav*FieldSize, 1)
-	if err := rdb.Set(ctx, cntKey, raw, 0).Err(); err != nil {
+	if err := rdb.HSet(ctx, cntKey, "like", 5, "fav", 1).Err(); err != nil {
 		t.Fatalf("seed sds: %v", err)
 	}
 
@@ -123,15 +120,13 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 		t.Fatalf("apply batch: %v", err)
 	}
 
-	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
-	if err != nil {
-		t.Fatalf("get sds after apply: %v", err)
+	likeVal, _ := rdb.HGet(ctx, cntKey, "like").Int64()
+	if likeVal != 7 {
+		t.Fatalf("unexpected like count after apply: got=%d want=7", likeVal)
 	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
-		t.Fatalf("unexpected like count after apply: got=%d want=7", got)
-	}
-	if got := readInt32BE(gotRaw, IdxFav*FieldSize); got != 0 {
-		t.Fatalf("unexpected fav count after apply: got=%d want=0", got)
+	favVal, _ := rdb.HGet(ctx, cntKey, "fav").Int64()
+	if favVal != 0 {
+		t.Fatalf("unexpected fav count after apply: got=%d want=0", favVal)
 	}
 
 	offset, err := rdb.Get(ctx, AppliedOffsetKey("counter-group", "counter-events", 3)).Int64()
@@ -178,12 +173,9 @@ func TestApplyBatchSkipsAlreadyAppliedPrefix(t *testing.T) {
 		t.Fatalf("apply batch with replayed prefix: %v", err)
 	}
 
-	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
-	if err != nil {
-		t.Fatalf("get sds after replayed prefix: %v", err)
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 2 {
-		t.Fatalf("unexpected like count after replayed prefix: got=%d want=2", got)
+	likeVal, _ := rdb.HGet(ctx, cntKey, "like").Int64()
+	if likeVal != 2 {
+		t.Fatalf("unexpected like count after replayed prefix: got=%d want=2", likeVal)
 	}
 
 	offset, err := rdb.Get(ctx, offsetKey).Int64()
@@ -213,9 +205,8 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 		t.Fatalf("like second user: %v", err)
 	}
 
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 9)
-	if err := rdb.Set(ctx, SdsKey(entityType, entityID), raw, 0).Err(); err != nil {
+	// Seed wrong SDS value
+	if err := rdb.HSet(ctx, SdsKey(entityType, entityID), "like", 9).Err(); err != nil {
 		t.Fatalf("seed wrong sds: %v", err)
 	}
 	if err := svc.markDirty(ctx, entityType, entityID); err != nil {
@@ -227,12 +218,9 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 		t.Fatalf("repair dirty member: %v", err)
 	}
 
-	gotRaw, err := rdb.Get(ctx, SdsKey(entityType, entityID)).Bytes()
-	if err != nil {
-		t.Fatalf("get repaired sds: %v", err)
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 2 {
-		t.Fatalf("unexpected like count after repair: got=%d want=2", got)
+	likeVal, _ := rdb.HGet(ctx, SdsKey(entityType, entityID), "like").Int64()
+	if likeVal != 2 {
+		t.Fatalf("unexpected like count after repair: got=%d want=2", likeVal)
 	}
 
 	ok, err := rdb.SIsMember(ctx, DirtySetKey(), DirtyMember(entityType, entityID)).Result()
@@ -255,9 +243,7 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 	entityID := "108"
 	cntKey := SdsKey(entityType, entityID)
 
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 5)
-	if err := rdb.Set(ctx, cntKey, raw, 0).Err(); err != nil {
+	if err := rdb.HSet(ctx, cntKey, "like", 5).Err(); err != nil {
 		t.Fatalf("seed sds: %v", err)
 	}
 
@@ -299,12 +285,9 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 		t.Fatalf("expected batch to be reset after flush attempts")
 	}
 
-	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
-	if err != nil {
-		t.Fatalf("get sds after retries: %v", err)
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
-		t.Fatalf("unexpected like count after retries: got=%d want=7", got)
+	likeVal, _ := rdb.HGet(ctx, cntKey, "like").Int64()
+	if likeVal != 7 {
+		t.Fatalf("unexpected like count after retries: got=%d want=7", likeVal)
 	}
 
 	offset, err := rdb.Get(ctx, AppliedOffsetKey("counter-group", "counter-events", 1)).Int64()
@@ -330,9 +313,7 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 	entityID := "109"
 	cntKey := SdsKey(entityType, entityID)
 
-	raw := make([]byte, SchemaLen*FieldSize)
-	writeInt32BE(raw, IdxLike*FieldSize, 5)
-	if err := rdb.Set(ctx, cntKey, raw, 0).Err(); err != nil {
+	if err := rdb.HSet(ctx, cntKey, "like", 5).Err(); err != nil {
 		t.Fatalf("seed sds: %v", err)
 	}
 
@@ -369,12 +350,9 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 		t.Fatalf("unexpected commit attempts: got=%d want=3", commitCalls)
 	}
 
-	gotRaw, err := rdb.Get(ctx, cntKey).Bytes()
-	if err != nil {
-		t.Fatalf("get sds after failed retries: %v", err)
-	}
-	if got := readInt32BE(gotRaw, IdxLike*FieldSize); got != 7 {
-		t.Fatalf("unexpected like count after failed retries: got=%d want=7", got)
+	likeVal, _ := rdb.HGet(ctx, cntKey, "like").Int64()
+	if likeVal != 7 {
+		t.Fatalf("unexpected like count after failed retries: got=%d want=7", likeVal)
 	}
 
 	offset, err := rdb.Get(ctx, AppliedOffsetKey("counter-group", "counter-events", 4)).Int64()
@@ -453,6 +431,14 @@ func (r *stubCounterFailureRecorder) CreateBatch(ctx context.Context, messages [
 	for _, message := range messages {
 		r.records = append(r.records, cloneCounterFailedMessage(message))
 	}
+	return nil
+}
+
+func (r *stubCounterFailureRecorder) ListPending(ctx context.Context, limit, offset int) ([]*CounterFailedMessage, error) {
+	return nil, nil
+}
+
+func (r *stubCounterFailureRecorder) UpdateStatus(ctx context.Context, id uint64, status, errorMessage string) error {
 	return nil
 }
 

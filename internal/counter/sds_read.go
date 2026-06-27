@@ -1,16 +1,8 @@
-// Package counter  — SDS 二进制序列化和读操作。
-//
-// 本文件包含 SDS（Serial Data Structure）的编解码辅助函数和读操作：
-//   - readInt32BE / writeInt32BE：大端序 int32 编解码
-//   - GetCounts / IsLiked / IsFaved / GetCountsBatch：基础读操作
-//
-// 重建逻辑已拆分到 sds_rebuild.go。
 package counter
 
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
@@ -35,32 +27,77 @@ func (s *CounterService) emptyCounts(metrics []string) map[string]int32 {
 	return m
 }
 
-// GetCounts 读取指定实体的 SDS 计数值。
+// GetCounts 读取指定实体的 SDS 计数值（Hash 版本）。
 func (s *CounterService) GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error) {
 	sdsKey := SdsKey(entityType, entityID)
 
-	sdsRaw, err := s.redis.Get(ctx, sdsKey).Bytes()
-	if errors.Is(err, redis.Nil) || len(sdsRaw) != SchemaLen*FieldSize {
-		sdsRaw, err = s.rebuildSds(ctx, entityType, entityID)
+	if len(metrics) == 0 {
+		return make(map[string]int32), nil
+	}
+
+	vals, err := s.redis.HMGet(ctx, sdsKey, metrics...).Result()
+	if err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("redis hmget: %w", err)
+	}
+
+	// Check if key exists as Hash; if any value is non-nil, the key is valid
+	allNil := true
+	if err == nil {
+		for _, v := range vals {
+			if v != nil {
+				allNil = false
+				break
+			}
+		}
+	}
+
+	// Key doesn't exist or is completely empty → trigger rebuild
+	if err != nil || allNil {
+		if _, rebuildErr := s.rebuildSds(ctx, entityType, entityID); rebuildErr != nil {
+			return s.emptyCounts(metrics), nil
+		}
+		vals, err = s.redis.HMGet(ctx, sdsKey, metrics...).Result()
 		if err != nil {
 			return s.emptyCounts(metrics), nil
 		}
-		if len(sdsRaw) != SchemaLen*FieldSize {
-			return s.emptyCounts(metrics), nil
-		}
-	} else if err != nil {
-		return nil, fmt.Errorf("redis get: %w", err)
 	}
 
-	result := make(map[string]int32, len(metrics))
-	for _, m := range metrics {
-		idx, ok := nameToIdx[m]
-		if !ok {
-			continue
-		}
-		result[m] = readInt32BE(sdsRaw, idx*FieldSize)
-	}
+	result := s.parseHashValues(metrics, vals)
 	return result, nil
+}
+
+func (s *CounterService) parseHashValues(metrics []string, vals []any) map[string]int32 {
+	result := make(map[string]int32, len(metrics))
+	for i, m := range metrics {
+		if vals[i] == nil {
+			result[m] = 0
+		} else {
+			v, ok := vals[i].(string)
+			if !ok {
+				result[m] = 0
+			} else {
+				n, convErr := parseInt32(v)
+				if convErr != nil {
+					result[m] = 0
+				} else {
+					result[m] = n
+				}
+			}
+		}
+	}
+	return result
+}
+
+// parseInt32 将 Redis 返回的字符串解析为 int32。
+func parseInt32(s string) (int32, error) {
+	var n int32
+	for _, c := range []byte(s) {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("invalid number: %s", s)
+		}
+		n = n*10 + int32(c-'0')
+	}
+	return n, nil
 }
 
 // IsLiked 判断指定用户是否已给该实体点赞。
@@ -87,44 +124,52 @@ func (s *CounterService) IsFaved(ctx context.Context, userID uint64, entityType,
 	return val == 1, nil
 }
 
-// GetCountsBatch 使用 Redis Pipeline 批量获取多个实体的 SDS 计数。
+// GetCountsBatch 使用 Redis Pipeline 批量获取多个实体的 Hash 计数。
 func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, entityIDs, metrics []string) (map[string]map[string]int32, error) {
 	if len(entityIDs) == 0 {
 		return nil, nil
 	}
 
-	keys := make([]string, len(entityIDs))
-	keyToEID := make(map[string]string, len(entityIDs))
+	pipe := s.redis.Pipeline()
+	type slot struct {
+		key string
+		eid string
+		cmd *redis.SliceCmd
+	}
+	cmds := make([]slot, len(entityIDs))
 	for i, eid := range entityIDs {
 		k := SdsKey(entityType, eid)
-		keys[i] = k
-		keyToEID[k] = eid
-	}
-
-	pipe := s.redis.Pipeline()
-	cmds := make([]*redis.StringCmd, len(keys))
-	for i, k := range keys {
-		cmds[i] = pipe.Get(ctx, k)
+		cmds[i] = slot{key: k, eid: eid, cmd: pipe.HMGet(ctx, k, metrics...)}
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, fmt.Errorf("pipeline exec: %w", err)
 	}
 
 	result := make(map[string]map[string]int32, len(entityIDs))
-	for i, cmd := range cmds {
-		sdsRaw, err := cmd.Bytes()
-		if err != nil || len(sdsRaw) != SchemaLen*FieldSize {
+	for _, sl := range cmds {
+		vals, err := sl.cmd.Result()
+		if err != nil || len(vals) != len(metrics) {
 			continue
 		}
 		counts := make(map[string]int32, len(metrics))
-		for _, m := range metrics {
-			idx, ok := nameToIdx[m]
-			if !ok {
-				continue
+		for i, m := range metrics {
+			if vals[i] == nil {
+				counts[m] = 0
+			} else {
+				v, ok := vals[i].(string)
+				if !ok {
+					counts[m] = 0
+				} else {
+					n, convErr := parseInt32(v)
+					if convErr != nil {
+						counts[m] = 0
+					} else {
+						counts[m] = n
+					}
+				}
 			}
-			counts[m] = readInt32BE(sdsRaw, idx*FieldSize)
 		}
-		result[keyToEID[keys[i]]] = counts
+		result[sl.eid] = counts
 	}
 	return result, nil
 }

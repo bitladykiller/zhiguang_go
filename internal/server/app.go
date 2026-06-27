@@ -120,6 +120,13 @@ func (a *App) Run() error {
 	return a.run(ctx)
 }
 
+const (
+	shutdownTimeoutHTTP    = 5 * time.Second
+	shutdownTimeoutRunners = 8 * time.Second
+	shutdownTimeoutCleanup = 2 * time.Second
+	shutdownTotalBuffer    = 500 * time.Millisecond
+)
+
 // run 在给定的生命周期上下文中启动 HTTP 服务和后台任务。
 //
 // 该函数拆出来是为了让单元测试可以直接传入可控 context，而不依赖真实操作系统信号。
@@ -141,6 +148,14 @@ func (a *App) run(parent context.Context) error {
 		runnerWG.Add(1)
 		go func(r BackgroundRunner) {
 			defer runnerWG.Done()
+			defer func() {
+				if rec := recover(); rec != nil {
+					a.logger.Error("background runner panicked",
+						zap.Any("panic", rec),
+						zap.Stack("stack"),
+					)
+				}
+			}()
 			r.Start(rootCtx)
 		}(runner)
 	}
@@ -174,11 +189,11 @@ func (a *App) run(parent context.Context) error {
 
 	cancel()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), appShutdownTimeout)
-	defer shutdownCancel()
-
-	shutdownErr := httpServer.Shutdown(shutdownCtx)
-	if shutdownErr != nil && !errors.Is(shutdownErr, http.ErrServerClosed) && !errors.Is(shutdownErr, context.Canceled) {
+	// Phase 1: Stop accepting new HTTP requests (graceful shutdown)
+	shutdownHTTPCtx, shutdownHTTPCancel := context.WithTimeout(context.Background(), shutdownTimeoutHTTP)
+	shutdownErr := httpServer.Shutdown(shutdownHTTPCtx)
+	shutdownHTTPCancel()
+	if shutdownErr != nil && !errors.Is(shutdownErr, http.ErrServerClosed) {
 		a.logger.Warn("http server shutdown failed", zap.Error(shutdownErr))
 	}
 
@@ -186,22 +201,18 @@ func (a *App) run(parent context.Context) error {
 		listenErr = <-serverErrCh
 	}
 
-	a.waitBackgroundRunners(shutdownCtx, &runnerWG)
-	cleanupErr := a.runCleanup(shutdownCtx)
+	// Phase 2: Wait for background runners to finish processing backlog
+	runnersCtx, runnersCancel := context.WithTimeout(context.Background(), shutdownTimeoutRunners)
+	a.waitBackgroundRunners(runnersCtx, &runnerWG)
+	runnersCancel()
 
-	if listenErr != nil && cleanupErr != nil {
-		return errors.Join(listenErr, cleanupErr)
-	}
-	if listenErr != nil {
-		return listenErr
-	}
-	if cleanupErr != nil {
-		return cleanupErr
-	}
-	return nil
+	// Phase 3: Run cleanup functions
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), shutdownTimeoutCleanup)
+	cleanupErr := a.runCleanup(cleanupCtx)
+	cleanupCancel()
+
+	return a.aggregateErrors(listenErr, cleanupErr)
 }
-
-const appShutdownTimeout = 15 * time.Second
 
 func (a *App) waitBackgroundRunners(ctx context.Context, wg *sync.WaitGroup) {
 	done := make(chan struct{})
@@ -209,7 +220,6 @@ func (a *App) waitBackgroundRunners(ctx context.Context, wg *sync.WaitGroup) {
 		defer close(done)
 		wg.Wait()
 	}()
-
 	select {
 	case <-done:
 	case <-ctx.Done():
@@ -228,4 +238,15 @@ func (a *App) runCleanup(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (a *App) aggregateErrors(listenErr error, cleanupErr error) error {
+	var combined []error
+	if listenErr != nil {
+		combined = append(combined, listenErr)
+	}
+	if cleanupErr != nil {
+		combined = append(combined, cleanupErr)
+	}
+	return errors.Join(combined...)
 }

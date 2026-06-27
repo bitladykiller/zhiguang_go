@@ -550,14 +550,15 @@ func (s *KnowPostFeedService) InvalidateAfterPostMutation(ctx context.Context, p
 	if s.redis == nil || s.logger == nil {
 		return
 	}
-	if err := s.redis.Del(ctx, "feed:item:"+strconv.FormatUint(postID, 10)).Err(); err != nil {
-		s.logger.Warn("failed to invalidate feed item cache", zap.Uint64("postID", postID), zap.Error(err))
-	}
-	if err := s.redis.Incr(ctx, publicFeedVersionKey).Err(); err != nil {
-		s.logger.Warn("failed to increment public feed version", zap.Error(err))
-	}
-	if err := s.redis.Incr(ctx, fmt.Sprintf(mineFeedVersionKey, creatorID)).Err(); err != nil {
-		s.logger.Warn("failed to increment mine feed version", zap.Uint64("creatorID", creatorID), zap.Error(err))
+	itemKey := "feed:item:" + strconv.FormatUint(postID, 10)
+	mineKey := fmt.Sprintf(mineFeedVersionKey, creatorID)
+
+	if err := invalidateFeedScript.Run(ctx, s.redis, []string{itemKey, publicFeedVersionKey, mineKey}).Err(); err != nil {
+		s.logger.Warn("failed to invalidate feed caches",
+			zap.Uint64("postID", postID),
+			zap.Uint64("creatorID", creatorID),
+			zap.Error(err),
+		)
 	}
 }
 
@@ -800,6 +801,18 @@ func boolToStr(b bool) string {
 	}
 	return "0"
 }
+
+var invalidateFeedScript = redis.NewScript(`
+local itemKey = KEYS[1]
+local publicVerKey = KEYS[2]
+local mineVerKey = KEYS[3]
+
+redis.call('DEL', itemKey)
+redis.call('INCR', publicVerKey)
+redis.call('INCR', mineVerKey)
+
+return 1
+`)
 
 // currentPublicFeedVersion 返回公共 Feed 的当前版本号。
 //

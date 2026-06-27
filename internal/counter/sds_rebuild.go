@@ -29,7 +29,7 @@ import (
 //  4. 遍历所有指标，对每个指标调用 bitCountShards 汇总所有位图片段的 BITCOUNT 值。
 //  5. 将汇总结果写入 SDS 字节数组并写回 Redis。
 //  6. 释放锁并重置退避状态。
-func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID string) ([]byte, error) {
+func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID string) (map[string]int32, error) {
 	sdsKey := SdsKey(entityType, entityID)
 
 	if s.inBackoff(ctx, entityType, entityID) {
@@ -50,25 +50,36 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 	defer lock.Release()
 
 	// double-check：可能在当前请求等待锁期间，前一个实例已经完成了重建。
-	sdsRaw, err := s.redis.Get(ctx, sdsKey).Bytes()
-	if err == nil && len(sdsRaw) == SchemaLen*FieldSize {
+	snapshot, err := s.redis.HGetAll(ctx, sdsKey).Result()
+	if err == nil && len(snapshot) > 0 {
 		s.resetBackoff(ctx, entityType, entityID)
-		return sdsRaw, nil
+		counts := make(map[string]int32, len(snapshot))
+		for k, v := range snapshot {
+			n, convErr := parseInt32(v)
+			if convErr == nil {
+				counts[k] = n
+			}
+		}
+		return counts, nil
 	}
 
-	sdsRaw, err = s.buildSnapshotFromBitmap(ctx, entityType, entityID)
+	snapshotData, err := s.buildSnapshotFromBitmap(ctx, entityType, entityID)
 	if err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, fmt.Errorf("rebuild sds: build snapshot: %w", err)
 	}
 
-	if err := s.redis.Set(ctx, sdsKey, sdsRaw, 0).Err(); err != nil {
+	mapHSet := make(map[string]any, len(snapshotData))
+	for k, v := range snapshotData {
+		mapHSet[k] = v
+	}
+	if err := s.redis.HSet(ctx, sdsKey, mapHSet).Err(); err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
-		return nil, fmt.Errorf("rebuild sds: set: %w", err)
+		return nil, fmt.Errorf("rebuild sds: hset: %w", err)
 	}
 
 	s.resetBackoff(ctx, entityType, entityID)
-	return sdsRaw, nil
+	return snapshotData, nil
 }
 
 // bitCountShards 统计指定指标的所有位图片段的 SETBIT 总数量。
@@ -111,16 +122,16 @@ func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType,
 	return total, nil
 }
 
-// buildSnapshotFromBitmap 遍历所有指标，从位图构建完整 SDS 字节数组。
-func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType, entityID string) ([]byte, error) {
-	sdsRaw := make([]byte, SchemaLen*FieldSize)
+// buildSnapshotFromBitmap 遍历所有指标，从位图构建完整快照并写入 Redis Hash。
+func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType, entityID string) (map[string]int32, error) {
+	snapshot := make(map[string]int32)
 	for i := 0; i < SchemaLen; i++ {
 		metric := indexToName[i]
 		total, err := s.bitCountShards(ctx, metric, entityType, entityID)
 		if err != nil {
 			return nil, fmt.Errorf("build snapshot: bit count: %w", err)
 		}
-		writeInt32BE(sdsRaw, i*FieldSize, int32(total))
+		snapshot[metric] = int32(total)
 	}
-	return sdsRaw, nil
+	return snapshot, nil
 }

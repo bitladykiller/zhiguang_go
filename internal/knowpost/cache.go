@@ -10,15 +10,17 @@ import (
 
 // --- [缓存协调] ---
 
-// invalidateCache 删除知文详情页的 L1（freecache）和 L2（Redis）缓存。
+// invalidateCache 通过递增版本号使知文详情页的缓存全局失效。
 //
-// 功能：根据知文 ID 和当前布局版本号（detailLayoutVer）生成缓存键，
-// 然后同时删除 L1（进程级 freecache）和 L2（Redis）中的缓存数据。
+// 功能：递增 Redis 中该知文对应的版本计数器（knowpost:ver:{id}），
+// 使所有实例的 L1（freecache）和 L2（Redis）中旧版本缓存键自动失效。
+// 由于缓存键中包含版本号，旧版本的 L1 条目在其他实例上即使未被主动删除，
+// 也不会被后续读取命中（键不匹配）。
 //
-// 缓存键格式：`knowpost:detail:{id}:v{version}`
-//   其中 version = detailLayoutVer（当前为 1）。
-//   这个版本号用于在缓存结构不兼容时全局爆破全部详情缓存。
-//   例如从 v1 升级到 v2 时，所有旧版本的缓存自然失效。
+// 版本计数器设计：
+//   - 首次写入时，版本计数器从 0 递增到 1，与 detailLayoutVer 初始值一致。
+//   - 每次写操作 INCR 一次，生成全新的缓存键。
+//   - 读取时若版本计数器不存在（GET 返回 0），则以 detailLayoutVer 为默认值。
 //
 // 在写操作前后各调用一次（缓存双删策略，Cache-Aside Double Delete）：
 //   - 写入前删除：确保旧数据不会在写入过程中被读取到（最终一致性窗口最小化）。
@@ -30,9 +32,14 @@ import (
 //   - ctx: context.Context，用于传递请求上下文和控制超时。
 //   - id: uint64，知文 ID。
 func (s *KnowPostService) invalidateCache(ctx context.Context, id uint64) {
-	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
+	version, err := s.redis.Incr(ctx, fmt.Sprintf("knowpost:ver:%d", id)).Result()
+	if err != nil {
+		s.logger.Warn("failed to increment post cache version", zap.Uint64("id", id), zap.Error(err))
+		version = detailLayoutVer
+	}
+	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d:ver%d", id, detailLayoutVer, version)
 	if err := s.redis.Del(ctx, pageKey).Err(); err != nil {
-		s.logger.Warn("failed to delete L2 detail cache", zap.String("pageKey", pageKey), zap.Error(err))
+		s.logger.Warn("failed to delete L2 detail cache after version incr", zap.String("pageKey", pageKey), zap.Error(err))
 	}
 	s.l1Cache.Del([]byte(pageKey))
 }
@@ -68,7 +75,7 @@ func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorI
 // 更长的 TTL（比如从 60s 延长到 300s），并通过 EXPIRE GT 命令更新 Redis 中的 TTL。
 //
 // 会延长 TTL 的缓存包括：
-//   - 详情页缓存（knowpost:detail:{id}:v{version}）
+//   - 详情页缓存（knowpost:detail:{id}:v{detailLayoutVer}:ver{版本}）
 //   - Feed 条目碎片缓存（feed:item:{id}）
 //
 // 设计意图：

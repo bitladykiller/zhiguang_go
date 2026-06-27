@@ -126,3 +126,11 @@ func ParseDirtyMember(member string) (string, string, error) {
 	}
 	return parts[0], parts[1], nil
 }
+
+// RebuildMarkerKey 生成修复期间阻塞 flush 的标记键。
+//
+// 格式: "rebuilding:{entityType}:{entityID}"
+// flush 操作的 Lua 脚本会检查此键，若存在则跳过该实体的 HINCRBY。
+func RebuildMarkerKey(entityType, entityID string) string {
+	return fmt.Sprintf("rebuilding:%s:%s", entityType, entityID)
+}

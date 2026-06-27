@@ -3,6 +3,7 @@ package counter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -121,4 +122,54 @@ func (s *CounterService) nextMessageID() uint64 {
 		return 0
 	}
 	return s.messageIDGenerator.NextID()
+}
+
+// ReplayFailedMessages 补偿重放 pending 状态的失败消息。
+//
+// 流程：
+//  1. 查询 pending 状态的失败记录
+//  2. 对每条记录，从位图重建 SDS 快照并写回 Redis
+//  3. 根据重建结果更新记录状态为 "recovered" 或 "failed"
+//
+// 参数:
+//   - ctx: context.Context，上下文
+//   - limit: int，单次处理上限
+//
+// 返回值:
+//   - error: 查询失败时返回错误；单条重建失败不中断，只更新状态
+func (s *CounterService) ReplayFailedMessages(ctx context.Context, limit int) error {
+	if s == nil || s.failureRecorder == nil {
+		return nil
+	}
+
+	pending, err := s.failureRecorder.ListPending(ctx, limit, 0)
+	if err != nil {
+		return fmt.Errorf("list pending failures: %w", err)
+	}
+
+	for _, record := range pending {
+		if record == nil {
+			continue
+		}
+
+		snapshot, err := s.buildSnapshotFromBitmap(ctx, record.EntityType, record.EntityID)
+		if err != nil {
+			_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "failed", err.Error())
+			continue
+		}
+
+		sdsKey := SdsKey(record.EntityType, record.EntityID)
+		mapHSet := make(map[string]any, len(snapshot))
+		for k, v := range snapshot {
+			mapHSet[k] = v
+		}
+		if err := s.redis.HSet(ctx, sdsKey, mapHSet).Err(); err != nil {
+			_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "failed", err.Error())
+			continue
+		}
+
+		_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "recovered", "")
+	}
+
+	return nil
 }

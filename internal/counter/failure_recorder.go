@@ -35,6 +35,8 @@ type CounterFailedMessage struct {
 type CounterFailureRecorder interface {
 	Create(ctx context.Context, message *CounterFailedMessage) error
 	CreateBatch(ctx context.Context, messages []*CounterFailedMessage) error
+	ListPending(ctx context.Context, limit, offset int) ([]*CounterFailedMessage, error)
+	UpdateStatus(ctx context.Context, id uint64, status, errorMessage string) error
 }
 
 // CounterFailedMessageRepository 将 counter 失败消息写入 MySQL。
@@ -101,4 +103,53 @@ INSERT INTO counter_failed_messages (
 
 	committed = true
 	return tx.Commit()
+}
+
+// ListPending 查询指定数量的 pending 状态失败记录。
+//
+// 参数:
+//   - ctx: context.Context，上下文
+//   - limit: int，查询数量上限
+//   - offset: int，偏移量
+//
+// 返回值:
+//   - []*CounterFailedMessage: 失败记录列表
+//   - error: 查询失败时返回错误
+func (r *CounterFailedMessageRepository) ListPending(ctx context.Context, limit, offset int) ([]*CounterFailedMessage, error) {
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
+	var messages []*CounterFailedMessage
+	if err := r.db.SelectContext(ctx, &messages, `
+SELECT id, stage, topic, message_key, entity_type, entity_id, metric, delta, payload, error_message, retry_count, status, created_at, updated_at
+FROM counter_failed_messages
+WHERE status = 'pending'
+ORDER BY id ASC
+LIMIT ? OFFSET ?
+`, limit, offset); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+// UpdateStatus 更新失败记录的状态和错误信息。
+//
+// 参数:
+//   - ctx: context.Context，上下文
+//   - id: uint64，记录主键
+//   - status: string，新状态（"recovered" / "failed"）
+//   - errorMessage: string，错误信息，空字符串表示清空
+//
+// 返回值:
+//   - error: 更新失败时返回错误
+func (r *CounterFailedMessageRepository) UpdateStatus(ctx context.Context, id uint64, status, errorMessage string) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+UPDATE counter_failed_messages
+SET status = ?, error_message = ?, retry_count = retry_count + 1, updated_at = NOW()
+WHERE id = ?
+`, status, errorMessage, id)
+	return err
 }
