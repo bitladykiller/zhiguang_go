@@ -547,6 +547,9 @@ func (s *KnowPostFeedService) registerFeedPageKey(ctx context.Context, idsKey st
 //     所以是 O(1)。
 //   - s.redis.Incr 递增版本号，复杂度 O(1)。
 func (s *KnowPostFeedService) InvalidateAfterPostMutation(ctx context.Context, postID, creatorID uint64) {
+	if s.redis == nil || s.logger == nil {
+		return
+	}
 	if err := s.redis.Del(ctx, "feed:item:"+strconv.FormatUint(postID, 10)).Err(); err != nil {
 		s.logger.Warn("failed to invalidate feed item cache", zap.Uint64("postID", postID), zap.Error(err))
 	}
@@ -687,6 +690,9 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 //
 // TTL 延长使用 Lua 脚本保证只增不减，多实例并发安全。
 func (s *KnowPostFeedService) recordItemHotKey(ctx context.Context, itemID string) {
+	if s.hotKey == nil {
+		return
+	}
 	hotKeyID := "knowpost:" + itemID
 	s.hotKey.Record(hotKeyID)
 

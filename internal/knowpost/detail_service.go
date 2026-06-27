@@ -66,7 +66,9 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 	pageKey := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
 
 	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {
-		s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
+		if s.hotKey != nil {
+			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
+		}
 		resp, parseErr := s.parseDetail(val)
 		if parseErr == nil {
 			return s.enrichDetail(ctx, resp, currentUserID, true), nil
@@ -79,7 +81,9 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 			return nil, errcode.ErrNotFound.WithMsg("content not found")
 		}
 		s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
-		s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
+		if s.hotKey != nil {
+			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
+		}
 		resp, parseErr := s.parseDetail([]byte(cached))
 		if parseErr == nil {
 			return s.enrichDetail(ctx, resp, currentUserID, true), nil
@@ -167,6 +171,11 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			return nil, false, nil
 		},
 		func(ctx context.Context) (*KnowPostDetailResponse, error) {
+			if s.repo == nil {
+				ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
+				s.redis.Set(ctx, pageKey, "NULL", ttl)
+				return nil, errcode.ErrNotFound.WithMsg("content not found")
+			}
 			resp, err := s.queryDetailFromDB(ctx, id, currentUserID)
 			if err != nil {
 				if errors.Is(err, errcode.ErrNotFound) {
