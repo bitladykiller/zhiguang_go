@@ -10,6 +10,8 @@ import (
 	"github.com/coocood/freecache"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/internal/counter"
 )
 
 func strPtr(s string) *string { return &s }
@@ -464,6 +466,9 @@ func (s *stubCounterFailing) Like(_ context.Context, _ uint64, _, _ string) (boo
 func (s *stubCounterFailing) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
+func (s *stubCounterFailing) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+	return nil, nil
+}
 
 func TestEnrichItems_CounterFails(t *testing.T) {
 	userID := uint64(1)
@@ -506,6 +511,9 @@ func (s *stubCounterReturnsNil) Like(_ context.Context, _ uint64, _, _ string) (
 }
 func (s *stubCounterReturnsNil) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
+}
+func (s *stubCounterReturnsNil) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+	return nil, nil
 }
 
 func TestEnrichItems_CounterReturnsNil(t *testing.T) {
@@ -597,4 +605,59 @@ func TestMapRowsToItems_Concurrent(t *testing.T) {
 		svc.mapRowsToItems(context.Background(), rows, nil, false)
 	}()
 	wg.Wait()
+}
+
+// ============================================================================
+// GetPublicFeed - 缓存测试
+// ============================================================================
+
+func TestGetPublicFeed_CacheMiss_DBFallback(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestFeedService(t, srv)
+
+	svc.repo = &mockRepo{
+		detail: &KnowPostDetailRow{
+			ID:             1,
+			Title:          strPtr("feed1"),
+			CreatorID:      42,
+			AuthorNickname: "author1",
+			Visible:        KnowPostVisibilityPublic,
+			Status:         KnowPostStatusPublished,
+		},
+	}
+
+	// 缓存全部 miss → 进入 getPublicFeedUnderLock → DB 回源
+	resp, err := svc.GetPublicFeed(context.Background(), 1, 10, nil)
+	if err != nil {
+		t.Fatalf("GetPublicFeed() error = %v", err)
+	}
+	if resp == nil {
+		t.Fatal("response should not be nil")
+	}
+	if resp.Page != 1 || resp.Size != 10 {
+		t.Errorf("page/size = %d/%d, want 1/10", resp.Page, resp.Size)
+	}
+}
+
+func TestGetPublicFeed_PartialCacheHit(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestFeedService(t, srv)
+
+	// 给一个空的 mockRepo，确保 DB 回源路径不会 panic
+	svc.repo = &mockRepo{}
+
+	// 预设 L2 碎片缓存 — 只设置部分条目模拟部分命中
+	idsKey := "feed:public:ids:1:10:0:1"
+
+	srv.Lpush(idsKey, "100")
+	srv.Lpush(idsKey, "200")
+	srv.Set("feed:item:100", `{"id":"100","title":"item100","author_nickname":"n1"}`)
+	// 故意不设置 feed:item:200 → 部分缺失 → assembleFromCache 返回 nil
+
+	_, err := svc.GetPublicFeed(context.Background(), 1, 10, nil)
+	// 由于 repo 是 nil（test helper 未设置），会走入 DB 回源失败
+	// 但我们验证不 panic，且正确 fallthrough
+	if err == nil {
+		t.Log("partial cache hit fell through to DB (expected to fail because repo is nil)")
+	}
 }

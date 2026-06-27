@@ -186,10 +186,8 @@ func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) erro
 }
 
 // runKnowPostTx 在数据库事务中执行业务变更和 outbox 事件写入（Transactional Outbox Pattern）。
-func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventType string, mutate func(txRepo Repo) error) error {
-	return outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
-		return mutate(s.repo.WithDB(tx))
-	}, []outbox.OutboxEvent{{
+func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventType string, mutate func(txRepo Repo) error, extraEvents ...outbox.OutboxEvent) error {
+	baseEvent := outbox.OutboxEvent{
 		ID:            s.idGen.NextID(),
 		AggregateType: "knowpost",
 		AggregateID:   &id,
@@ -200,7 +198,11 @@ func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventTyp
 			"op":     knowPostOutboxOp(eventType),
 			"type":   eventType,
 		},
-	}})
+	}
+	allEvents := append([]outbox.OutboxEvent{baseEvent}, extraEvents...)
+	return outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
+		return mutate(s.repo.WithDB(tx))
+	}, allEvents)
 }
 
 func knowPostOutboxOp(eventType string) string {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/zhiguang/app/internal/cache"
 	"github.com/zhiguang/app/pkg/jsonutil"
@@ -38,6 +39,9 @@ const (
 	l2MineJitter     = 21
 	l1MineCacheTTL   = 30
 	extendTTLBase    = 60
+	ttlLowFeed       = 30
+	ttlMediumFeed    = 60
+	ttlHighFeed      = 300
 )
 
 // KnowPostFeedService 实现基于碎片缓存架构的 Feed 列表流读取。
@@ -62,12 +66,13 @@ const (
 // 可以控制热门时间窗口失效时的影响范围——只影响该小时的槽，
 // 其他小时的缓存不受影响。
 type KnowPostFeedService struct {
-	repo     *KnowPostRepository
+	repo     Repo
 	redis    *redis.Client
 	l1Public *PrefixCache
 	l1Mine   *PrefixCache
 	hotKey   *cache.HotKeyDetector
 	counter  CounterClient
+	sf       singleflight.Group
 	logger   *zap.Logger
 }
 
@@ -86,7 +91,7 @@ type FeedCacheInvalidator interface {
 //   - hotKey: 热点探测器
 //   - counter: 计数器客户端，nil 表示不使用计数器
 func NewKnowPostFeedService(
-	repo *KnowPostRepository,
+	repo Repo,
 	redisClient *redis.Client,
 	l1Public *PrefixCache,
 	l1Mine *PrefixCache,
@@ -247,8 +252,12 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 			s.writeFragmentCaches(ctx, idsKey, hasMoreKey, size, rows, items, hasMore)
 			s.cacheFeedPage(localPageKey, resp, s.l1Public)
 
+			enriched := s.enrichItems(ctx, items, currentUserID)
+			if len(enriched) == 0 {
+				enriched = []FeedItemResponse{}
+			}
 			return &FeedPageResponse{
-				Items:   s.enrichItems(ctx, items, currentUserID),
+				Items:   enriched,
 				Page:    page,
 				Size:    size,
 				HasMore: hasMore,
@@ -260,6 +269,53 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 // ============================================================================
 // 获取我的已发布内容
 // ============================================================================
+
+// GetMineFeed 返回当前用户的 Feed 时间线（写扩散优先，降级到读扩散）。
+//
+// 读取路径：
+//  1. 先尝试从 timeline:{user_id} ZSet 读取 post_id 列表（写扩散路径）
+//  2. 如果 ZSet 有数据，按 post_id 批量查 know_posts 详情
+//  3. 如果 ZSet 为空或只有部分数据，降级到原来的读扩散路径
+func (s *KnowPostFeedService) GetMineFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
+	safeSize := clamp(size, 1, defaultSafeSize)
+	safePage := max(page, 1)
+	offset := (safePage - 1) * safeSize
+
+	timelineKey := fmt.Sprintf("timeline:%d", userID)
+	memberIDs, err := s.redis.ZRevRange(ctx, timelineKey, int64(offset), int64(offset+safeSize-1)).Result()
+	if err == nil && len(memberIDs) > 0 {
+		ids := make([]uint64, 0, len(memberIDs))
+		for _, idStr := range memberIDs {
+			if id, parseErr := strconv.ParseUint(idStr, 10, 64); parseErr == nil {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 0 {
+			rows, dbErr := s.repo.FindByIDs(ctx, ids)
+			if dbErr == nil && len(rows) > 0 {
+				items := s.mapRowsToItems(ctx, rows, &userID, true)
+				enriched := s.enrichItems(ctx, items, &userID)
+
+				total, totalErr := s.redis.ZCard(ctx, timelineKey).Result()
+				hasMore := false
+				if totalErr == nil {
+					hasMore = int(offset+safeSize) < int(total)
+				} else {
+					hasMore = len(rows) >= safeSize
+				}
+
+				return &FeedPageResponse{
+					Items:   enriched,
+					Page:    safePage,
+					Size:    safeSize,
+					HasMore: hasMore,
+				}, nil
+			}
+		}
+	}
+
+	return s.GetMyPublished(ctx, userID, page, size)
+}
 
 // GetMyPublished 返回当前用户已发布的知文列表（自己的"我的 Feed"）。
 //
@@ -337,7 +393,9 @@ func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64,
 		return resp, nil
 	}
 	baseTTL := l2MineTTLBase + rand.Intn(l2MineJitter)
-	s.redis.Set(ctx, key, string(jsonBytes), time.Duration(baseTTL)*time.Second)
+	if setErr := s.redis.Set(ctx, key, string(jsonBytes), time.Duration(baseTTL)*time.Second).Err(); setErr != nil {
+		s.logger.Warn("failed to set mine feed L2 cache", zap.String("key", key), zap.Error(setErr))
+	}
 	s.l1Mine.Set([]byte(key), jsonBytes, baseTTL)
 	s.hotKey.Record(key)
 
@@ -427,6 +485,10 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 
 	// 叠加当前用户状态
 	enriched := s.enrichItems(ctx, items, currentUserID)
+
+	if len(enriched) == 0 {
+		enriched = []FeedItemResponse{}
+	}
 
 	return &FeedPageResponse{
 		Items:   enriched,

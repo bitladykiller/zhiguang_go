@@ -5,6 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
+
+	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/httputil"
@@ -177,6 +181,9 @@ func (s *stubCounter) Like(_ context.Context, _ uint64, _, _ string) (bool, erro
 func (s *stubCounter) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
+func (s *stubCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+	return nil, nil
+}
 
 func TestEnrichDetail_NilCounter(t *testing.T) {
 	svc := &KnowPostService{}
@@ -301,4 +308,100 @@ func BenchmarkParseDetail(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = svc.parseDetail(data)
 	}
+}
+
+// ============================================================================
+// TestPublish — 事务 & outbox 测试 (sqlmock)
+// ============================================================================
+
+type mockSnowflake struct {
+	next uint64
+}
+
+func (g *mockSnowflake) NextID() uint64 {
+	g.next++
+	return g.next
+}
+
+var _ = (interface{ NextID() uint64 })((*mockSnowflake)(nil))
+
+// TestPublish_OutboxWriteFailure_Rollback
+// 场景：发布时 outbox 写入失败，整个事务回滚
+func TestPublish_OutboxWriteFailure_Rollback(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+
+	mock.ExpectBegin()
+	// 业务 Publish UPDATE 成功
+	mock.ExpectExec("UPDATE know_posts SET status = \\?, publish_time = \\?, update_time = \\? WHERE id = \\? AND creator_id = \\? AND status = \\?").
+		WithArgs("published", sqlmock.AnyArg(), sqlmock.AnyArg(), uint64(1), uint64(42), "draft").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// outbox INSERT 失败
+	mock.ExpectExec("INSERT INTO outbox").
+		WillReturnError(errors.New("outbox write failed"))
+	mock.ExpectRollback()
+
+	svc := &KnowPostService{
+		db:    sqlxDB,
+		idGen: NewRealSnowflakeForTest(t),
+		repo:  NewKnowPostRepository(sqlxDB),
+	}
+
+	err = svc.Publish(context.Background(), 42, 1)
+	if err == nil {
+		t.Fatal("expected error when outbox write fails")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestPublish_DBFailure_OutboxNotWritten
+// 场景：业务 INSERT 失败，确保 outbox 没有写入
+func TestPublish_DBFailure_OutboxNotWritten(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+
+	mock.ExpectBegin()
+	// 业务 Publish UPDATE 失败（affected=0）
+	mock.ExpectExec("UPDATE know_posts SET status = \\?, publish_time = \\?, update_time = \\? WHERE id = \\? AND creator_id = \\? AND status = \\?").
+		WithArgs("published", sqlmock.AnyArg(), sqlmock.AnyArg(), uint64(1), uint64(42), "draft").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	svc := &KnowPostService{
+		db:    sqlxDB,
+		idGen: NewRealSnowflakeForTest(t),
+		repo:  NewKnowPostRepository(sqlxDB),
+	}
+
+	err = svc.Publish(context.Background(), 42, 1)
+	if err == nil {
+		t.Fatal("expected error when DB update fails")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+func NewRealSnowflakeForTest(t *testing.T) *SnowflakeIdGenerator {
+	t.Helper()
+	gen, err := NewSnowflakeIdGenerator(&config.IDGeneratorConfig{
+		MachineID: 1,
+		WorkerID:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gen
 }

@@ -38,7 +38,7 @@ type CounterClient = counter.CounterServiceInterface
 // 又能让每个文件内的函数职责更清晰，更容易定位和单独测试。
 type KnowPostService struct {
 	db        *sqlx.DB
-	repo      *KnowPostRepository
+	repo      Repo
 	idGen     *SnowflakeIdGenerator
 	redis     *redis.Client
 	l1Cache   *PrefixCache

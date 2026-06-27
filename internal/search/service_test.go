@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/internal/model"
 	"go.uber.org/zap"
 )
@@ -120,6 +121,10 @@ func (s *stubSearchCounter) GetCounts(_ context.Context, _, _ string, _ []string
 
 func (s *stubSearchCounter) GetCountsBatch(_ context.Context, _ string, _, _ []string) (map[string]map[string]int32, error) {
 	return nil, s.err
+}
+
+func (s *stubSearchCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ type Repo interface {
 	FindDetailByID(ctx context.Context, id uint64) (*KnowPostDetailRow, error)
 	ListFeedPublic(ctx context.Context, limit, offset int) ([]KnowPostFeedRow, error)
 	ListMyPublished(ctx context.Context, userID uint64, limit, offset int) ([]KnowPostFeedRow, error)
+	FindByIDs(ctx context.Context, ids []uint64) ([]KnowPostFeedRow, error)
 	WithDB(db sqlx.ExtContext) Repo
 }
 

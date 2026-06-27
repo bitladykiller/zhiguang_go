@@ -81,6 +81,10 @@ func (s *stubHandlerCounter) BatchIsFaved(ctx context.Context, userID uint64, en
 	return nil, nil
 }
 
+func (s *stubHandlerCounter) GetLikers(ctx context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error) {
+	return nil, nil
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================

@@ -25,6 +25,7 @@ type KnowPostReadService interface {
 type KnowPostFeedServiceInterface interface {
 	GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error)
 	GetMyPublished(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
+	GetMineFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
 }
 
 // 编译期断言。

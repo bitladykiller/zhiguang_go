@@ -219,6 +219,39 @@ WHERE know_posts.id = ?
 	return &row, nil
 }
 
+// FindByIDs 根据 ID 批量查询已发布的公开知文，返回 FeedRow。
+func (r *KnowPostRepository) FindByIDs(ctx context.Context, ids []uint64) ([]KnowPostFeedRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	query, args, err := sqlx.In(`
+SELECT
+    know_posts.id,
+    know_posts.title,
+    know_posts.description,
+    know_posts.img_urls,
+    know_posts.tags,
+    users.avatar AS author_avatar,
+    users.nickname AS author_nickname,
+    users.tags_json AS author_tag_json
+FROM know_posts
+LEFT JOIN users ON know_posts.creator_id = users.id
+WHERE know_posts.id IN (?)
+  AND know_posts.status = ?
+  AND know_posts.visible = ?
+ORDER BY know_posts.publish_time DESC
+`, ids, KnowPostStatusPublished, KnowPostVisibilityPublic)
+	if err != nil {
+		return nil, fmt.Errorf("find by ids: build query: %w", err)
+	}
+	query = r.db.Rebind(query)
+	var rows []KnowPostFeedRow
+	if err := sqlx.SelectContext(ctx, r.db, &rows, query, args...); err != nil {
+		return nil, fmt.Errorf("find by ids: select: %w", err)
+	}
+	return rows, nil
+}
+
 // ListFeedPublic 分页查询已发布的公开知文，使用 sqlx.SelectContext。
 func (r *KnowPostRepository) ListFeedPublic(ctx context.Context, limit, offset int) ([]KnowPostFeedRow, error) {
 	var rows []KnowPostFeedRow

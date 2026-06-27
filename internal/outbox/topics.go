@@ -8,16 +8,17 @@ const (
 	// 多个消费者组（关系事件、搜索索引）都会订阅此主题，各自做投影。
 	CanalOutboxTopic = "canal-outbox"
 
+	// FanoutTopic 是写扩散事件的主题。
+	// 知文发布后，fanout 生产者将 FanoutEvent 写入此 topic，
+	// FanoutConsumer 消费后写入粉丝的 timeline ZSet。
+	FanoutTopic = "fanout"
+
+	// FanoutConsumerGroup 是写扩散消费者组 ID。
+	FanoutConsumerGroup = "fanout-group"
+
 	// RelationOutboxConsumerGroup 是关系事件消费者组 ID。
-	//
-	// 该消费者负责处理 FollowCreated/FollowCanceled 等关系事件，
-	// 包括维护 Redis 中的关注/粉丝 ZSet 缓存和用户维度的计数。
 	RelationOutboxConsumerGroup = "relation-outbox-consumer"
 
 	// SearchOutboxConsumerGroup 是搜索索引消费者组 ID。
-	//
-	// 该消费者负责将知文的变更（发布、更新、删除）同步到 Elasticsearch 索引中。
-	// 它是 outbox 模式在搜索场景的具体实现：写操作在启库事务内写入 outbox 表，
-	// 由 Canal 捕获后异步投递到搜索索引。
 	SearchOutboxConsumerGroup = "search-index-consumer"
 )

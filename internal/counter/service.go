@@ -1,6 +1,10 @@
 package counter
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -10,19 +14,6 @@ import (
 )
 
 // CounterService 提供原子化的计数开关操作。
-//
-// 设计模式：
-//   - Strategy（策略模式）：Like/Unlike/Fav/Unfav 都是 toggle(add/remove) 的不同变体，
-//     共用同一套位图操作逻辑，只是传入的 metric 和 op 参数不同。
-//   - Circuit Breaker（断路器模式）：SDS 重建失败后采用指数退避，
-//     退避时间呈指数增长（500ms → 1s → 2s → ... → 30s cap），
-//     避免持续失败的请求压迫数据库。
-//   - Distributed Lock（分布式锁模式）：通过 Redis SETNX 防止多个服务实例
-//     同时对同一个 SDS 执行重建操作。
-//
-// 数据流：
-//
-//	toggle (Lua) → 修改位图 → 发送 Kafka 事件（异步） → 消费者批量聚合 → flush 到 cnt:*
 type CounterService struct {
 	redis              *redis.Client
 	producer           CounterEventPublisher
@@ -34,14 +25,6 @@ type CounterService struct {
 	publishTimeout     time.Duration
 }
 
-// NewCounterService 创建计数器服务实例。
-//
-// 参数：
-//   - rdb: Redis 客户端，用于执行 Lua 脚本和 SDS/Bitmap 操作
-//   - producer: Kafka 事件生产者，用于异步发布计数变更事件
-//   - failureRecorder: 失败消息持久化器，nil 表示不做失败记录
-//   - failureTopic: 失败消息对应的 Kafka topic 名
-//   - messageIDGenerator: 消息 ID 生成器，nil 表示使用随机 UUID
 func NewCounterService(
 	rdb *redis.Client,
 	producer CounterEventPublisher,
@@ -65,4 +48,116 @@ func NewCounterService(
 		messageIDGenerator: messageIDGenerator,
 		logger:             logger,
 	}
+}
+
+// GetLikers 返回指定实体的点赞/收藏用户列表（分页）。
+func (s *CounterService) GetLikers(ctx context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	prefix := "like"
+	if metric == "favorite" {
+		prefix = "fav"
+	}
+
+	cacheKey := fmt.Sprintf("likers_cache:%s:%d:%s", entityType, entityID, metric)
+	results, err := s.redis.ZRangeByScore(ctx, cacheKey, &redis.ZRangeBy{
+		Min:   fmt.Sprintf("(%d", cursor),
+		Max:   "+inf",
+		Count: int64(limit + 1),
+	}).Result()
+	if err == nil && len(results) > 0 {
+		return s.buildLikersFromCache(ctx, entityType, entityID, results, limit, cacheKey)
+	}
+
+	return s.scanBitmapForLikers(ctx, entityType, entityID, prefix, cursor, limit, cacheKey)
+}
+
+func (s *CounterService) buildLikersFromCache(ctx context.Context, entityType string, entityID uint64, results []string, limit int, cacheKey string) (*LikersResponse, error) {
+	items := make([]LikerItem, 0, len(results))
+	for _, uidStr := range results {
+		uid, err := strconv.ParseUint(uidStr, 10, 64)
+		if err != nil {
+			continue
+		}
+		timeKey := fmt.Sprintf("liker_time:%s:%d:%d", entityType, entityID, uid)
+		likedAt, _ := s.redis.Get(ctx, timeKey).Int64()
+		items = append(items, LikerItem{UserID: uid, LikedAt: likedAt})
+	}
+
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+
+	var nextCursor uint64
+	if len(items) > 0 {
+		nextCursor = items[len(items)-1].UserID
+	}
+
+	return &LikersResponse{Items: items, Cursor: nextCursor, HasMore: hasMore}, nil
+}
+
+func (s *CounterService) scanBitmapForLikers(ctx context.Context, entityType string, entityID uint64, prefix string, cursor uint64, limit int, cacheKey string) (*LikersResponse, error) {
+	items := make([]LikerItem, 0)
+	maxChunk := uint64(128)
+
+	for chunk := uint64(0); chunk < maxChunk; chunk++ {
+		bmKey := fmt.Sprintf("bm:%s:%s:%d:%d", prefix, entityType, entityID, chunk)
+		bmStr, err := s.redis.Get(ctx, bmKey).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			continue
+		}
+
+		for offset := uint64(0); offset < uint64(len(bmStr))*8; offset++ {
+			byteIdx := offset / 8
+			bitIdx := offset % 8
+			if bmStr[byteIdx]&(1<<bitIdx) != 0 {
+				userID := chunk*ChunkSize + offset
+				if userID <= cursor {
+					continue
+				}
+
+				timeKey := fmt.Sprintf("liker_time:%s:%d:%d", entityType, entityID, userID)
+				likedAt, _ := s.redis.Get(ctx, timeKey).Int64()
+				items = append(items, LikerItem{UserID: userID, LikedAt: likedAt})
+
+				if len(items) >= limit+1 {
+					break
+				}
+			}
+		}
+		if len(items) >= limit+1 {
+			break
+		}
+	}
+
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+
+	var nextCursor uint64
+	if len(items) > 0 {
+		nextCursor = items[len(items)-1].UserID
+	}
+
+	if len(items) > 0 {
+		pipe := s.redis.Pipeline()
+		for _, item := range items {
+			pipe.ZAdd(ctx, cacheKey, redis.Z{Score: float64(item.UserID), Member: strconv.FormatUint(item.UserID, 10)})
+		}
+		pipe.Expire(ctx, cacheKey, 5*time.Minute)
+		pipe.ZRemRangeByRank(ctx, cacheKey, 0, -501)
+		_, _ = pipe.Exec(ctx)
+	}
+
+	return &LikersResponse{Items: items, Cursor: nextCursor, HasMore: hasMore}, nil
 }

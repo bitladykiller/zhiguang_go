@@ -20,6 +20,9 @@ const (
 	nullCacheJitter     = 31
 	l2DetailTTLBase     = 60
 	l2DetailJitter      = 31
+	ttlLow              = 30
+	ttlMedium           = 60
+	ttlHigh             = 300
 )
 
 // --- [详情读取链路] --- //
@@ -224,7 +227,10 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			}
 			baseTTL := l2DetailTTLBase + rand.Intn(l2DetailJitter)
 			hotKeyID := fmt.Sprintf("knowpost:%d", id)
-			targetTTL := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
+			targetTTL := baseTTL
+			if s.hotKey != nil {
+				targetTTL = s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
+			}
 			if targetTTL < baseTTL {
 				targetTTL = baseTTL
 			}

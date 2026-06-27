@@ -2,6 +2,7 @@ package counter
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,7 @@ func (h *CounterHandler) RegisterRoutes(r *gin.RouterGroup) {
 		ctr.POST("/unfav", h.Unfav)
 		ctr.GET("/counts", h.GetCounts)
 		ctr.GET("/status", h.Status)
+		ctr.GET("/likers", h.GetLikers)
 	}
 }
 
@@ -218,6 +220,50 @@ func (h *CounterHandler) Status(c *gin.Context) {
 	resp := gin.H{"is_liked": liked, "is_faved": faved}
 	if likedErr != nil || favedErr != nil {
 		resp["degraded"] = true
+	}
+	response.Success(c, resp)
+}
+
+// GetLikers 处理 GET /counter/likers 请求。
+//
+// 功能：返回指定实体的点赞/收藏用户列表（分页）。
+//
+// 查询参数：
+//   - entity_type: string, 必须 — 实体类型
+//   - entity_id:   uint64, 必须 — 实体 ID
+//   - metric:      string, "like"|"favorite"，默认 "like"
+//   - cursor:      uint64, 分页游标（上一页最后一个 user_id），默认 0
+//   - limit:       int, 每页数量，默认 20，最大 50
+//
+// 权限：要求登录
+func (h *CounterHandler) GetLikers(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		response.Error(c, errcode.ErrUnauthorized)
+		return
+	}
+	_ = userID // 保留未来扩展
+	entityType := c.Query("entity_type")
+	entityIDStr := c.Query("entity_id")
+	metric := c.DefaultQuery("metric", "like")
+	cursor := httputil.QueryUint64(c, "cursor", 0)
+	limit := httputil.QueryInt(c, "limit", 20)
+
+	if entityType == "" || entityIDStr == "" {
+		response.Fail(c, 400, "entity_type and entity_id are required")
+		return
+	}
+	entityID, err := strconv.ParseUint(entityIDStr, 10, 64)
+	if err != nil {
+		response.Fail(c, 400, "invalid entity_id")
+		return
+	}
+
+	resp, err := h.svc.GetLikers(c.Request.Context(), entityType, entityID, metric, cursor, limit)
+	if err != nil {
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
+		return
 	}
 	response.Success(c, resp)
 }

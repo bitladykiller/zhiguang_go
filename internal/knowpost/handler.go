@@ -319,7 +319,7 @@ func (h *KnowPostHandler) GetMyPublished(c *gin.Context) {
 	}
 	page := httputil.QueryInt(c, "page", 1)
 	size := httputil.QueryInt(c, "size", 20)
-	resp, err := h.feedSvc.GetMyPublished(c.Request.Context(), userID, page, size)
+	resp, err := h.feedSvc.GetMineFeed(c.Request.Context(), userID, page, size)
 	if err != nil {
 		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))

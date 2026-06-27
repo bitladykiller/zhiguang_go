@@ -117,7 +117,7 @@ func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint6
 	hotKeyID := fmt.Sprintf("knowpost:%d", id)
 	s.hotKey.Record(hotKeyID)
 
-	baseTTL := 60
+	baseTTL := ttlMedium
 	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 
 	// EXPIRE GT：只有当新 TTL 大于当前 TTL 时才更新，保证不缩短
