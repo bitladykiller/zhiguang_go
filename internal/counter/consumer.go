@@ -23,11 +23,14 @@ var errLockNotAcquired = errors.New("repair lock not acquired")
 const counterRepairLeaderLockKey = "lock:counter:repair"
 
 const (
-	defaultConsumerBatchSize     = 100
-	defaultConsumerFlushInterval = time.Second
-	defaultRepairInterval        = time.Minute
-	defaultCounterFlushMaxAttempts = 3
-	defaultCounterFlushRetryDelay  = time.Second
+	defaultConsumerBatchSize        = 100
+	defaultConsumerFlushInterval    = time.Second
+	defaultRepairInterval           = time.Minute
+	defaultCounterFlushMaxAttempts  = 3
+	defaultCounterFlushRetryDelay   = time.Second
+	defaultCounterFlushWorkers      = 2
+	defaultExpireExtendInterval     = 10 * time.Second
+	defaultRebuildMarkerTTL         = 30 * time.Second
 )
 
 // AggregationConsumer 消费 counter-events，并按批次把增量直接折叠到 cnt:*。
@@ -137,7 +140,7 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 	defer c.reader.Close()
 
 	flushWg := sync.WaitGroup{}
-	for i := 0; i < 2; i++ {
+	for i := 0; i < defaultCounterFlushWorkers; i++ {
 		flushWg.Add(1)
 		go func() {
 			defer flushWg.Done()
@@ -534,22 +537,22 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 
 	rebuildMarker := RebuildMarkerKey(entityType, entityID)
 
-	watchCtx, watchCancel := context.WithCancel(context.Background())
+	watchCtx, watchCancel := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(defaultExpireExtendInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-watchCtx.Done():
 				return
 			case <-ticker.C:
-				_ = c.service.redis.Expire(watchCtx, rebuildMarker, 30*time.Second)
+				_ = c.service.redis.Expire(watchCtx, rebuildMarker, defaultRebuildMarkerTTL)
 			}
 		}
 	}()
-	_ = c.service.redis.Set(ctx, rebuildMarker, "1", 30*time.Second)
+	_ = c.service.redis.Set(ctx, rebuildMarker, "1", defaultRebuildMarkerTTL)
 	defer func() {
 		watchCancel()
 		<-watchDone

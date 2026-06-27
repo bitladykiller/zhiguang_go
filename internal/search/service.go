@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/internal/model"
 	"github.com/zhiguang/app/pkg/jsonutil"
@@ -60,7 +61,23 @@ type SearchIndexDoc struct {
 	Suggest       *SuggestField `json:"suggest,omitempty"`
 }
 
-// SuggestField 表示 ES completion suggest 字段结构。
+// closeESBody 安全关闭 ES 响应体，记录关闭错误。
+func (s *SearchService) closeESBody(res *esapi.Response) {
+	if res != nil && res.Body != nil {
+		if err := res.Body.Close(); err != nil {
+			s.logger.Warn("close es response body failed", zap.Error(err))
+		}
+	}
+}
+
+// readESError 读取 ES 错误响应体并返回格式化错误。
+func (s *SearchService) readESError(res *esapi.Response, opName string) error {
+	body, readErr := io.ReadAll(res.Body)
+	if readErr != nil {
+		return fmt.Errorf("%s error (status=%d, failed to read body: %w)", opName, res.StatusCode, readErr)
+	}
+	return fmt.Errorf("%s failed: %s", opName, string(body))
+}
 type SuggestField struct {
 	Input  []string `json:"input"`
 	Weight int      `json:"weight,omitempty"`
@@ -154,12 +171,12 @@ func NewSearchService(cfg ESConfig, counter SearchCounterClient, logger *zap.Log
 
 	// 启动时确保索引已存在，失败重试 3 次
 	var ensureErr error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; attempt <= defaultEnsureRetries; attempt++ {
 		ensureErr = svc.EnsureIndex()
 		if ensureErr == nil {
 			break
 		}
-		if attempt < 3 {
+		if attempt < defaultEnsureRetries {
 			logger.Warn("ensure index failed, retrying", zap.Int("attempt", attempt), zap.Error(ensureErr))
 			time.Sleep(time.Duration(attempt) * time.Second)
 		}
@@ -189,7 +206,7 @@ func (s *SearchService) EnsureIndex() error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.StatusCode == http.StatusOK {
 		return s.ensureCompatibleMappings()
@@ -201,14 +218,10 @@ func (s *SearchService) EnsureIndex() error {
 	if err != nil {
 		return err
 	}
-	defer createRes.Body.Close()
+	defer s.closeESBody(createRes)
 
 	if createRes.IsError() {
-		body, readErr := io.ReadAll(createRes.Body)
-		if readErr != nil {
-			return fmt.Errorf("search error (status=%d, failed to read body: %w)", createRes.StatusCode, readErr)
-		}
-		return fmt.Errorf("create index failed: %s", string(body))
+		return s.readESError(createRes, "create index")
 	}
 
 	return nil
@@ -255,20 +268,20 @@ func (s *SearchService) ensureCompatibleMappings() error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.IsError() {
-		body, readErr := io.ReadAll(res.Body)
-		if readErr != nil {
-			return fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
-		}
-		return fmt.Errorf("put mapping failed: %s", string(body))
+		return s.readESError(res, "put mapping")
 	}
 
 	return nil
 }
 
-const defaultSearchSize = 20
+const (
+	defaultSearchSize     = 20
+	defaultSuggestSize    = 10
+	defaultEnsureRetries  = 3
+)
 
 // Search 执行全文检索，使用 function_score 融合 BM25 和相关指标权重，并通过 search_after 游标分页。
 func (s *SearchService) Search(ctx context.Context, keyword string, size int, tagsCSV, after string, currentUserID *uint64) (*SearchResponse, error) {
@@ -408,14 +421,10 @@ func (s *SearchService) executeSearch(ctx context.Context, query map[string]inte
 	if err != nil {
 		return nil, fmt.Errorf("search: es request: %w", err)
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.IsError() {
-		body, readErr := io.ReadAll(res.Body)
-		if readErr != nil {
-			return nil, fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
-		}
-		return nil, fmt.Errorf("search failed: %s", string(body))
+		return nil, s.readESError(res, "search")
 	}
 
 	var result struct {
@@ -539,7 +548,7 @@ func (s *SearchService) buildCursor(hits []searchHit, size int) (*string, bool) 
 //   - 返回的建议数可能少于 size（没有足够匹配项时）
 func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([]string, error) {
 	if size <= 0 {
-		size = 10
+		size = defaultSuggestSize
 	}
 
 	query := map[string]interface{}{
@@ -567,14 +576,10 @@ func (s *SearchService) Suggest(ctx context.Context, prefix string, size int) ([
 	if err != nil {
 		return nil, fmt.Errorf("suggest: es request: %w", err)
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.IsError() {
-		body, readErr := io.ReadAll(res.Body)
-		if readErr != nil {
-			return nil, fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
-		}
-		return nil, fmt.Errorf("suggest failed: %s", string(body))
+		return nil, s.readESError(res, "suggest")
 	}
 
 	var result struct {
@@ -794,14 +799,10 @@ func (s *SearchService) IndexDocument(ctx context.Context, doc *SearchIndexDoc) 
 	if err != nil {
 		return fmt.Errorf("index document: es request: %w", err)
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.IsError() {
-		body, readErr := io.ReadAll(res.Body)
-		if readErr != nil {
-			return fmt.Errorf("search error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
-		}
-		return fmt.Errorf("index failed: %s", string(body))
+		return s.readESError(res, "index document")
 	}
 
 	return nil
@@ -834,18 +835,14 @@ func (s *SearchService) DeleteDocument(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("delete document: es request: %w", err)
 	}
-	defer res.Body.Close()
+	defer s.closeESBody(res)
 
 	if res.StatusCode == http.StatusNotFound {
 		return nil
 	}
 
 	if res.IsError() {
-		body, readErr := io.ReadAll(res.Body)
-		if readErr != nil {
-			return fmt.Errorf("delete error (status=%d, failed to read body: %w)", res.StatusCode, readErr)
-		}
-		return fmt.Errorf("delete failed: %s", string(body))
+		return s.readESError(res, "delete document")
 	}
 	return nil
 }

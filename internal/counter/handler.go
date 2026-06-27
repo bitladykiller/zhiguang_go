@@ -237,12 +237,11 @@ func (h *CounterHandler) Status(c *gin.Context) {
 //
 // 权限：要求登录
 func (h *CounterHandler) GetLikers(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
+	_, ok := middleware.GetUserID(c)
 	if !ok {
 		response.Error(c, errcode.ErrUnauthorized)
 		return
 	}
-	_ = userID // 保留未来扩展
 	entityType := c.Query("entity_type")
 	entityIDStr := c.Query("entity_id")
 	metric := c.DefaultQuery("metric", "like")

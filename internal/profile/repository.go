@@ -2,7 +2,6 @@ package profile
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -49,57 +48,7 @@ func (r *Repository) FindByID(ctx context.Context, id uint64) (*UserProfile, err
 
 // Update 动态更新用户资料的部分字段（PATCH 语义）。
 func (r *Repository) Update(ctx context.Context, id uint64, req *ProfilePatchRequest) error {
-	sets := make([]string, 0, 7)
-	args := make([]interface{}, 0, 8)
-	if req.Nickname != nil {
-		if _, ok := profileUpdateFields["nickname"]; !ok {
-			return fmt.Errorf("unknown field: nickname")
-		}
-		sets = append(sets, "nickname = ?")
-		args = append(args, *req.Nickname)
-	}
-	if req.Avatar != nil {
-		if _, ok := profileUpdateFields["avatar"]; !ok {
-			return fmt.Errorf("unknown field: avatar")
-		}
-		sets = append(sets, "avatar = ?")
-		args = append(args, *req.Avatar)
-	}
-	if req.Bio != nil {
-		if _, ok := profileUpdateFields["bio"]; !ok {
-			return fmt.Errorf("unknown field: bio")
-		}
-		sets = append(sets, "bio = ?")
-		args = append(args, *req.Bio)
-	}
-	if req.Gender != nil {
-		if _, ok := profileUpdateFields["gender"]; !ok {
-			return fmt.Errorf("unknown field: gender")
-		}
-		sets = append(sets, "gender = ?")
-		args = append(args, *req.Gender)
-	}
-	if req.School != nil {
-		if _, ok := profileUpdateFields["school"]; !ok {
-			return fmt.Errorf("unknown field: school")
-		}
-		sets = append(sets, "school = ?")
-		args = append(args, *req.School)
-	}
-	if req.TagsJson != nil {
-		if _, ok := profileUpdateFields["tags_json"]; !ok {
-			return fmt.Errorf("unknown field: tags_json")
-		}
-		sets = append(sets, "tags_json = ?")
-		args = append(args, *req.TagsJson)
-	}
-	if req.Birthday != nil {
-		if _, ok := profileUpdateFields["birthday"]; !ok {
-			return fmt.Errorf("unknown field: birthday")
-		}
-		sets = append(sets, "birthday = ?")
-		args = append(args, *req.Birthday)
-	}
+	sets, args := buildUpdateSet(req)
 	if len(sets) == 0 {
 		return nil
 	}
@@ -108,6 +57,48 @@ func (r *Repository) Update(ctx context.Context, id uint64, req *ProfilePatchReq
 	query := "UPDATE users SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	_, err := r.db.ExecContext(ctx, query, args...)
 	return err
+}
+
+// buildUpdateSet 根据 ProfilePatchRequest 中非 nil 字段构建 SQL SET 子句和参数。
+// 返回的 sets 和 args 一一对应，sets[i] = "col = ?"，args[i] = 对应值。
+func buildUpdateSet(req *ProfilePatchRequest) ([]string, []interface{}) {
+	sets := make([]string, 0, 7)
+	args := make([]interface{}, 0, 7)
+
+	type fieldDef struct {
+		ptr  interface{}
+		name string
+	}
+
+	fields := []fieldDef{
+		{req.Nickname, "nickname"},
+		{req.Avatar, "avatar"},
+		{req.Bio, "bio"},
+		{req.Gender, "gender"},
+		{req.School, "school"},
+		{req.TagsJson, "tags_json"},
+		{req.Birthday, "birthday"},
+	}
+
+	for _, f := range fields {
+		if f.ptr == nil {
+			continue
+		}
+		if _, ok := profileUpdateFields[f.name]; !ok {
+			continue
+		}
+		// 利用 switch 解引用不同类型的指针
+		switch v := f.ptr.(type) {
+		case *string:
+			if v == nil {
+				continue
+			}
+			sets = append(sets, f.name+" = ?")
+			args = append(args, *v)
+		}
+	}
+
+	return sets, args
 }
 
 // toUserProfile 将 model.User 映射为对外 DTO，过滤敏感字段。

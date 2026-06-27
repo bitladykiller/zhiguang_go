@@ -47,15 +47,7 @@ func isValidVisible(v KnowPostVisibility) bool {
 }
 
 // toJSON 将任意值序列化为 JSON 字符串。
-//
-// 功能：将 Go 值（通常是切片或 map）转换为 JSON 字符串，
-// 用于存储到数据库的 JSON 类型字段中。
-//
-// 参数：
-//   - v: interface{}，要序列化的值。
-//
-// 返回值：string，JSON 字符串。序列化失败时返回空字符串（不会 panic）。
-func toJSON(v interface{}) string {
+func toJSON[T any](v T) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return ""

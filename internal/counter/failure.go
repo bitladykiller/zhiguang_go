@@ -160,7 +160,9 @@ func (s *CounterService) ReplayFailedMessages(ctx context.Context, limit int) er
 		}
 
 		rebuildMarker := RebuildMarkerKey(record.EntityType, record.EntityID)
-		_ = s.redis.Set(ctx, rebuildMarker, "1", 30*time.Second).Err()
+		if err := s.redis.Set(ctx, rebuildMarker, "1", 30*time.Second).Err(); err != nil {
+			s.logger.Warn("set rebuild marker failed", zap.String("entityType", record.EntityType), zap.String("entityID", record.EntityID), zap.Error(err))
+		}
 
 		var snapshot map[string]int32
 		rebuildErr := func() error {
@@ -185,9 +187,13 @@ func (s *CounterService) ReplayFailedMessages(ctx context.Context, limit int) er
 		}()
 
 		if rebuildErr != nil {
-			_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "failed", rebuildErr.Error())
+			if err := s.failureRecorder.UpdateStatus(ctx, record.ID, "failed", rebuildErr.Error()); err != nil {
+				s.logger.Warn("update failure status failed", zap.Uint64("id", record.ID), zap.Error(err))
+			}
 		} else {
-			_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "recovered", "")
+			if err := s.failureRecorder.UpdateStatus(ctx, record.ID, "recovered", ""); err != nil {
+				s.logger.Warn("update failure status failed", zap.Uint64("id", record.ID), zap.Error(err))
+			}
 		}
 	}
 

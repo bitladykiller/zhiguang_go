@@ -50,7 +50,7 @@ func TestToJSON(t *testing.T) {
 	if got := toJSON([]string{"a", "b"}); got != `["a","b"]` {
 		t.Errorf("toJSON([a b]) = %q, want %q", got, `["a","b"]`)
 	}
-	if got := toJSON(nil); got != "null" {
+	if got := toJSON[[]string](nil); got != "null" {
 		t.Errorf("toJSON(nil) = %q, want %q", got, "null")
 	}
 }

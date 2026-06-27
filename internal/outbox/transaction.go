@@ -13,7 +13,7 @@ type OutboxEvent struct {
 	AggregateType string
 	AggregateID   *uint64
 	EventType     string
-	Payload       interface{}
+	Payload       json.RawMessage
 }
 
 func RunInTx(

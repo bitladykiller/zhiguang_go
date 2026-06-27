@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -24,11 +25,12 @@ func TestRunInTx_Success(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
+	payload, _ := json.Marshal(map[string]int{"id": 42})
 	aggID := uint64(42)
 	err = RunInTx(context.Background(), sqlxDB, func(tx *sqlx.Tx) error {
 		return nil
 	}, []OutboxEvent{
-		{ID: 1, AggregateType: "knowpost", AggregateID: &aggID, EventType: "KnowPostPublished", Payload: map[string]int{"id": 42}},
+		{ID: 1, AggregateType: "knowpost", AggregateID: &aggID, EventType: "KnowPostPublished", Payload: json.RawMessage(payload)},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -78,7 +80,7 @@ func TestRunInTx_MarshalError(t *testing.T) {
 	err = RunInTx(context.Background(), sqlxDB, func(tx *sqlx.Tx) error {
 		return nil
 	}, []OutboxEvent{
-		{ID: 1, EventType: "BadPayload", Payload: make(chan int)},
+		{ID: 1, EventType: "BadPayload", Payload: json.RawMessage("bad")},
 	})
 	if err == nil {
 		t.Fatal("expected marshal error, got nil")
@@ -119,13 +121,14 @@ func TestRunInTx_DBErrorOnInsert(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(`INSERT INTO outbox`).
+		WithArgs(uint64(1), "", nil, "Test", `"ok"`).
 		WillReturnError(errors.New("duplicate entry"))
 	mock.ExpectRollback()
 
 	err = RunInTx(context.Background(), sqlxDB, func(tx *sqlx.Tx) error {
 		return nil
 	}, []OutboxEvent{
-		{ID: 1, EventType: "Test", Payload: "ok"},
+		{ID: 1, AggregateType: "", AggregateID: nil, EventType: "Test", Payload: json.RawMessage(`"ok"`)},
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -169,14 +172,14 @@ func TestRunInTx_NilAggregateID(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(`INSERT INTO outbox`).
-		WithArgs(uint64(1), "following", nil, "FollowCreated", "\"{}\"").
+		WithArgs(uint64(1), "following", nil, "FollowCreated", "{}").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	err = RunInTx(context.Background(), sqlxDB, func(tx *sqlx.Tx) error {
 		return nil
 	}, []OutboxEvent{
-		{ID: 1, AggregateType: "following", AggregateID: nil, EventType: "FollowCreated", Payload: "{}"},
+		{ID: 1, AggregateType: "following", AggregateID: nil, EventType: "FollowCreated", Payload: json.RawMessage("{}")},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

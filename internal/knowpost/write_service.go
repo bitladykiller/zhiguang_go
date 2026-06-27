@@ -2,6 +2,7 @@ package knowpost
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -187,17 +188,18 @@ func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) erro
 
 // runKnowPostTx 在数据库事务中执行业务变更和 outbox 事件写入（Transactional Outbox Pattern）。
 func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventType string, mutate func(txRepo Repo) error, extraEvents ...outbox.OutboxEvent) error {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"entity": "knowpost",
+		"id":     id,
+		"op":     knowPostOutboxOp(eventType),
+		"type":   eventType,
+	})
 	baseEvent := outbox.OutboxEvent{
 		ID:            s.idGen.NextID(),
 		AggregateType: "knowpost",
 		AggregateID:   &id,
 		EventType:     eventType,
-		Payload: map[string]interface{}{
-			"entity": "knowpost",
-			"id":     id,
-			"op":     knowPostOutboxOp(eventType),
-			"type":   eventType,
-		},
+		Payload:       json.RawMessage(payload),
 	}
 	allEvents := append([]outbox.OutboxEvent{baseEvent}, extraEvents...)
 	return outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {

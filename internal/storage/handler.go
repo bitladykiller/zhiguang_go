@@ -12,6 +12,12 @@ import (
 	"github.com/zhiguang/app/pkg/response"
 )
 
+var allowedExtensions = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+	".mp4": true, ".mov": true, ".avi": true,
+	".pdf": true, ".doc": true, ".docx": true,
+}
+
 // StorageHandler 暴露 OSS 存储相关 HTTP 接口。
 type StorageHandler struct {
 	svc StorageServiceInterface
@@ -127,12 +133,5 @@ func isValidFileName(fileName string) bool {
 	}
 
 	ext := strings.ToLower(filepath.Ext(fileName))
-	switch ext {
-	case ".jpg", ".jpeg", ".png", ".gif", ".webp",
-		".mp4", ".mov", ".avi",
-		".pdf", ".doc", ".docx":
-		return true
-	default:
-		return false
-	}
+	return allowedExtensions[ext]
 }

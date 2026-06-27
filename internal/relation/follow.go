@@ -2,6 +2,7 @@ package relation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -29,6 +30,10 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 	outboxID := s.idGen.NextID()
 
 	event := RelationEvent{EventType: "FollowCreated", FromUserID: fromUserID, ToUserID: toUserID, RelationID: &id}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return false, fmt.Errorf("marshal follow event: %w", err)
+	}
 
 	if err := outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
 		txRepo := s.repo.WithDB(tx)
@@ -44,7 +49,7 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 		AggregateType: "following",
 		AggregateID:   &id,
 		EventType:     "FollowCreated",
-		Payload:       event,
+		Payload:       json.RawMessage(raw),
 	}}); err != nil {
 		return false, fmt.Errorf("follow: run tx: %w", err)
 	}
@@ -57,8 +62,12 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	outboxID := s.idGen.NextID()
 	event := RelationEvent{EventType: "FollowCanceled", FromUserID: fromUserID, ToUserID: toUserID}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return false, fmt.Errorf("marshal unfollow event: %w", err)
+	}
 
-	err := outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
+	var txErr error = outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
 		txRepo := s.repo.WithDB(tx)
 		affected, err := txRepo.CancelFollowing(ctx, fromUserID, toUserID)
 		if err != nil {
@@ -81,13 +90,13 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 		AggregateType: "following",
 		AggregateID:   nil,
 		EventType:     "FollowCanceled",
-		Payload:       event,
+		Payload:       json.RawMessage(raw),
 	}})
-	if err != nil {
-		if errors.Is(err, errNothingToCancel) {
+	if txErr != nil {
+		if errors.Is(txErr, errNothingToCancel) {
 			return false, nil
 		}
-		return false, fmt.Errorf("unfollow: run tx: %w", err)
+		return false, fmt.Errorf("unfollow: run tx: %w", txErr)
 	}
 
 	s.invalidateCaches(ctx, fromUserID, toUserID)
