@@ -15,6 +15,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -95,7 +96,7 @@ type DatabaseConfig struct {
 //   - loc=Local 使用本地时区解析时间。
 //   - 超时参数（dial_timeout_ms、read_timeout_ms、write_timeout_ms）会添加到 DSN 参数中。
 func (c *DatabaseConfig) DSN() string {
-	dsn := c.User + ":" + c.Password + "@tcp(" + c.Host + ":" +
+	dsn := c.User + ":" + url.QueryEscape(c.Password) + "@tcp(" + c.Host + ":" +
 		itoa(c.Port) + ")/" + c.Name + "?charset=" + c.Charset + "&parseTime=True&loc=Local"
 
 	// 添加超时参数

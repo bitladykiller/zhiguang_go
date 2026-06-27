@@ -90,8 +90,11 @@ func (p *EventProcessor) Process(ctx context.Context, evt RelationEvent) error {
 
 	dedupeKey := fmt.Sprintf("dedup:rel:%s:%d:%d:%s", evt.EventType, evt.FromUserID, evt.ToUserID, relationIDValue(evt.RelationID))
 	first, err := p.redis.SetNX(ctx, dedupeKey, "1", 10*time.Minute).Result()
-	if err != nil || !first {
+	if err != nil {
 		return err
+	}
+	if !first {
+		return nil
 	}
 
 	switch evt.EventType {

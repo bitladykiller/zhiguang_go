@@ -86,17 +86,19 @@ func CacheReadThrough[T any](
 			continue
 		}
 
-		defer lock.Release()
-
 		result, hit, err := checkCache(ctx)
 		if err != nil {
+			lock.Release()
 			var zero T
 			return zero, err
 		}
 		if hit {
+			lock.Release()
 			return result, nil
 		}
 
-		return missHandler(ctx)
+		ret, err := missHandler(ctx)
+		lock.Release()
+		return ret, err
 	}
 }

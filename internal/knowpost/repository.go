@@ -9,6 +9,16 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+var knowPostUpdateFields = map[string]string{
+	"title":       "title",
+	"tag_id":      "tag_id",
+	"tags":        "tags",
+	"img_urls":    "img_urls",
+	"visible":     "visible",
+	"description": "description",
+	"is_top":      "is_top",
+}
+
 // KnowPostRepository 封装 know_posts 相关的全部数据库操作。
 // 使用 sqlx.ExtContext 接口，同时支持 *sqlx.DB（普通连接）和 *sqlx.Tx（事务）。
 type KnowPostRepository struct {
@@ -66,30 +76,51 @@ func (r *KnowPostRepository) UpdateMetadata(ctx context.Context, post *KnowPost)
 	sets := []string{"update_time = ?"}
 	args := []interface{}{time.Now()}
 	if post.Title != nil {
+		if _, ok := knowPostUpdateFields["title"]; !ok {
+			return 0, fmt.Errorf("unknown field: title")
+		}
 		sets = append(sets, "title = ?")
 		args = append(args, *post.Title)
 	}
 	if post.TagID != nil {
+		if _, ok := knowPostUpdateFields["tag_id"]; !ok {
+			return 0, fmt.Errorf("unknown field: tag_id")
+		}
 		sets = append(sets, "tag_id = ?")
 		args = append(args, *post.TagID)
 	}
 	if post.Tags != nil {
+		if _, ok := knowPostUpdateFields["tags"]; !ok {
+			return 0, fmt.Errorf("unknown field: tags")
+		}
 		sets = append(sets, "tags = ?")
 		args = append(args, *post.Tags)
 	}
 	if post.ImgUrls != nil {
+		if _, ok := knowPostUpdateFields["img_urls"]; !ok {
+			return 0, fmt.Errorf("unknown field: img_urls")
+		}
 		sets = append(sets, "img_urls = ?")
 		args = append(args, *post.ImgUrls)
 	}
 	if post.Visible != "" {
+		if _, ok := knowPostUpdateFields["visible"]; !ok {
+			return 0, fmt.Errorf("unknown field: visible")
+		}
 		sets = append(sets, "visible = ?")
 		args = append(args, post.Visible)
 	}
 	if post.Description != nil {
+		if _, ok := knowPostUpdateFields["description"]; !ok {
+			return 0, fmt.Errorf("unknown field: description")
+		}
 		sets = append(sets, "description = ?")
 		args = append(args, *post.Description)
 	}
 	if post.IsTop {
+		if _, ok := knowPostUpdateFields["is_top"]; !ok {
+			return 0, fmt.Errorf("unknown field: is_top")
+		}
 		sets = append(sets, "is_top = ?")
 		args = append(args, 1)
 	}

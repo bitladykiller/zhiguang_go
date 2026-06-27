@@ -56,7 +56,7 @@ func initSearch(
 	searchHandler := search.NewSearchHandler(searchSvc)
 
 	if searchSvc != nil {
-		searchProjector := search.NewKnowPostProjector(db, searchSvc, counterSvc)
+		searchProjector := search.NewKnowPostProjector(db, searchSvc, counterSvc, logger)
 		searchRowHandler := &search.SearchRowHandler{Projector: searchProjector}
 		searchOutboxConsumer = outbox.NewConsumer(
 			messaging.NewKafkaReaderWithGroup(&cfg.Kafka, outbox.CanalOutboxTopic, outbox.SearchOutboxConsumerGroup),

@@ -12,6 +12,7 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -93,7 +94,7 @@ func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
 //   - MinIdleConns: 最小空闲连接数，确保连接池预热
 //   - MaxRetries: 命令执行失败时的最大重试次数
 //   - ConnMaxLifetime: 连接最大生命周期（秒），超时后连接会被关闭重建
-func NewRedisClient(cfg *config.RedisConfig) *redis.Client {
+func NewRedisClient(cfg *config.RedisConfig) (*redis.Client, error) {
 	opts := &redis.Options{
 		Addr:     cfg.Addr(),
 		Password: cfg.Password,
@@ -102,6 +103,46 @@ func NewRedisClient(cfg *config.RedisConfig) *redis.Client {
 	}
 
 	// 设置超时和重试参数
+	if cfg.DialTimeoutMs > 0 {
+		opts.DialTimeout = time.Duration(cfg.DialTimeoutMs) * time.Millisecond
+	}
+	if cfg.ReadTimeoutMs > 0 {
+		opts.ReadTimeout = time.Duration(cfg.ReadTimeoutMs) * time.Millisecond
+	}
+	if cfg.WriteTimeoutMs > 0 {
+		opts.WriteTimeout = time.Duration(cfg.WriteTimeoutMs) * time.Millisecond
+	}
+	if cfg.MinIdleConns > 0 {
+		opts.MinIdleConns = cfg.MinIdleConns
+	}
+	if cfg.MaxRetries > 0 {
+		opts.MaxRetries = cfg.MaxRetries
+	}
+	if cfg.ConnMaxLifetime > 0 {
+		opts.ConnMaxLifetime = time.Duration(cfg.ConnMaxLifetime) * time.Second
+	}
+
+	client := redis.NewClient(opts)
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(pingCtx).Err(); err != nil {
+		client.Close()
+		zap.L().Error("redis ping failed", zap.Error(err))
+		return nil, fmt.Errorf("redis ping: %w", err)
+	}
+	return client, nil
+}
+
+// NewRedisClientOrDie 创建 Redis 客户端，Ping 失败时不返回 error 而是 warn 降级返回 client。
+// 用于不需要强制依赖 Redis 的模块（如缓存加速）。
+func NewRedisClientOrDie(cfg *config.RedisConfig) *redis.Client {
+	opts := &redis.Options{
+		Addr:     cfg.Addr(),
+		Password: cfg.Password,
+		DB:       cfg.DB,
+		PoolSize: cfg.PoolSize,
+	}
+
 	if cfg.DialTimeoutMs > 0 {
 		opts.DialTimeout = time.Duration(cfg.DialTimeoutMs) * time.Millisecond
 	}

@@ -75,7 +75,10 @@ func InitializeApp(configPath string) (*server.App, error) {
 	if err != nil {
 		return nil, err
 	}
-	redisClient := database.NewRedisClient(&cfg.Redis)
+	redisClient, err := database.NewRedisClient(&cfg.Redis)
+if err != nil {
+	return nil, err
+}
 	kafkaWriter := messaging.NewKafkaWriter(&cfg.Kafka)
 	canalOutboxWriter := messaging.NewTopicWriter(&cfg.Kafka, outbox.CanalOutboxTopic, false)
 
@@ -106,7 +109,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 	// knowpost 构造时注入 counterSvc 和 feedSvc
 	kpHandler, _, _ := initKnowPost(db, redisClient, sharedFreeCache, hotKeyDetector, cfg, idGen, counterSvc, logger)
 
-	relHandler, _ := initRelation(db, redisClient, idGen, logger)
+	relHandler, _ := initRelation(db, redisClient, idGen, logger, &cfg.Relation)
 
 	searchHandler, searchOutboxConsumer, relationOutboxConsumer := initSearch(db, redisClient, counterSvc, cfg, logger)
 

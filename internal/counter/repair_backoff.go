@@ -78,6 +78,9 @@ func (s *CounterService) inBackoff(ctx context.Context, entityType, entityID str
 func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entityID string) {
 	expKey := s.backoffExpKey(entityType, entityID)
 	attemptCount, _ := s.redis.Get(ctx, expKey).Int()
+	if attemptCount > 62 {
+		attemptCount = 62
+	}
 
 	ms := int64(backoffBaseMs) << attemptCount
 	if ms > backoffMaxMs {
@@ -86,8 +89,8 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 	until := time.Now().UnixMilli() + ms
 
 	pipe := s.redis.Pipeline()
-	pipe.Set(ctx, s.backoffKey(entityType, entityID), until, 0)
-	pipe.Set(ctx, expKey, attemptCount+1, 0)
+	pipe.Set(ctx, s.backoffKey(entityType, entityID), until, 2*time.Hour)
+	pipe.Set(ctx, expKey, attemptCount+1, 2*time.Hour)
 	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		s.logger.Warn("escalateBackoff pipeline exec failed", zap.Error(err))

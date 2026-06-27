@@ -200,7 +200,8 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 				return s.enrichDetail(ctx, resp, currentUserID, false), nil
 			}
 			baseTTL := l2DetailTTLBase + rand.Intn(l2DetailJitter)
-			targetTTL := s.hotKey.TtlForPublic(ctx, baseTTL, pageKey)
+			hotKeyID := fmt.Sprintf("knowpost:%d", id)
+			targetTTL := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 			if targetTTL < baseTTL {
 				targetTTL = baseTTL
 			}

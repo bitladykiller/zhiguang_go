@@ -6,6 +6,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/relation"
+	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/idgen"
 )
 
@@ -23,8 +24,9 @@ func initRelation(
 	redisClient *redis.Client,
 	idGen *idgen.SnowflakeGenerator,
 	logger *zap.Logger,
+	relCfg *config.RelationConfig,
 ) (*relation.RelationHandler, *relation.RelationService) {
-	relSvc := relation.NewRelationService(db, redisClient, 10*1024*1024, idGen, logger)
+	relSvc := relation.NewRelationService(db, redisClient, 10*1024*1024, idGen, logger, relCfg)
 	relHandler := relation.NewRelationHandler(relSvc)
 	return relHandler, relSvc
 }

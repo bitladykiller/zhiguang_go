@@ -29,8 +29,9 @@ func RunInTx(
 
 	defer func() {
 		if r := recover(); r != nil {
-			if rbErr := tx.Rollback(); rbErr != nil {
-				err = fmt.Errorf("outbox: panic: %v (rollback: %w)", r, rbErr)
+			rbErr := tx.Rollback()
+			if rbErr != nil {
+				err = fmt.Errorf("outbox: panic: %v (rollback: %v)", r, rbErr)
 			} else {
 				err = fmt.Errorf("outbox: panic in mutations: %v", r)
 			}

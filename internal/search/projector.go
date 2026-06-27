@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/pkg/jsonutil"
 )
@@ -63,10 +64,11 @@ type KnowPostProjector struct {
 	db        sqlx.ExtContext
 	searchSvc *SearchService
 	counter   CounterReader
+	logger    *zap.Logger
 }
 
 // NewKnowPostProjector 创建搜索索引投影器实例。
-func NewKnowPostProjector(db sqlx.ExtContext, searchSvc *SearchService, counter CounterReader) *KnowPostProjector {
+func NewKnowPostProjector(db sqlx.ExtContext, searchSvc *SearchService, counter CounterReader, logger *zap.Logger) *KnowPostProjector {
 	if db == nil || searchSvc == nil {
 		return nil
 	}
@@ -74,6 +76,7 @@ func NewKnowPostProjector(db sqlx.ExtContext, searchSvc *SearchService, counter 
 		db:        db,
 		searchSvc: searchSvc,
 		counter:   counter,
+		logger:    logger,
 	}
 }
 
@@ -176,7 +179,9 @@ WHERE know_posts.id = ?
 	metrics := map[string]int32{}
 	if p.counter != nil {
 		counts, err := p.counter.GetCounts(ctx, "knowpost", strconv.FormatUint(postID, 10), []string{"like", "fav"})
-		if err == nil && counts != nil {
+		if err != nil {
+			p.logger.Warn("failed to get counts for search index", zap.Error(err))
+		} else if counts != nil {
 			metrics = counts
 		}
 	}

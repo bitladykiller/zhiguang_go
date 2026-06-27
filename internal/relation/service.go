@@ -58,7 +58,7 @@ type IDGenerator interface {
 }
 
 // NewRelationService 创建一个带多级缓存的关系服务实例。
-func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDGenerator, logger *zap.Logger) *RelationService {
+func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDGenerator, logger *zap.Logger, cfg *config.RelationConfig) *RelationService {
 	if logger == nil {
 		logger = zap.L()
 	}
@@ -69,6 +69,20 @@ func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDG
 		l1:     freecache.NewCache(cacheSize),
 		idGen:  idGen,
 		logger: logger,
+	}
+}
+
+func (s *RelationService) tokenBucketParams() (int, int) {
+	if s.tokenBucketCfg != nil && s.tokenBucketCfg.Capacity > 0 {
+		return s.tokenBucketCfg.Capacity, s.tokenBucketCfg.Rate
+	}
+	return 10, 1
+}
+
+// SetTokenBucketConfig 设置令牌桶限流配置。
+func (s *RelationService) SetTokenBucketConfig(cfg *config.RelationTokenBucketConfig) {
+	if cfg != nil {
+		s.tokenBucketCfg = cfg
 	}
 }
 

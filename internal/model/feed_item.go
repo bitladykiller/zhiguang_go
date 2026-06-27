@@ -12,17 +12,17 @@ package model
 //   - Liked、Faved：用户态字段，只在读取时根据当前用户动态补齐，不会进入缓存。
 //   - IsTop：仅"我的已发布"列表包含此字段，其他场景为 nil。
 type FeedItem struct {
-	ID             string
-	Title          *string
-	Description    *string
-	CoverImage     *string
-	Tags           []string
-	AuthorAvatar   *string
-	AuthorNickname string
-	TagJson        *string
-	LikeCount      int64
-	FavoriteCount  int64
-	Liked          *bool // 当前用户是否点赞（动态补齐，不入缓存）
-	Faved          *bool // 当前用户是否收藏（动态补齐，不入缓存）
-	IsTop          *bool // 仅"我的已发布"列表包含此字段
+	ID             string   `json:"id"`
+	Title          *string  `json:"title,omitempty"`
+	Description    *string  `json:"description,omitempty"`
+	CoverImage     *string  `json:"cover_image,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+	AuthorAvatar   *string  `json:"author_avatar,omitempty"`
+	AuthorNickname string   `json:"author_nickname"`
+	TagJson        *string  `json:"tag_json,omitempty"`
+	LikeCount      int64    `json:"like_count"`
+	FavoriteCount  int64    `json:"favorite_count"`
+	Liked          *bool    `json:"liked,omitempty"`
+	Faved          *bool    `json:"faved,omitempty"`
+	IsTop          *bool    `json:"is_top,omitempty"`
 }

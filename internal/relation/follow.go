@@ -14,7 +14,8 @@ import (
 // Follow 创建一条关注关系。
 func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	rlKey := fmt.Sprintf("rl:follow:%d", fromUserID)
-	allowed, err := s.redis.Eval(ctx, TOKEN_BUCKET_LUA, []string{rlKey}, 10, 1).Int()
+	capacity, rate := s.tokenBucketParams()
+	allowed, err := s.redis.Eval(ctx, TOKEN_BUCKET_LUA, []string{rlKey}, capacity, rate).Int()
 	if err != nil {
 		s.logger.Warn("token bucket eval failed", zap.String("key", rlKey), zap.Error(err))
 		return false, nil

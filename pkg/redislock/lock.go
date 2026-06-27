@@ -176,10 +176,12 @@ func (l *Lock) watchdog() {
 		case <-ticker.C:
 			renewed, err := l.renew()
 			if err != nil {
+				zap.L().Warn("redislock renew failed", zap.String("key", l.lockKey), zap.Error(err))
 				// Redis 短暂抖动时继续下一轮续约，避免瞬时失败直接放弃租期。
 				continue
 			}
 			if !renewed {
+				zap.L().Warn("redislock not renewed, lock lost", zap.String("key", l.lockKey))
 				// token 已不匹配，说明锁已过期或已被其他实例获取。
 				return
 			}
