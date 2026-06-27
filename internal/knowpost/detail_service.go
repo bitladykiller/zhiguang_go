@@ -94,7 +94,7 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 		}
 		resp, parseErr := s.parseDetail(val)
 		if parseErr == nil {
-			return s.enrichDetail(ctx, resp, currentUserID, true), nil
+			return s.enrichDetail(ctx, resp, currentUserID, false), nil
 		}
 	}
 

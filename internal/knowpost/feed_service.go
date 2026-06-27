@@ -164,7 +164,7 @@ func (s *KnowPostFeedService) getPublicFeedL1(ctx context.Context, localPageKey 
 		s.recordItemHotKey(ctx, item.ID)
 	}
 	return &FeedPageResponse{
-		Items:   s.enrichItems(ctx, resp.Items, currentUserID),
+		Items:   resp.Items,
 		Page:    resp.Page,
 		Size:    resp.Size,
 		HasMore: resp.HasMore,
@@ -477,8 +477,8 @@ func (s *KnowPostFeedService) writeFeedIDListCache(ctx context.Context, idsKey, 
 	if len(idVals) == 0 {
 		return
 	}
-	if err := s.redis.LPush(ctx, idsKey, idVals...).Err(); err != nil {
-		s.logger.Warn("failed to LPush feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
+	if err := s.redis.RPush(ctx, idsKey, idVals...).Err(); err != nil {
+		s.logger.Warn("failed to RPush feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
 	}
 	ttl := time.Duration(l2IDListTTLBase+rand.Intn(l2IDListJitter)) * time.Second
 	if err := s.redis.Expire(ctx, idsKey, ttl).Err(); err != nil {

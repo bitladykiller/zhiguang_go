@@ -18,6 +18,8 @@ import (
 	"github.com/zhiguang/app/pkg/redislock"
 )
 
+var errLockNotAcquired = errors.New("repair lock not acquired")
+
 const counterRepairLeaderLockKey = "lock:counter:repair"
 
 const (
@@ -467,8 +469,14 @@ func (c *AggregationConsumer) repairDirtyMembers(ctx context.Context) error {
 
 	var firstErr error
 	for _, member := range members {
-		if err := c.repairDirtyMember(ctx, member); err != nil && firstErr == nil {
-			firstErr = err
+		if err := c.repairDirtyMember(ctx, member); err != nil {
+			if !errors.Is(err, errLockNotAcquired) {
+				// 锁竞争跳过的成员已被 SPOP 移除，需加回
+				_ = c.service.redis.SAdd(ctx, DirtySetKey(), member).Err()
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	return firstErr
@@ -479,18 +487,9 @@ func (c *AggregationConsumer) listDirtyMembers(ctx context.Context, limit int) (
 		return nil, nil
 	}
 
-	members := make([]string, 0, limit)
-	var cursor uint64
-	for len(members) < limit {
-		items, next, err := c.service.redis.SScan(ctx, DirtySetKey(), cursor, "", int64(limit-len(members))).Result()
-		if err != nil {
-			return nil, fmt.Errorf("scan dirty members: %w", err)
-		}
-		members = append(members, items...)
-		cursor = next
-		if cursor == 0 {
-			break
-		}
+	members, err := c.service.redis.SPopN(ctx, DirtySetKey(), int64(limit)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("pop dirty members: %w", err)
 	}
 	return members, nil
 }
@@ -510,14 +509,31 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 		return fmt.Errorf("repair dirty member: acquire lock: %w", err)
 	}
 	if !locked {
-		return nil
+		return errLockNotAcquired
 	}
 	defer lock.Release()
 
 	// Set rebuild marker to block concurrent flush
 	rebuildMarker := RebuildMarkerKey(entityType, entityID)
+	markerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-markerCtx.Done():
+				return
+			case <-ticker.C:
+				_ = c.service.redis.Expire(markerCtx, rebuildMarker, 30*time.Second)
+			}
+		}
+	}()
 	_ = c.service.redis.Set(ctx, rebuildMarker, "1", 30*time.Second)
-	defer c.service.redis.Del(ctx, rebuildMarker)
+	defer func() {
+		cancel()
+		c.service.redis.Del(ctx, rebuildMarker)
+	}()
 
 	sdsRaw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)
 	if err != nil {
@@ -675,7 +691,11 @@ func (b *counterBatch) reset() {
 	b.endOffset = 0
 	b.messages = b.messages[:0]
 	b.events = b.events[:0]
-	clear(b.entities)
+	if len(b.entities) > 32 {
+		b.entities = make(map[string]struct{}, cap(b.messages))
+	} else {
+		clear(b.entities)
+	}
 }
 
 // parseCounterEvent 将 Kafka 消息的 Value (JSON bytes) 反序列化为 CounterEvent。

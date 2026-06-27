@@ -8,6 +8,7 @@ import (
 
 	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
+	"github.com/zhiguang/app/pkg/redislock"
 )
 
 func (s *CounterService) publishCounterEvent(ctx context.Context, event *CounterEvent) {
@@ -152,23 +153,42 @@ func (s *CounterService) ReplayFailedMessages(ctx context.Context, limit int) er
 			continue
 		}
 
-		snapshot, err := s.buildSnapshotFromBitmap(ctx, record.EntityType, record.EntityID)
+		lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", record.EntityType, record.EntityID)
+		lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval)
 		if err != nil {
-			_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "failed", err.Error())
 			continue
 		}
 
-		sdsKey := SdsKey(record.EntityType, record.EntityID)
-		mapHSet := make(map[string]any, len(snapshot))
-		for k, v := range snapshot {
-			mapHSet[k] = v
-		}
-		if err := s.redis.HSet(ctx, sdsKey, mapHSet).Err(); err != nil {
-			_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "failed", err.Error())
-			continue
-		}
+		rebuildMarker := RebuildMarkerKey(record.EntityType, record.EntityID)
+		_ = s.redis.Set(ctx, rebuildMarker, "1", 30*time.Second).Err()
 
-		_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "recovered", "")
+		var snapshot map[string]int32
+		rebuildErr := func() error {
+			defer lock.Release()
+			defer s.redis.Del(ctx, rebuildMarker)
+
+			var err error
+			snapshot, err = s.buildSnapshotFromBitmap(ctx, record.EntityType, record.EntityID)
+			if err != nil {
+				return err
+			}
+
+			sdsKey := SdsKey(record.EntityType, record.EntityID)
+			mapHSet := make(map[string]any, len(snapshot))
+			for k, v := range snapshot {
+				mapHSet[k] = v
+			}
+			if err := s.redis.HSet(ctx, sdsKey, mapHSet).Err(); err != nil {
+				return err
+			}
+			return nil
+		}()
+
+		if rebuildErr != nil {
+			_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "failed", rebuildErr.Error())
+		} else {
+			_ = s.failureRecorder.UpdateStatus(ctx, record.ID, "recovered", "")
+		}
 	}
 
 	return nil
