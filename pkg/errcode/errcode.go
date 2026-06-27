@@ -26,6 +26,27 @@ const (
 	ErrCodeServiceUnavailable          ErrorCode = 503
 )
 
+// codeMessages 存储错误码对应的中文消息。
+var codeMessages = map[ErrorCode]string{
+	CodeSuccess:                "成功",
+	CodeBadRequest:             "请求参数错误",
+	CodeUnauthorized:           "未授权",
+	CodeForbidden:              "无权操作",
+	CodeNotFound:               "资源不存在",
+	CodeConflict:               "资源冲突",
+	CodeTooManyRequests:        "请求过于频繁",
+	CodeInternalError:          "服务器内部错误",
+	ErrCodeIdentifierExists:    "标识已存在",
+	ErrCodeIdentifierNotFound:  "标识不存在",
+	ErrCodeInvalidCredentials:  "凭证无效",
+	ErrCodeRefreshTokenInvalid: "刷新令牌无效",
+	ErrCodeTermsNotAccepted:    "未接受条款",
+	ErrCodeVerificationNotFound:        "验证码不存在",
+	ErrCodeVerificationMismatch:        "验证码不匹配",
+	ErrCodeVerificationTooManyAttempts: "验证尝试次数过多",
+	ErrCodeServiceUnavailable:          "服务暂不可用",
+}
+
 // AppError 是统一的业务错误类型，包含错误码和消息。
 type AppError struct {
 	Code    ErrorCode `json:"code"`
@@ -38,6 +59,14 @@ func (e *AppError) Error() string {
 
 func (e *AppError) WithMsg(msg string) *AppError {
 	return &AppError{Code: e.Code, Message: msg}
+}
+
+// Msg 返回错误码对应的中文消息。
+func (e *AppError) Msg() string {
+	if msg, ok := codeMessages[e.Code]; ok {
+		return msg
+	}
+	return "未知错误"
 }
 
 var (
@@ -68,6 +97,8 @@ func HTTPStatusFromCode(code ErrorCode) int {
 	switch {
 	case code == CodeSuccess:
 		return 200
+	case code == CodeBadRequest:
+		return 400
 	case code == CodeUnauthorized:
 		return 401
 	case code == CodeForbidden:
@@ -78,90 +109,10 @@ func HTTPStatusFromCode(code ErrorCode) int {
 		return 409
 	case code == CodeTooManyRequests:
 		return 429
+	case code == ErrCodeServiceUnavailable:
+		return 503
 	case code >= 500:
 		return 500
-	case code >= 400:
-		return 400
-	default:
-		return 500
-	}
-}
-
-// ============================================================================
-// 任务 D / F：结构化错误响应 + 错误嵌套
-// ============================================================================
-
-type Code string
-
-const (
-	CodeSuccessStr        Code = "SUCCESS"
-	CodeInternalStr       Code = "INTERNAL_ERROR"
-	CodeBadRequestStr     Code = "BAD_REQUEST"
-	CodeNotFoundStr       Code = "NOT_FOUND"
-	CodeUnauthorizedStr   Code = "UNAUTHORIZED"
-	CodeKnowPostNotFound  Code = "KNOWPOST_NOT_FOUND"
-	CodeKnowPostForbidden Code = "KNOWPOST_FORBIDDEN"
-	CodeCounterInvalid    Code = "COUNTER_INVALID_PARAM"
-)
-
-var codeMessages = map[Code]string{
-	CodeSuccessStr:        "成功",
-	CodeInternalStr:       "服务器内部错误",
-	CodeBadRequestStr:     "请求参数错误",
-	CodeNotFoundStr:       "资源不存在",
-	CodeUnauthorizedStr:   "未授权",
-	CodeKnowPostNotFound:  "知文不存在或已删除",
-	CodeKnowPostForbidden: "无权操作该知文",
-	CodeCounterInvalid:    "计数器参数无效",
-}
-
-func CodeMsg(c Code) string {
-	if msg, ok := codeMessages[c]; ok {
-		return msg
-	}
-	return "未知错误"
-}
-
-type StrAppError struct {
-	Code    Code   `json:"code"`
-	Message string `json:"message"`
-	Detail  string `json:"detail,omitempty"`
-	Err     error  `json:"-"`
-}
-
-func (e *StrAppError) Error() string {
-	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
-}
-
-func (e *StrAppError) Unwrap() error { return e.Err }
-
-func NewStrAppError(code Code, err error) *StrAppError {
-	return &StrAppError{Code: code, Message: CodeMsg(code), Err: err}
-}
-
-func NewStrAppErrorWithDetail(code Code, detail string) *StrAppError {
-	return &StrAppError{Code: code, Message: CodeMsg(code), Detail: detail}
-}
-
-func Wrap(err error, code Code) *StrAppError {
-	return &StrAppError{Code: code, Message: CodeMsg(code), Err: err}
-}
-
-func (e *StrAppError) WithDetail(detail string) *StrAppError {
-	e.Detail = detail
-	return e
-}
-
-func HTTPStatusFromStrCode(code Code) int {
-	switch code {
-	case CodeBadRequestStr, CodeCounterInvalid:
-		return 400
-	case CodeUnauthorizedStr:
-		return 401
-	case CodeKnowPostForbidden:
-		return 403
-	case CodeNotFoundStr, CodeKnowPostNotFound:
-		return 404
 	default:
 		return 500
 	}

@@ -60,7 +60,7 @@ func (h *ProfileHandler) RegisterRoutes(r *gin.RouterGroup) {
 func (h *ProfileHandler) GetProfile(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 
@@ -111,7 +111,7 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 
@@ -122,7 +122,7 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 
 	var req ProfilePatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 

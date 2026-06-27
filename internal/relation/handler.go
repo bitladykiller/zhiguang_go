@@ -56,11 +56,11 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 	}
 	var req FollowRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 	if req.ToUserID == userID {
-		response.Fail(c, 400, "cannot follow yourself")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("cannot follow yourself"))
 		return
 	}
 	ok, err := h.svc.Follow(c.Request.Context(), userID, req.ToUserID)
@@ -70,7 +70,7 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 		return
 	}
 	if !ok {
-		response.Fail(c, 429, "rate limited or already following")
+		response.Error(c, errcode.ErrTooManyRequests.WithMsg("rate limited or already following"))
 		return
 	}
 	response.Success(c, gin.H{"success": true})
@@ -89,7 +89,7 @@ func (h *RelationHandler) Unfollow(c *gin.Context) {
 	}
 	var req FollowRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 	ok, err := h.svc.Unfollow(c.Request.Context(), userID, req.ToUserID)
@@ -113,7 +113,7 @@ func (h *RelationHandler) Status(c *gin.Context) {
 	}
 	otherID := httputil.QueryUint64(c, "other_id", 0)
 	if otherID == 0 {
-		response.Fail(c, 400, "invalid other_id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid other_id"))
 		return
 	}
 	status, err := h.svc.RelationStatus(c.Request.Context(), userID, otherID)

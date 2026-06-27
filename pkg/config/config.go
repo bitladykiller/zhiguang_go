@@ -37,7 +37,8 @@ type Config struct {
 	Counter       CounterConfig       `yaml:"counter"`
 	Cache         CacheConfig         `yaml:"cache"`
 	LLM           LLMConfig           `yaml:"llm"`
-	Relation  RelationConfig  `yaml:"relation"`
+	Relation   RelationConfig    `yaml:"relation"`
+	Prometheus PrometheusConfig `yaml:"prometheus"`
 }
 
 const (
@@ -48,9 +49,11 @@ const (
 
 // ServerConfig 控制 HTTP 服务监听配置。
 type ServerConfig struct {
-	Port                 int `yaml:"port"` // default: 8080
-	Mode                 string `yaml:"mode"` // "debug", "release", or "test"
-	RequestTimeoutMs     int `yaml:"request_timeout_ms"` // default: 30000
+	Port                 int             `yaml:"port"` // default: 8080
+	Mode                 string          `yaml:"mode"` // "debug", "release", or "test"
+	RequestTimeoutMs     int             `yaml:"request_timeout_ms"` // default: 30000
+	CorsAllowedOrigins   []string        `yaml:"cors_allowed_origins"` // CORS 允许的来源，空时默认 ["*"]
+	RateLimit            RateLimitConfig `yaml:"rate_limit"`
 }
 
 // HTTPRequestTimeout 返回全局 HTTP 请求超时；未配置或非法时使用默认值。
@@ -363,6 +366,7 @@ type HotKeyConfig struct {
 	ExtendMediumSeconds  int `yaml:"extend_medium_seconds"`  // MEDIUM 等级 TTL 延长量（秒）
 	ExtendHighSeconds    int `yaml:"extend_high_seconds"`    // HIGH 等级 TTL 延长量（秒）
 	HotMarkTTLSeconds    int `yaml:"hot_mark_ttl_seconds"`   // hotkey:active 标记的 TTL（建议 60）
+	MaxLocalKeys         int `yaml:"max_local_keys"`          // 本地 map 最大键数限制，0 表示使用默认值 100000
 }
 
 // LLMConfig 配置 AI 模型连接信息。
@@ -403,6 +407,18 @@ type RelationConfig struct {
 type RelationTokenBucketConfig struct {
 	Capacity int `yaml:"capacity"`
 	Rate     int `yaml:"rate"`
+}
+
+// RateLimitConfig 配置每个 IP 的滑动窗口限流参数。
+type RateLimitConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	PerIP         int  `yaml:"per_ip"`          // 每个 IP 在窗口内允许的最大请求数
+	WindowMs      int  `yaml:"window_ms"`       // 滑动窗口大小（毫秒）
+	BanDurationMs int  `yaml:"ban_duration_ms"` // 超过限制后的封禁时长（毫秒）
+}
+
+type PrometheusConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // Validate 校验配置中的关键字段是否合法。

@@ -20,7 +20,7 @@ test:
 
 # Run unit tests only (packages without external dependencies)
 test-unit:
-	$(GO) test ./pkg/... ./internal/server/... -count=1 -timeout 60s
+	$(GO) test ./pkg/... ./internal/server/... ./internal/auth/... ./internal/counter/... ./internal/fanout/... ./internal/knowpost/... ./internal/outbox/... ./internal/profile/... ./internal/relation/... ./internal/search/... ./internal/storage/... ./internal/cache/... ./internal/canal/... -count=1 -timeout 60s
 
 # Run short tests (fast, no external dependencies)
 test-short:

@@ -74,18 +74,18 @@ func (h *StorageHandler) Presign(c *gin.Context) {
 		return
 	}
 	if h.svc == nil {
-		response.Fail(c, 503, "storage service is unavailable")
+		response.Error(c, errcode.ErrServiceUnavailable.WithMsg("storage service is unavailable"))
 		return
 	}
 
 	var req StoragePresignRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 
 	if !isValidFileName(req.FileName) {
-		response.Fail(c, 400, "invalid file name")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid file name"))
 		return
 	}
 

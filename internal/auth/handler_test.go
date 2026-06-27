@@ -52,13 +52,13 @@ func (m *mockAuthService) CurrentUser(ctx context.Context, userID uint64) (AuthU
 	return m.currentUserFn(ctx, userID)
 }
 
-func setupHandlerTest(t *testing.T) (*gin.Engine, *mockAuthService, *JwtService) {
-	t.Helper()
+func setupHandlerTest(tb testing.TB) (*gin.Engine, *mockAuthService, *JwtService) {
+	tb.Helper()
 	gin.SetMode(gin.TestMode)
 	mock := &mockAuthService{}
 	jwtSvc, err := newTestJwtService()
 	if err != nil {
-		t.Fatalf("failed to create test jwt service: %v", err)
+		tb.Fatalf("failed to create test jwt service: %v", err)
 	}
 	h := NewAuthHandler(mock, jwtSvc)
 	r := gin.New()
@@ -374,4 +374,48 @@ func createTempKeyPair() (string, string, string) {
 	pem.Encode(f2, pubBlock)
 	f2.Close()
 	return dir, privPath, pubPath
+}
+
+// ============================================================================
+// Benchmarks
+// ============================================================================
+
+func BenchmarkRegisterHandler(b *testing.B) {
+	r, mock, _ := setupHandlerTest(b)
+	mock.registerFn = func(ctx context.Context, req *RegisterRequest, ci ClientInfo) (AuthResponse, *errcode.AppError) {
+		return AuthResponse{
+			User:  AuthUserResponse{ID: 1, Nickname: "test"},
+			Token: TokenResponse{AccessToken: "at", RefreshToken: "rt"},
+		}, nil
+	}
+
+	body := `{"identifier":"13800138000","identifier_type":"PHONE","code":"123456","agree_terms":true}`
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/auth/register", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+	}
+}
+
+func BenchmarkLoginHandler(b *testing.B) {
+	r, mock, _ := setupHandlerTest(b)
+	mock.loginFn = func(ctx context.Context, req *LoginRequest, ci ClientInfo) (AuthResponse, *errcode.AppError) {
+		return AuthResponse{
+			User:  AuthUserResponse{ID: 1, Nickname: "test"},
+			Token: TokenResponse{AccessToken: "at", RefreshToken: "rt"},
+		}, nil
+	}
+
+	body := `{"identifier":"13800138000","identifier_type":"PHONE","password":"abc123"}`
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/auth/login", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+	}
 }

@@ -44,7 +44,7 @@ const bigVThreshold = 500
 type RelationService struct {
 	db              *sqlx.DB
 	redis           *redis.Client
-	repo            *RelationRepository
+	repo            Repo
 	l1              *freecache.Cache
 	idGen           IDGenerator
 	logger          *zap.Logger
@@ -71,7 +71,7 @@ func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDG
 	return &RelationService{
 		db:     db,
 		redis:  rdb,
-		repo:   NewRelationRepository(db),
+		repo:   NewRelationRepository(db), //nolint:staticcheck
 		l1:     freecache.NewCache(cacheSize),
 		idGen:  idGen,
 		logger: logger,

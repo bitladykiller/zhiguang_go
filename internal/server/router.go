@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/middleware"
 	"go.uber.org/zap"
@@ -18,14 +19,15 @@ import (
 //     不会因为 nil 接口调用而 panic。
 //   - 装配阶段只需在 RegisterRoutes 调用前做 nil 检查即可。
 type HandlerSet struct {
-	Auth     RouteRegistrar
-	KnowPost RouteRegistrar
-	Counter  RouteRegistrar
-	Relation RouteRegistrar
-	Search   RouteRegistrar
-	LLM      RouteRegistrar
-	Storage  RouteRegistrar
-	Profile  RouteRegistrar
+	Auth          RouteRegistrar
+	KnowPost      RouteRegistrar
+	Counter       RouteRegistrar
+	Relation      RouteRegistrar
+	Search        RouteRegistrar
+	LLM           RouteRegistrar
+	Storage       RouteRegistrar
+	Profile       RouteRegistrar
+	RateLimiter   *middleware.RateLimiter
 }
 
 // RouteRegistrar 表示任何能够注册一组 HTTP 路由的组件。
@@ -90,7 +92,13 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 	r.Use(middleware.TraceMiddleware(timeout))
 	r.Use(middleware.LoggerMiddleware(logger))
 	r.Use(middleware.ErrorLogMiddleware(logger))
-	r.Use(middleware.CorsMiddleware())
+	if cfg != nil && cfg.Prometheus.Enabled {
+		r.Use(middleware.MetricsMiddleware())
+	}
+	if cfg != nil && handlers.RateLimiter != nil {
+		r.Use(handlers.RateLimiter.Middleware())
+	}
+	r.Use(middleware.CorsMiddleware(cfg.Server.CorsAllowedOrigins))
 	r.Use(gin.Recovery())
 	if tokenValidator != nil {
 		r.Use(middleware.OptionalAuthMiddleware(tokenValidator))
@@ -123,6 +131,11 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 			dbg.GET("/mutex", gin.WrapH(pprof.Handler("mutex")))
 			dbg.GET("/threadcreate", gin.WrapH(pprof.Handler("threadcreate")))
 		}
+	}
+
+	// --- Prometheus metrics ---
+	if cfg != nil && cfg.Prometheus.Enabled {
+		r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	}
 
 	// --- API v1 路由 ---

@@ -24,6 +24,7 @@ type stubHandlerCounter struct {
 	getCountsFn func(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
 	isLikedFn   func(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	isFavedFn   func(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+	getLikersFn func(ctx context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error)
 }
 
 func (s *stubHandlerCounter) Like(ctx context.Context, userID uint64, entityType, entityID string) (bool, error) {
@@ -82,7 +83,10 @@ func (s *stubHandlerCounter) BatchIsFaved(ctx context.Context, userID uint64, en
 }
 
 func (s *stubHandlerCounter) GetLikers(ctx context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error) {
-	return nil, nil
+	if s.getLikersFn == nil {
+		return nil, nil
+	}
+	return s.getLikersFn(ctx, entityType, entityID, metric, cursor, limit)
 }
 
 // ============================================================================
@@ -402,5 +406,148 @@ func TestStatus_RedisErrorDegradesGracefully(t *testing.T) {
 	data := readSuccessData(t, w)
 	if data["is_liked"] != false || data["is_faved"] != false {
 		t.Fatalf("expected both false on redis error, got %+v", data)
+	}
+}
+
+// ============================================================================
+// GetLikers tests
+// ============================================================================
+
+func TestGetLikers_Success(t *testing.T) {
+	svc := &stubHandlerCounter{
+		getLikersFn: func(_ context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error) {
+			if entityType != "post" || entityID != 1 || metric != "like" || cursor != 0 || limit != 20 {
+				t.Errorf("unexpected args: type=%s id=%d metric=%s cursor=%d limit=%d", entityType, entityID, metric, cursor, limit)
+			}
+			return &LikersResponse{
+				Items:   []LikerItem{{UserID: 100, LikedAt: 1000}},
+				Cursor:  2000,
+				HasMore: false,
+			}, nil
+		},
+	}
+	handler := NewCounterHandler(svc)
+	w, c := setupHandlerTest("GET", "/counter/likers?entity_type=post&entity_id=1", nil, true)
+	handler.GetLikers(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=200", w.Code)
+	}
+	data := readSuccessData(t, w)
+	items := data["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 liker, got %d", len(items))
+	}
+}
+
+func TestGetLikers_Unauthenticated(t *testing.T) {
+	handler := NewCounterHandler(&stubHandlerCounter{})
+	w, c := setupHandlerTest("GET", "/counter/likers?entity_type=post&entity_id=1", nil, false)
+	handler.GetLikers(c)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want=401", w.Code)
+	}
+}
+
+func TestGetLikers_MissingParams(t *testing.T) {
+	handler := NewCounterHandler(&stubHandlerCounter{})
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{"no entity_type", "entity_id=1"},
+		{"no entity_id", "entity_type=post"},
+		{"both empty", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, c := setupHandlerTest("GET", "/counter/likers?"+tt.query, nil, true)
+			handler.GetLikers(c)
+
+			code, msg := readFailCode(t, w)
+			if code != 400 {
+				t.Fatalf("got code=%d msg=%s want 400", code, msg)
+			}
+		})
+	}
+}
+
+func TestGetLikers_InvalidEntityID(t *testing.T) {
+	handler := NewCounterHandler(&stubHandlerCounter{})
+	w, c := setupHandlerTest("GET", "/counter/likers?entity_type=post&entity_id=abc", nil, true)
+	handler.GetLikers(c)
+
+	code, msg := readFailCode(t, w)
+	if code != 400 {
+		t.Fatalf("got code=%d msg=%s want 400", code, msg)
+	}
+}
+
+func TestGetLikers_ServiceError(t *testing.T) {
+	svc := &stubHandlerCounter{
+		getLikersFn: func(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*LikersResponse, error) {
+			return nil, errors.New("redis error")
+		},
+	}
+	handler := NewCounterHandler(svc)
+	w, c := setupHandlerTest("GET", "/counter/likers?entity_type=post&entity_id=1", nil, true)
+	handler.GetLikers(c)
+
+	code, msg := readFailCode(t, w)
+	if code != 500 {
+		t.Fatalf("got code=%d msg=%s want 500", code, msg)
+	}
+}
+
+func TestGetLikers_CustomMetric(t *testing.T) {
+	var capturedMetric string
+	svc := &stubHandlerCounter{
+		getLikersFn: func(_ context.Context, _ string, _ uint64, metric string, _ uint64, _ int) (*LikersResponse, error) {
+			capturedMetric = metric
+			return &LikersResponse{}, nil
+		},
+	}
+	handler := NewCounterHandler(svc)
+	w, c := setupHandlerTest("GET", "/counter/likers?entity_type=post&entity_id=1&metric=favorite", nil, true)
+	handler.GetLikers(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=200", w.Code)
+	}
+	if capturedMetric != "favorite" {
+		t.Errorf("metric = %q, want 'favorite'", capturedMetric)
+	}
+}
+
+func TestGetLikers_DefaultMetric(t *testing.T) {
+	var capturedMetric string
+	svc := &stubHandlerCounter{
+		getLikersFn: func(_ context.Context, _ string, _ uint64, metric string, _ uint64, _ int) (*LikersResponse, error) {
+			capturedMetric = metric
+			return &LikersResponse{}, nil
+		},
+	}
+	handler := NewCounterHandler(svc)
+	w, c := setupHandlerTest("GET", "/counter/likers?entity_type=post&entity_id=1", nil, true)
+	handler.GetLikers(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=200", w.Code)
+	}
+	if capturedMetric != "like" {
+		t.Errorf("metric = %q, want 'like'", capturedMetric)
+	}
+}
+
+// ============================================================================
+// NewCounterHandler
+// ============================================================================
+
+func TestNewCounterHandler(t *testing.T) {
+	h := NewCounterHandler(nil)
+	if h == nil {
+		t.Fatal("expected non-nil handler")
 	}
 }

@@ -10,7 +10,7 @@ import (
 
 func TestCorsMiddleware_Options(t *testing.T) {
 	r := setupTest()
-	r.Use(CorsMiddleware())
+	r.Use(CorsMiddleware(nil))
 	r.Any("/test", func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
@@ -28,7 +28,7 @@ func TestCorsMiddleware_Options(t *testing.T) {
 
 func TestCorsMiddleware_WithOrigin(t *testing.T) {
 	r := setupTest()
-	r.Use(CorsMiddleware())
+	r.Use(CorsMiddleware(nil))
 	r.GET("/test", func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
@@ -45,7 +45,7 @@ func TestCorsMiddleware_WithOrigin(t *testing.T) {
 
 func TestCorsMiddleware_NoOrigin(t *testing.T) {
 	r := setupTest()
-	r.Use(CorsMiddleware())
+	r.Use(CorsMiddleware(nil))
 	r.GET("/test", func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})

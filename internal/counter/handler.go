@@ -119,7 +119,7 @@ func (h *CounterHandler) handleToggle(
 	}
 	var req ToggleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 	changed, err := toggleFn(c.Request.Context(), userID, req.EntityType, req.EntityID)
@@ -162,7 +162,7 @@ func (h *CounterHandler) GetCounts(c *gin.Context) {
 	metricsStr := c.DefaultQuery("metrics", "like,fav")
 
 	if entityType == "" || entityID == "" {
-		response.Fail(c, 400, "entity_type and entity_id are required")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("entity_type and entity_id are required"))
 		return
 	}
 
@@ -210,7 +210,7 @@ func (h *CounterHandler) Status(c *gin.Context) {
 	entityType := c.Query("entity_type")
 	entityID := c.Query("entity_id")
 	if entityType == "" || entityID == "" {
-		response.Fail(c, 400, "entity_type and entity_id are required")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("entity_type and entity_id are required"))
 		return
 	}
 
@@ -250,12 +250,12 @@ func (h *CounterHandler) GetLikers(c *gin.Context) {
 	limit := httputil.QueryInt(c, "limit", 20)
 
 	if entityType == "" || entityIDStr == "" {
-		response.Fail(c, 400, "entity_type and entity_id are required")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("entity_type and entity_id are required"))
 		return
 	}
 	entityID, err := strconv.ParseUint(entityIDStr, 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid entity_id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid entity_id"))
 		return
 	}
 

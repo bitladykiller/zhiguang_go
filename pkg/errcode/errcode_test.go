@@ -63,8 +63,8 @@ func TestHTTPStatusFromCode(t *testing.T) {
 
 func TestHTTPStatusFromCode_ServiceUnavailable(t *testing.T) {
 	got := HTTPStatusFromCode(ErrCodeServiceUnavailable)
-	if got != http.StatusInternalServerError {
-		t.Errorf("HTTPStatusFromCode(%d) = %d, want %d", ErrCodeServiceUnavailable, got, http.StatusInternalServerError)
+	if got != http.StatusServiceUnavailable {
+		t.Errorf("HTTPStatusFromCode(%d) = %d, want %d", ErrCodeServiceUnavailable, got, http.StatusServiceUnavailable)
 	}
 }
 

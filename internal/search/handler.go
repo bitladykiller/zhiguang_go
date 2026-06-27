@@ -2,6 +2,7 @@ package search
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
@@ -68,13 +69,13 @@ func (h *SearchHandler) RegisterRoutes(r *gin.RouterGroup) {
 //   - keyword 为空时返回 400
 func (h *SearchHandler) Search(c *gin.Context) {
 	if h.svc == nil {
-		response.Fail(c, 503, "search service is unavailable")
+		response.Error(c, errcode.ErrServiceUnavailable.WithMsg("search service is unavailable"))
 		return
 	}
 
 	keyword := c.Query("q")
 	if keyword == "" {
-		response.Fail(c, 400, "query parameter 'q' is required")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("query parameter 'q' is required"))
 		return
 	}
 
@@ -115,7 +116,7 @@ func (h *SearchHandler) Search(c *gin.Context) {
 //   - prefix 为空时 ES 会报错，调用方需确保传入有效前缀
 func (h *SearchHandler) Suggest(c *gin.Context) {
 	if h.svc == nil {
-		response.Fail(c, 503, "search service is unavailable")
+		response.Error(c, errcode.ErrServiceUnavailable.WithMsg("search service is unavailable"))
 		return
 	}
 

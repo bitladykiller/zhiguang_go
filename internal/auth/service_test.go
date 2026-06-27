@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"testing"
 
 	"github.com/zhiguang/app/pkg/config"
@@ -92,7 +93,7 @@ func identifierExists(repo *AuthRepository, idType IdentifierType, identifier st
 	if repo == nil {
 		return false
 	}
-	return repo.IdentifierExists(nil, idType, identifier)
+	return repo.IdentifierExists(context.Background(), idType, identifier)
 }
 
 func TestMapTokenToResponse(t *testing.T) {

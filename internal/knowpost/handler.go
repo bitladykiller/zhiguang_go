@@ -98,12 +98,12 @@ func (h *KnowPostHandler) ConfirmContent(c *gin.Context) {
 	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 	var req KnowPostContentConfirmRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 	if err := h.svc.ConfirmContent(c.Request.Context(), userID, id, req.ObjectKey, req.Etag, req.Sha256, req.Size); err != nil {
@@ -128,12 +128,12 @@ func (h *KnowPostHandler) UpdateMetadata(c *gin.Context) {
 	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 	var req KnowPostPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 	if err := h.svc.UpdateMetadata(c.Request.Context(), userID, id, &req); err != nil {
@@ -159,7 +159,7 @@ func (h *KnowPostHandler) Publish(c *gin.Context) {
 	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 	if err := h.svc.Publish(c.Request.Context(), userID, id); err != nil {
@@ -183,12 +183,12 @@ func (h *KnowPostHandler) UpdateTop(c *gin.Context) {
 	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 	var req KnowPostTopPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 	if err := h.svc.UpdateTop(c.Request.Context(), userID, id, req.IsTop); err != nil {
@@ -212,12 +212,12 @@ func (h *KnowPostHandler) UpdateVisibility(c *gin.Context) {
 	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 	var req KnowPostVisibilityPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 	if err := h.svc.UpdateVisibility(c.Request.Context(), userID, id, req.Visible); err != nil {
@@ -243,7 +243,7 @@ func (h *KnowPostHandler) Delete(c *gin.Context) {
 	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 	if err := h.svc.Delete(c.Request.Context(), userID, id); err != nil {
@@ -262,7 +262,7 @@ func (h *KnowPostHandler) Delete(c *gin.Context) {
 func (h *KnowPostHandler) GetDetail(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
 		return
 	}
 	var userID *uint64

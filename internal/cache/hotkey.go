@@ -21,6 +21,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -72,13 +73,16 @@ type HotKeyDetector struct {
 	statTTL       time.Duration // Redis Hash 的 TTL
 	markTTL       time.Duration // hotkey:active 标记 TTL
 
+	// 本地 map 最大键数限制
+	maxKeys int
+
 	// 生命周期控制
 	startOnce sync.Once
 }
 
 // NewHotKeyDetector 根据配置和 Redis 客户端创建跨实例热点键探测器。
 func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client) *HotKeyDetector {
-	return &HotKeyDetector{
+	d := &HotKeyDetector{
 		config:        cfg,
 		redis:         redisClient,
 		buf:           make(map[string]map[int64]int64),
@@ -87,7 +91,12 @@ func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client) *Hot
 		flushInterval: time.Duration(cfg.FlushIntervalSeconds) * time.Second,
 		statTTL:       time.Duration(cfg.StatTTLSeconds) * time.Second,
 		markTTL:       time.Duration(cfg.HotMarkTTLSeconds) * time.Second,
+		maxKeys:       100000,
 	}
+	if cfg.MaxLocalKeys > 0 {
+		d.maxKeys = cfg.MaxLocalKeys
+	}
+	return d
 }
 
 // Run 启动后台 flush goroutine，使用给定的 ctx 控制生命周期。
@@ -108,9 +117,47 @@ func (d *HotKeyDetector) Record(key string) {
 	defer d.mu.Unlock()
 
 	if d.buf[key] == nil {
+		if len(d.buf) >= d.maxKeys {
+			d.evictOldestLocked()
+		}
 		d.buf[key] = make(map[int64]int64)
 	}
 	d.buf[key][bucket]++
+}
+
+// evictOldestLocked 在 buf 达到上限时淘汰最早访问的键。
+// 持有 mu 锁时调用。
+func (d *HotKeyDetector) evictOldestLocked() {
+	if len(d.buf) == 0 {
+		return
+	}
+
+	type keyBucket struct {
+		key    string
+		oldest int64
+	}
+	entries := make([]keyBucket, 0, len(d.buf))
+	for k, buckets := range d.buf {
+		oldest := int64(1<<63 - 1)
+		for b := range buckets {
+			if b < oldest {
+				oldest = b
+			}
+		}
+		entries = append(entries, keyBucket{key: k, oldest: oldest})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].oldest < entries[j].oldest
+	})
+
+	// 淘汰最旧的 10%
+	evictCount := len(entries) / 10
+	if evictCount < 1 {
+		evictCount = 1
+	}
+	for i := 0; i < evictCount && i < len(entries); i++ {
+		delete(d.buf, entries[i].key)
+	}
 }
 
 // currentBucket 返回当前时间对应的桶编号（Unix 秒 / bucketSize）。
@@ -207,6 +254,16 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 		}
 		d.levelMu.Unlock()
 	}
+}
+
+// SetMaxKeys 设置本地 map 上限。
+func (d *HotKeyDetector) SetMaxKeys(n int) {
+	if n <= 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.maxKeys = n
 }
 
 // snapshotAndReset 快照并清空本地 buf，返回快照数据。

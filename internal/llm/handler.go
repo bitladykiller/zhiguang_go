@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
@@ -33,11 +34,11 @@ func (h *LlmHandler) RegisterRoutes(r *gin.RouterGroup) {
 func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 	_, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Fail(c, 401, "unauthorized")
+		response.Error(c, errcode.ErrUnauthorized)
 		return
 	}
 	if h.descSvc == nil {
-		response.Fail(c, 503, "llm description service is unavailable")
+		response.Error(c, errcode.ErrServiceUnavailable.WithMsg("llm description service is unavailable"))
 		return
 	}
 
@@ -46,7 +47,7 @@ func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 		Content string `json:"content" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 
@@ -63,17 +64,17 @@ func (h *LlmHandler) SuggestDescription(c *gin.Context) {
 func (h *LlmHandler) RagQuery(c *gin.Context) {
 	_, ok := middleware.GetUserID(c)
 	if !ok {
-		response.Fail(c, 401, "unauthorized")
+		response.Error(c, errcode.ErrUnauthorized)
 		return
 	}
 	if h.ragSvc == nil {
-		response.Fail(c, 503, "rag query service is unavailable")
+		response.Error(c, errcode.ErrServiceUnavailable.WithMsg("rag query service is unavailable"))
 		return
 	}
 
 	postID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Fail(c, 400, "invalid post id")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid post id"))
 		return
 	}
 
@@ -81,7 +82,7 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 		Question string `json:"question" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Fail(c, 400, "invalid request")
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
 

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/coocood/freecache"
 	"go.uber.org/zap"
@@ -13,6 +14,7 @@ import (
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/internal/server"
 	"github.com/zhiguang/app/pkg/config"
+	pkgmw "github.com/zhiguang/app/pkg/middleware"
 )
 
 func InitializeApp(configPath string) (*server.App, error) {
@@ -38,6 +40,11 @@ func InitializeApp(configPath string) (*server.App, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if err := database.RunMigrations(db); err != nil {
+		return nil, fmt.Errorf("database migration: %w", err)
+	}
+
 	kafkaWriter := messaging.NewKafkaWriter(&cfg.Kafka)
 	canalOutboxWriter := messaging.NewTopicWriter(&cfg.Kafka, outbox.CanalOutboxTopic, false)
 
@@ -80,6 +87,11 @@ func InitializeApp(configPath string) (*server.App, error) {
 		LLM:      llmHandler,
 		Storage:  storageHandler,
 		Profile:  profileHandler,
+	}
+
+	if cfg.Server.RateLimit.Enabled {
+		rateLimiter := pkgmw.NewRateLimiter(redisClient, cfg.Server.RateLimit, logger)
+		handlerSet.RateLimiter = rateLimiter
 	}
 
 	healthChecker := server.NewHealthChecker(db, redisClient)
