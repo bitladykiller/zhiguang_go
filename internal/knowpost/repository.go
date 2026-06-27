@@ -9,6 +9,8 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// knowPostUpdateFields 是 UpdateMetadata 使用的字段白名单。
+// 仅当字段名在此 map 中存在时才会被拼接到 SQL SET 子句，防止注入。
 var knowPostUpdateFields = map[string]string{
 	"title":       "title",
 	"tag_id":      "tag_id",

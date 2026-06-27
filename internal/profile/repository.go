@@ -8,6 +8,8 @@ import (
 	"github.com/zhiguang/app/internal/model"
 )
 
+// profileUpdateFields 是允许更新的字段白名单。
+// buildUpdateSet 仅会使用此 map 中的字段名拼接 SQL，防止注入。
 var profileUpdateFields = map[string]string{
 	"nickname":  "nickname",
 	"avatar":    "avatar",

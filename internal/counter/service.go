@@ -158,7 +158,9 @@ func (s *CounterService) scanBitmapForLikers(ctx context.Context, entityType str
 		}
 		pipe.Expire(ctx, cacheKey, 5*time.Minute)
 		pipe.ZRemRangeByRank(ctx, cacheKey, 0, -501)
-		_, _ = pipe.Exec(ctx)
+		if _, err := pipe.Exec(ctx); err != nil {
+			s.logger.Warn("likers cache pipeline exec failed", zap.String("entityType", entityType), zap.Uint64("entityID", entityID), zap.Error(err))
+		}
 	}
 
 	return &LikersResponse{Items: items, Cursor: nextCursor, HasMore: hasMore}, nil

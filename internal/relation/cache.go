@@ -145,7 +145,9 @@ func (s *RelationService) isBigV(ctx context.Context, userID uint64) bool {
 	if bigV {
 		val = []byte("1")
 	}
-	_ = s.l1.Set([]byte(cacheKey), val, 300)
+	if err := s.l1.Set([]byte(cacheKey), val, 300); err != nil {
+		s.logger.Warn("L1 cache set failed", zap.String("key", cacheKey), zap.Error(err))
+	}
 	return bigV
 }
 

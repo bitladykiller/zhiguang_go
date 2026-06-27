@@ -140,12 +140,14 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 	defer c.reader.Close()
 
 	flushWg := sync.WaitGroup{}
+	flushCtx, flushCancel := context.WithCancel(ctx)
+	defer flushCancel()
 	for i := 0; i < defaultCounterFlushWorkers; i++ {
 		flushWg.Add(1)
 		go func() {
 			defer flushWg.Done()
 			for batch := range c.flushCh {
-				c.flushAndReset(context.Background(), batch)
+				c.flushAndReset(flushCtx, batch)
 			}
 		}()
 	}
@@ -352,19 +354,23 @@ func (c *AggregationConsumer) takeExpiredBatch(ctx context.Context) *counterBatc
 
 // handleMessage processes one Kafka message under lock. Returns a batch to flush (removed from map), or nil.
 func (c *AggregationConsumer) handleMessage(ctx context.Context, msg kafka.Message) *counterBatch {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	evt, err := parseCounterEvent(msg.Value)
 	if err != nil {
+		// JSON 解析在锁外完成，进入锁只做数据操作
+		c.mu.Lock()
 		if batch := c.batches[msg.Partition]; batch != nil && batch.size() > 0 {
 			delete(c.batches, msg.Partition)
+			defer c.mu.Unlock()
 			c.skipMalformedMessage(ctx, msg, err)
 			return batch
 		}
+		c.mu.Unlock()
 		c.skipMalformedMessage(ctx, msg, err)
 		return nil
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	batch := c.batches[msg.Partition]
 
@@ -495,7 +501,9 @@ func (c *AggregationConsumer) repairDirtyMembers(ctx context.Context) error {
 		if err := c.repairDirtyMember(ctx, member); err != nil {
 			if !errors.Is(err, errLockNotAcquired) {
 				// 锁竞争跳过的成员已被 SPOP 移除，需加回
-				_ = c.service.redis.SAdd(ctx, DirtySetKey(), member).Err()
+				if err := c.service.redis.SAdd(ctx, DirtySetKey(), member).Err(); err != nil {
+				c.logger.Warn("repair re-add dirty member failed", zap.String("member", member), zap.Error(err))
+			}
 			}
 			if firstErr == nil {
 				firstErr = err
@@ -548,16 +556,22 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 			case <-watchCtx.Done():
 				return
 			case <-ticker.C:
-				_ = c.service.redis.Expire(watchCtx, rebuildMarker, defaultRebuildMarkerTTL)
+				if err := c.service.redis.Expire(watchCtx, rebuildMarker, defaultRebuildMarkerTTL).Err(); err != nil {
+				c.logger.Warn("watchdog expire rebuild marker failed", zap.Error(err))
+			}
 			}
 		}
 	}()
-	_ = c.service.redis.Set(ctx, rebuildMarker, "1", defaultRebuildMarkerTTL)
+	if err := c.service.redis.Set(ctx, rebuildMarker, "1", defaultRebuildMarkerTTL).Err(); err != nil {
+	c.logger.Warn("set rebuild marker failed", zap.Error(err))
+}
 	defer func() {
 		watchCancel()
 		<-watchDone
 		lock.Release()
-		_ = c.service.redis.Del(ctx, rebuildMarker)
+		if err := c.service.redis.Del(ctx, rebuildMarker).Err(); err != nil {
+		c.logger.Warn("delete rebuild marker failed", zap.Error(err))
+	}
 	}()
 
 	sdsRaw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)

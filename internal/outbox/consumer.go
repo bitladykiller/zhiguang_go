@@ -166,7 +166,9 @@ func (c *Consumer) recordFailedMessage(ctx context.Context, msg kafka.Message, c
 	}
 	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	_ = c.failureRecorder.Create(pubCtx, CanalOutboxTopic, "", msg.Value, cause)
+	if err := c.failureRecorder.Create(pubCtx, CanalOutboxTopic, "", msg.Value, cause); err != nil {
+		c.logger.Warn("record failed outbox message failed", zap.Error(err))
+	}
 }
 
 // handleMessage 解析一条 Kafka 消息，提取 outbox 行并逐行处理。

@@ -5,18 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/zhiguang/app/pkg/testutil"
 )
 
 func startTestRedis(t *testing.T) (*redis.Client, func()) {
 	t.Helper()
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("start miniredis: %v", err)
-	}
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	return client, func() { client.Close(); mr.Close() }
+	rdb := testutil.StartTestRedis(t)
+	return rdb, func() { rdb.Close() }
 }
 
 func TestTryAcquire_Success(t *testing.T) {

@@ -79,7 +79,7 @@ canal:
   port: 11111
   destination: example
   username: canal
-  password: "Canal@123456"
+  password: "CHANGE_ME"
   filter: zhiguang\\.outbox
   batch_size: 1000
   interval_ms: 1000

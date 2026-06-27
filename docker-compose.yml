@@ -68,11 +68,11 @@ services:
     container_name: zhiguang-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-zhiguang_root_admin}
       MYSQL_ROOT_HOST: "%"
       MYSQL_DATABASE: zhiguang
       MYSQL_USER: zhiguang
-      MYSQL_PASSWORD: zhiguang123
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhiguang_app_user}
     command:
       - --default-authentication-plugin=mysql_native_password
       - --character-set-server=utf8mb4
@@ -84,7 +84,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-proot123"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-zhiguang_root_admin}"]
       interval: 10s
       timeout: 5s
       retries: 10

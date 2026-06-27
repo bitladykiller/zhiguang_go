@@ -93,8 +93,10 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	streamChan := make(chan string, 10)
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		defer func() {
 			if r := recover(); r != nil {
 				zap.L().Error("ragSvc.Query panicked", zap.Any("panic", r))
@@ -118,15 +120,24 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	for {
 		select {
 		case <-readCtx.Done():
-			return
+			goto cleanup
 		case token, ok := <-streamChan:
 			if !ok {
-				return
+				goto cleanup
 			}
 			fmt.Fprint(c.Writer, token)
 			if flusher != nil {
 				flusher.Flush()
 			}
+		}
+	}
+
+cleanup:
+	for {
+		select {
+		case <-done:
+			return
+		case <-streamChan:
 		}
 	}
 }
