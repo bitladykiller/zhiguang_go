@@ -13,7 +13,7 @@ import (
 )
 
 // ============================================================================
-// Stub helpers
+// Stub 辅助函数
 // ============================================================================
 
 type stubKafkaReader struct {
@@ -86,7 +86,7 @@ func makeMalformedMessage(partition int, offset int64) kafka.Message {
 }
 
 // ============================================================================
-// counterBatch tests
+// counterBatch 测试
 // ============================================================================
 
 func TestCounterBatch_EmptySize(t *testing.T) {
@@ -209,7 +209,7 @@ func TestCounterBatch_CntKeys(t *testing.T) {
 }
 
 // ============================================================================
-// nextBatchDeadline tests
+// nextBatchDeadline 测试
 // ============================================================================
 
 func TestNextBatchDeadline_NoBatches(t *testing.T) {
@@ -222,7 +222,7 @@ func TestNextBatchDeadline_NoBatches(t *testing.T) {
 func TestNextBatchDeadline_WithBatch(t *testing.T) {
 	b := newCounterBatch(10)
 	b.openedAt = time.Now()
-	// Add an event so the batch is not considered empty
+	// 添加一个事件，使批次不被视为空
 	evt := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
 	_ = b.addEvent(makeCounterEventMessage(t, 0, 100, evt), evt)
 	batches := map[int]*counterBatch{0: b}
@@ -238,7 +238,7 @@ func TestNextBatchDeadline_WithBatch(t *testing.T) {
 }
 
 // ============================================================================
-// AggregationConsumer core logic tests with mock reader
+// AggregationConsumer 核心逻辑测试（使用 mock reader）
 // ============================================================================
 
 func TestNewAggregationConsumer_NilReader(t *testing.T) {
@@ -266,7 +266,7 @@ func TestNewAggregationConsumer_DefaultConfig(t *testing.T) {
 }
 
 // ============================================================================
-// handleMessage tests (replaces acceptMessage)
+// handleMessage 测试（替代 acceptMessage）
 // ============================================================================
 
 func TestHandleMessage_ValidEvent(t *testing.T) {
@@ -344,7 +344,7 @@ func TestHandleMessage_TriggersFlushOnBatchFull(t *testing.T) {
 		t.Fatal("expected non-nil batch on batch full")
 	}
 
-	// The batch should have been removed from map
+	// 批次应该已从 map 中移除
 	if consumer.batches[0] != nil {
 		t.Fatal("expected batch to be removed from map")
 	}
@@ -380,8 +380,8 @@ func TestHandleMessage_FlushOnPartitionChange(t *testing.T) {
 		t.Fatal("unexpected partition 1 batch")
 	}
 
-	// Second message with partition 1 — creates new batch, does NOT flush 0 batch
-	// (cross-partition messages don't trigger flush in current design)
+	// 第二条消息使用 partition 1 — 创建新批次，不 flush 0 号批次
+	// （跨分区消息在当前设计中不触发 flush）
 	batch := consumer.handleMessage(context.Background(), makeCounterEventMessage(t, 1, 3, evt2))
 	if batch != nil {
 		t.Fatal("expected nil batch when adding to new partition")
@@ -413,7 +413,7 @@ func TestHandleMessage_FlushOnMalformedWithExistingBatch(t *testing.T) {
 	evt := CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}
 	_ = consumer.handleMessage(context.Background(), makeCounterEventMessage(t, 0, 1, evt))
 
-	// Malformed on same partition should return existing batch
+	// 同一分区上的畸形消息应返回已有批次
 	batch := consumer.handleMessage(context.Background(), makeMalformedMessage(0, 2))
 	if batch == nil {
 		t.Fatal("expected non-nil batch on malformed with existing batch")
@@ -421,7 +421,7 @@ func TestHandleMessage_FlushOnMalformedWithExistingBatch(t *testing.T) {
 }
 
 // ============================================================================
-// takeExpiredBatch tests (replaces flushExpiredBatches)
+// takeExpiredBatch 测试（替代 flushExpiredBatches）
 // ============================================================================
 
 func TestTakeExpiredBatch_NoBatches(t *testing.T) {
@@ -441,7 +441,7 @@ func TestTakeExpiredBatch_NoneExpired(t *testing.T) {
 	}
 	batch := newCounterBatch(10)
 	batch.openedAt = time.Now()
-	// Add event so size() > 0
+	// 添加事件使 size() > 0
 	_ = batch.addEvent(makeCounterEventMessage(t, 0, 1, CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1}), CounterEvent{EntityType: "post", EntityID: "1", Index: IdxLike, Delta: 1})
 	consumer.batches[0] = batch
 
@@ -464,7 +464,7 @@ func TestTakeExpiredBatch_Expired(t *testing.T) {
 	consumer.batches[0] = batch
 
 	result := consumer.takeExpiredBatch(context.Background())
-	// Empty batch (size()==0) gets cleaned, not returned
+	// 空批次（size()==0）被清理，不返回
 	if result != nil {
 		t.Fatal("expected nil for expired empty batch (cleaned)")
 	}
@@ -478,8 +478,8 @@ func TestTakeExpiredBatch_ClearsEmptyBatches(t *testing.T) {
 		flushInterval: time.Minute,
 		batches:       make(map[int]*counterBatch),
 	}
-	consumer.batches[0] = newCounterBatch(10) // empty
-	consumer.batches[1] = &counterBatch{partition: -1, messages: make([]kafka.Message, 0)} // empty
+	consumer.batches[0] = newCounterBatch(10)                                 // 空
+	consumer.batches[1] = &counterBatch{partition: -1, messages: make([]kafka.Message, 0)} // 空
 
 	batch := consumer.takeExpiredBatch(context.Background())
 	if batch != nil {
@@ -494,7 +494,7 @@ func TestTakeExpiredBatch_ClearsEmptyBatches(t *testing.T) {
 }
 
 // ============================================================================
-// parseCounterEvent tests
+// parseCounterEvent 测试
 // ============================================================================
 
 func TestParseCounterEvent_Valid(t *testing.T) {
@@ -523,7 +523,7 @@ func TestParseCounterEvent_Empty(t *testing.T) {
 }
 
 // ============================================================================
-// skipMalformedMessage tests
+// skipMalformedMessage 测试
 // ============================================================================
 
 func TestSkipMalformedMessage(t *testing.T) {
@@ -548,7 +548,7 @@ func TestSkipMalformedMessage(t *testing.T) {
 }
 
 // ============================================================================
-// nil-safety tests
+// nil 安全性测试
 // ============================================================================
 
 func TestAggregationConsumer_NilMethods(t *testing.T) {
@@ -581,7 +581,7 @@ func TestCounterBatch_NilAdd(t *testing.T) {
 }
 
 // ============================================================================
-// Flush edge cases
+// Flush 边界情况
 // ============================================================================
 
 func TestFlushBatch_NilBatch(t *testing.T) {
@@ -609,7 +609,7 @@ func TestFlushAndReset_NilBatch(t *testing.T) {
 }
 
 // ============================================================================
-// addToBatch tests
+// addToBatch 测试
 // ============================================================================
 
 func TestAddToBatch_NewBatch(t *testing.T) {

@@ -40,7 +40,7 @@ func (s *CounterService) GetCounts(ctx context.Context, entityType, entityID str
 		return nil, fmt.Errorf("redis hmget: %w", err)
 	}
 
-	// Check if key exists as Hash; if any value is non-nil, the key is valid
+	// 检查键是否作为 Hash 存在；若任一值为非 nil，则键有效
 	allNil := true
 	if err == nil {
 		for _, v := range vals {
@@ -51,7 +51,7 @@ func (s *CounterService) GetCounts(ctx context.Context, entityType, entityID str
 		}
 	}
 
-	// Key doesn't exist or is completely empty → trigger rebuild
+	// 键不存在或完全为空 → 触发重建
 	if err != nil || allNil {
 		if _, rebuildErr := s.rebuildSds(ctx, entityType, entityID); rebuildErr != nil {
 			return s.emptyCounts(metrics), nil

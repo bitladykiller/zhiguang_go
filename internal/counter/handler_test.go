@@ -13,7 +13,7 @@ import (
 )
 
 // ============================================================================
-// Stub handler dependencies
+// Stub handler 依赖
 // ============================================================================
 
 type stubHandlerCounter struct {
@@ -90,7 +90,7 @@ func (s *stubHandlerCounter) GetLikers(ctx context.Context, entityType string, e
 }
 
 // ============================================================================
-// Helpers
+// 辅助函数
 // ============================================================================
 
 func setupHandlerTest(method, target string, body any, setUserID bool) (*httptest.ResponseRecorder, *gin.Context) {
@@ -140,7 +140,7 @@ func readFailCode(t *testing.T, w *httptest.ResponseRecorder) (int, string) {
 }
 
 // ============================================================================
-// Toggle tests (Like / Unlike / Fav / Unfav)
+// Toggle 测试（Like / Unlike / Fav / Unfav）
 // ============================================================================
 
 func TestHandlerLike_Success(t *testing.T) {
@@ -267,7 +267,7 @@ func TestHandlerUnfav_Success(t *testing.T) {
 }
 
 // ============================================================================
-// GetCounts tests
+// GetCounts 测试
 // ============================================================================
 
 func TestGetCounts_Success(t *testing.T) {
@@ -349,7 +349,7 @@ func TestGetCounts_ServiceError(t *testing.T) {
 }
 
 // ============================================================================
-// Status tests
+// Status 测试
 // ============================================================================
 
 func TestStatus_Success(t *testing.T) {
@@ -410,7 +410,7 @@ func TestStatus_RedisErrorDegradesGracefully(t *testing.T) {
 }
 
 // ============================================================================
-// GetLikers tests
+// GetLikers 测试
 // ============================================================================
 
 func TestGetLikers_Success(t *testing.T) {
