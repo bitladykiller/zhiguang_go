@@ -16,18 +16,18 @@ import (
 	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
-// CounterReader 定义搜索索引投影过程中所需的计数读取接口子集。
+// CounterReader defines the subset of counter read interface needed during search index projection.
 //
-// WHY：只声明 GetCounts 一个方法，而不是直接引用 counter.CounterService。
-// 这样可以避免 search 包和 counter 包之间产生稳定的编译依赖，
-// 同时也是对接口隔离原则（ISP）的实践——投影器只需要知道如何读取计数，
-// 不需要知道切换开关状态的细节。
+// WHY: Only declares the GetCounts method, rather than directly referencing counter.CounterService.
+// This avoids a stable compile-time dependency between the search and counter packages,
+// and also follows the Interface Segregation Principle (ISP) — the projector only needs to know
+// how to read counts, not the details of toggle state management.
 type CounterReader interface {
 	GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
 }
 
-// searchIndexSourceRow 是索引投影时从 know_posts JOIN users 查回来的原始行。
-// 包含搜索引擎索引所需的全部字段，从 MySQL 联表查询一次性加载。
+// searchIndexSourceRow is the raw row fetched from know_posts JOIN users during index projection.
+// Contains all fields needed by the search engine index, loaded from MySQL in a single joined query.
 type searchIndexSourceRow struct {
 	ID             uint64     `db:"id"`
 	TagID          *uint64    `db:"tag_id"`
@@ -45,21 +45,21 @@ type searchIndexSourceRow struct {
 	PublishTime    *time.Time `db:"publish_time"`
 }
 
-// payloadEnvelope 是从 outbox 事件的 Payload 字段解析出的通用信封结构。
-// Entity 标识聚合类型（如 knowpost），Op 表示操作类型（upsert/delete），
-// ID 是聚合根 ID。投影器根据 Op 值决定执行 upsert 还是软删除。
+// payloadEnvelope is the generic envelope structure parsed from the Payload field of an outbox event.
+// Entity identifies the aggregate type (e.g., knowpost), Op denotes the operation type (upsert/delete),
+// and ID is the aggregate root ID. The projector decides whether to execute upsert or soft delete based on Op.
 type payloadEnvelope struct {
 	Entity string `json:"entity"`
 	Op     string `json:"op"`
 	ID     uint64 `json:"id"`
 }
 
-// KnowPostProjector 负责把 knowpost 事件投影到搜索索引。
+// KnowPostProjector is responsible for projecting knowpost events into the search index.
 //
-// 接收从 canal-outbox 主题消费到的 outbox 事件，
-// 解析 payload 后执行 upsert 或 delete 操作更新 ES 索引。
-// 每次投影都会重新从 MySQL 查询完整的数据并补充实时计数，
-// 确保 ES 索引中的数据是最终一致的（eventual consistency）。
+// It receives outbox events consumed from the canal-outbox topic,
+// parses the payload, and performs upsert or delete operations to update the ES index.
+// Each projection re-queries the full data from MySQL and supplements real-time counts,
+// ensuring eventual consistency of the ES index data.
 type KnowPostProjector struct {
 	db        sqlx.ExtContext
 	searchSvc *SearchService
@@ -67,7 +67,7 @@ type KnowPostProjector struct {
 	logger    *zap.Logger
 }
 
-// NewKnowPostProjector 创建搜索索引投影器实例。
+// NewKnowPostProjector creates a search index projector instance.
 func NewKnowPostProjector(db sqlx.ExtContext, searchSvc *SearchService, counter CounterReader, logger *zap.Logger) *KnowPostProjector {
 	if db == nil || searchSvc == nil {
 		return nil
@@ -80,16 +80,16 @@ func NewKnowPostProjector(db sqlx.ExtContext, searchSvc *SearchService, counter 
 	}
 }
 
-// ProjectPayload 解析 outbox 事件的 payload JSON，执行搜索索引的 upsert 或 delete 操作。
+// ProjectPayload parses the payload JSON from an outbox event and performs upsert or delete on the search index.
 //
-// 参数：
-//   - raw: outbox 事件 Payload 字段的原始 JSON 字节
+// Parameters:
+//   - raw: raw JSON bytes of the outbox event Payload field
 //
-// 流程：
-//  1. 解析 payloadEnvelope（含 entity、op、id 三个字段）。
-//  2. 如果 entity != "knowpost" 或 id == 0，跳过。
-//  3. 如果 op == "delete"，执行软删除（将 ES 文档的 status 标记为 "deleted"）。
-//  4. 否则执行 upsert：从 MySQL 查询完整数据后索引到 ES。
+// Flow:
+//  1. Parse payloadEnvelope (containing entity, op, and id fields).
+//  2. If entity != "knowpost" or id == 0, skip.
+//  3. If op == "delete", perform soft delete (mark ES document status as "deleted").
+//  4. Otherwise, perform upsert: query full data from MySQL and index to ES.
 func (p *KnowPostProjector) ProjectPayload(ctx context.Context, raw []byte) error {
 	if p == nil {
 		return nil
@@ -108,16 +108,16 @@ func (p *KnowPostProjector) ProjectPayload(ctx context.Context, raw []byte) erro
 	return p.UpsertKnowPost(ctx, payload.ID)
 }
 
-// UpsertKnowPost 从 MySQL 查询知文数据，索引到 Elasticsearch。
+// UpsertKnowPost queries knowpost data from MySQL and indexes it into Elasticsearch.
 //
-// 流程：
-//  1. 调用 buildSearchDocument 查询数据库并构建 ES 文档。
-//  2. 如果查询结果为空（sql.ErrNoRows），说明该知文可能已被物理删除，
-//     在 ES 中将其标记为 "deleted"。
-//  3. 否则调用 searchSvc.IndexDocument 索引到 ES。
+// Flow:
+//  1. Call buildSearchDocument to query the database and build the ES document.
+//  2. If the query result is empty (sql.ErrNoRows), the knowpost may have been physically deleted,
+//     so mark it as "deleted" in ES.
+//  3. Otherwise, call searchSvc.IndexDocument to index into ES.
 //
-// 参数：
-//   - postID: 知文的雪花 ID
+// Parameters:
+//   - postID: snowflake ID of the knowpost
 func (p *KnowPostProjector) UpsertKnowPost(ctx context.Context, postID uint64) error {
 	doc, err := p.buildSearchDocument(ctx, postID)
 	if err != nil {
@@ -129,10 +129,10 @@ func (p *KnowPostProjector) UpsertKnowPost(ctx context.Context, postID uint64) e
 	return p.searchSvc.IndexDocument(ctx, doc)
 }
 
-// SoftDeleteKnowPost 在搜索索引中将知文标记为 "deleted"。
+// SoftDeleteKnowPost marks a knowpost as "deleted" in the search index.
 //
-// 这会索引一个只包含 ID 和 Status 的最小文档，覆盖之前的全部字段。
-// 搜索时通过 filter { term: { status: "published" } } 过滤掉已删除的文档。
+// This indexes a minimal document containing only ID and Status, overwriting all previous fields.
+// Search filters out deleted documents using filter { term: { status: "published" } }.
 func (p *KnowPostProjector) SoftDeleteKnowPost(ctx context.Context, postID uint64) error {
 	return p.searchSvc.IndexDocument(ctx, &SearchIndexDoc{
 		ID:     strconv.FormatUint(postID, 10),
@@ -140,16 +140,16 @@ func (p *KnowPostProjector) SoftDeleteKnowPost(ctx context.Context, postID uint6
 	})
 }
 
-// buildSearchDocument 从 MySQL 查询知文完整数据，构建 ES 索引文档。
+// buildSearchDocument queries the full knowpost data from MySQL and constructs the ES index document.
 //
-// 查询会 JOIN users 表获取作者信息，并调用 counter 服务获取实时计数。
-// 如果 p.counter 为 nil，计数部分将返回 0。
+// The query JOINs the users table to get author info, and calls the counter service for real-time counts.
+// If p.counter is nil, count fields will return 0.
 //
-// 函数调用说明：
+// Function call notes:
 //   - sqlx.GetContext(ctx, p.db, &row, sql, args...):
-//     sqlx 包级函数，查询单行并映射到结构体。
-//   - time.RFC3339: 时间格式常量 "2006-01-02T15:04:05Z07:00"，
-//     用于格式化发布时间的 ISO 8601 字符串。
+//     sqlx package-level function, queries a single row and maps to the struct.
+//   - time.RFC3339: time format constant "2006-01-02T15:04:05Z07:00",
+//     used to format publish time as ISO 8601 string.
 func (p *KnowPostProjector) buildSearchDocument(ctx context.Context, postID uint64) (*SearchIndexDoc, error) {
 	var row searchIndexSourceRow
 	err := sqlx.GetContext(ctx, p.db, &row, `
@@ -214,15 +214,15 @@ WHERE know_posts.id = ?
 	return doc, nil
 }
 
-// buildSuggestField 构建 ES completion suggester 字段，包含标题和标签。
+// buildSuggestField builds the ES completion suggester field, containing the title and tags.
 //
-// 参数：
-//   - title: 知文章节的标题指针
-//   - tags: 知文章节的标签 JSON 数组指针
+// Parameters:
+//   - title: pointer to the knowpost title string
+//   - tags:  pointer to the knowpost tags JSON array
 //
-// 返回值：
-//   - *SuggestField: 包含标题和标签作为 completion 输入的字段。
-//     如果没有有效输入则返回 nil（不索引该字段）。
+// Returns:
+//   - *SuggestField: contains title and tags as completion inputs.
+//     Returns nil if there is no valid input (the field is not indexed).
 func buildSuggestField(title *string, tags *string) *SuggestField {
 	inputs := make([]string, 0, 1)
 	if text := strings.TrimSpace(strValue(title)); text != "" {
@@ -240,7 +240,7 @@ func buildSuggestField(title *string, tags *string) *SuggestField {
 	return &SuggestField{Input: inputs}
 }
 
-// strValue 安全地解引用 *string，nil 指针返回空字符串。
+// strValue safely dereferences a *string, returning empty string for nil.
 func strValue(v *string) string {
 	if v == nil {
 		return ""

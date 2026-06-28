@@ -17,7 +17,7 @@ const (
 	defaultFillL1Limit     = 500
 )
 
-// fillL1 将 BigV 用户的前 500 个关注/粉丝 ID 写入 freecache（L1）。
+// fillL1 writes the first 500 follow/follower IDs of a BigV user into freecache (L1).
 func (s *RelationService) fillL1(ctx context.Context, listType string, userID uint64) {
 	key := s.l1KeyStr(listType, userID)
 	entries, err := s.readFromDB(ctx, listType, userID, defaultFillL1Limit, 0)
@@ -31,7 +31,7 @@ func (s *RelationService) fillL1(ctx context.Context, listType string, userID ui
 	s.l1.Set([]byte(key), []byte(strings.Join(idStrs, ",")), l1CacheTTL)
 }
 
-// invalidateCaches 在关注/取关操作后，失效涉及用户的 L1（freecache）和 L2（Redis ZSet）缓存。
+// invalidateCaches invalidates L1 (freecache) and L2 (Redis ZSet) caches for the involved users after follow/unfollow operations.
 func (s *RelationService) invalidateCaches(ctx context.Context, fromUserID, toUserID uint64) {
 	cacheCtx, cancel := context.WithTimeout(ctx, relationInvalidateLockWaitLimit)
 	defer cancel()
@@ -64,7 +64,7 @@ func (s *RelationService) invalidateCaches(ctx context.Context, fromUserID, toUs
 	}
 }
 
-// fillZSet 从数据库读取关注/粉丝列表并回填到 Redis ZSet。
+// fillZSet reads follow/follower lists from the database and backfills them into the Redis ZSet.
 func (s *RelationService) fillZSet(ctx context.Context, listType string, userID uint64) (bool, error) {
 	zsetKey := s.zsetKey(listType, userID)
 	entries, err := s.readFromDB(ctx, listType, userID, relationListCacheWarmLimit, 0)
@@ -92,7 +92,7 @@ func (s *RelationService) fillZSet(ctx context.Context, listType string, userID 
 	return true, nil
 }
 
-// ensureListCacheWarm 在分布式锁保护下回填某个用户的关注/粉丝 ZSet。
+// ensureListCacheWarm backfills a user's follow/follower ZSet under distributed lock protection.
 func (s *RelationService) ensureListCacheWarm(ctx context.Context, listType string, userID uint64) (bool, error) {
 	zsetKey := s.zsetKey(listType, userID)
 	exists, err := s.redis.Exists(ctx, zsetKey).Result()
@@ -115,7 +115,7 @@ func (s *RelationService) ensureListCacheWarm(ctx context.Context, listType stri
 	return s.fillZSet(ctx, listType, userID)
 }
 
-// cacheEndReached 判断当前 offset 是否已经超过预热缓存的可覆盖范围。
+// cacheEndReached checks whether the current offset has exceeded the coverable range of the warm cache.
 func (s *RelationService) cacheEndReached(ctx context.Context, zsetKey string, offset int) bool {
 	size, err := s.redis.ZCard(ctx, zsetKey).Result()
 	if err != nil {
@@ -127,8 +127,8 @@ func (s *RelationService) cacheEndReached(ctx context.Context, zsetKey string, o
 	return false
 }
 
-// isBigV 判断某个用户是否是 BigV（粉丝数 >= 500）。
-// 使用本地 L1 缓存 5 分钟，避免每次都查 Redis ZCard。
+// isBigV determines whether a user is a BigV (follower count >= 500).
+// Uses local L1 cache for 5 minutes to avoid querying Redis ZCard every time.
 func (s *RelationService) isBigV(ctx context.Context, userID uint64) bool {
 	cacheKey := fmt.Sprintf("bigv:%d", userID)
 	if data, err := s.l1.Get([]byte(cacheKey)); err == nil && len(data) > 0 {
@@ -151,7 +151,7 @@ func (s *RelationService) isBigV(ctx context.Context, userID uint64) bool {
 	return bigV
 }
 
-// shouldFallbackToFollowing 判断是否需要从 following 表降级查询粉丝。
+// shouldFallbackToFollowing checks whether a fallback query from the following table for followers is needed.
 func (s *RelationService) shouldFallbackToFollowing(ctx context.Context, userID uint64) bool {
 	key := fmt.Sprintf("follower:fallback:exhausted:%d", userID)
 	exists, err := s.redis.Exists(ctx, key).Result()
@@ -161,7 +161,7 @@ func (s *RelationService) shouldFallbackToFollowing(ctx context.Context, userID 
 	return exists == 0
 }
 
-// markFollowerFallbackExhausted 标记该用户的粉丝降级查询已穷尽。
+// markFollowerFallbackExhausted marks that the follower fallback query for this user is exhausted.
 func (s *RelationService) markFollowerFallbackExhausted(ctx context.Context, userID uint64) {
 	key := fmt.Sprintf("follower:fallback:exhausted:%d", userID)
 	if err := s.redis.Set(ctx, key, "1", fallbackExhaustedTTL).Err(); err != nil {

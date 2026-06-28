@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// getListWithOffset 以 Offset 分页方式读取关注/粉丝列表（含三级缓存）。
+// getListWithOffset reads the follow/follower list with Offset pagination (with three-level cache).
 func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, listType string, limit, offset int) ([]uint64, error) {
 	if s.isBigV(ctx, userID) {
 		l1Key := s.l1KeyStr(listType, userID)
@@ -69,7 +69,7 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 	return ids[offset:end], nil
 }
 
-// getListWithCursor 以游标分页方式读取关注/粉丝列表。
+// getListWithCursor reads the follow/follower list with cursor-based pagination.
 func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, listType string, limit int, cursor int64) ([]uint64, int64, error) {
 	zsetKey := s.zsetKey(listType, userID)
 	exists, err := s.redis.Exists(ctx, zsetKey).Result()
@@ -118,12 +118,12 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 	return result, nextCursor, nil
 }
 
-// zsetKey 生成 Redis ZSet 的缓存键。
+// zsetKey generates the Redis ZSet cache key.
 func (s *RelationService) zsetKey(listType string, userID uint64) string {
 	return fmt.Sprintf("z:%s:%d", listType, userID)
 }
 
-// readFromDB 从数据库读取用户的关注/粉丝列表。
+// readFromDB reads the user's follow/follower list from the database.
 func (s *RelationService) readFromDB(ctx context.Context, listType string, userID uint64, limit, offset int) ([]listEntry, error) {
 	if listType == "following" {
 		if s.repo == nil {

@@ -1,6 +1,8 @@
 package counter
 
-import "github.com/redis/go-redis/v9"
+import (
+	"github.com/redis/go-redis/v9"
+)
 
 // TOGGLE_LUA 以原子方式切换位图中的单个位，并返回状态是否发生变化。
 //

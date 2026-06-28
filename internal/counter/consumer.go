@@ -35,7 +35,7 @@ const (
 
 // AggregationConsumer 消费 counter-events，并按批次把增量直接折叠到 cnt:*。
 //
-// 这里不再使用 Redis agg:* 中转桶，原因是当前方案把“批量聚合”放在 MQ 消费端：
+// 这里不再使用 Redis agg:* 中转桶，原因是当前方案把"批量聚合"放在 MQ 消费端：
 //   - 同一批 Kafka 消息先在进程内做内存聚合。
 //   - 到达批次大小或时间窗口后，一次性把 delta flush 到 cnt:*。
 //   - 如果 publish、flush 或 offset commit 出现失败，对应实体会进入 dirty set，
@@ -333,7 +333,7 @@ func (c *AggregationConsumer) commitMessages(ctx context.Context, msgs ...kafka.
 	return nil
 }
 
-// takeExpiredBatch returns one expired batch (removed from map under lock), or nil.
+// takeExpiredBatch 在锁保护下从 map 中取出一个已过期的批次并返回，若没有则返回 nil。
 func (c *AggregationConsumer) takeExpiredBatch(ctx context.Context) *counterBatch {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -352,7 +352,7 @@ func (c *AggregationConsumer) takeExpiredBatch(ctx context.Context) *counterBatc
 	return nil
 }
 
-// handleMessage processes one Kafka message under lock. Returns a batch to flush (removed from map), or nil.
+// handleMessage 在锁保护下处理一条 Kafka 消息。若某个批次已满需立即刷新，则返回该批次（已从 map 中移除），否则返回 nil。
 func (c *AggregationConsumer) handleMessage(ctx context.Context, msg kafka.Message) *counterBatch {
 	evt, err := parseCounterEvent(msg.Value)
 	if err != nil {
@@ -374,11 +374,11 @@ func (c *AggregationConsumer) handleMessage(ctx context.Context, msg kafka.Messa
 
 	batch := c.batches[msg.Partition]
 
-	// Check for offset gap
+	// 检查 offset 是否存在间隙
 	if batch != nil && batch.size() > 0 && msg.Offset != batch.endOffset+1 {
 		delete(c.batches, msg.Partition)
-		c.addToBatch(msg, evt) // adds to a new batch in the map
-		return batch           // return old batch for flush
+		c.addToBatch(msg, evt) // 添加到 map 中的新批次
+		return batch           // 返回旧批次用于 flush
 	}
 
 	if batch == nil {
@@ -402,8 +402,8 @@ func (c *AggregationConsumer) handleMessage(ctx context.Context, msg kafka.Messa
 	return nil
 }
 
-// addToBatch adds a message+event to batches[partition], creating batch if needed.
-// Must be called under c.mu lock.
+// addToBatch 将消息+事件添加到 batches[partition] 中，必要时创建新批次。
+// 必须在 c.mu 锁保护下调用。
 func (c *AggregationConsumer) addToBatch(msg kafka.Message, evt CounterEvent) {
 	batch := c.batches[msg.Partition]
 	if batch == nil {
@@ -749,4 +749,3 @@ func parseCounterEvent(value []byte) (CounterEvent, error) {
 	}
 	return evt, nil
 }
-

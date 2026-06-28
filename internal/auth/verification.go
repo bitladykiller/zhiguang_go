@@ -174,7 +174,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 //	使用 Lua 脚本将检查、递增和 EXPIRE 合为原子操作，杜绝并发绕过。
 //
 // 为什么这里还要再加分布式锁：
-//   - codeKey 的删除动作发生在 Lua 脚本之外，原实现会出现“两个实例几乎同时读到同一个正确验证码”的并发复用。
+//   - codeKey 的删除动作发生在 Lua 脚本之外，原实现会出现"两个实例几乎同时读到同一个正确验证码"的并发复用。
 //   - 串行化后，同一验证码在跨实例环境下只能被一个请求成功消费。
 //
 // 参数:
