@@ -480,7 +480,7 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 	if err == nil {
 		hasMore = hasMoreStr == "1"
 	} else {
-		hasMore = len(items) == size // Fallback: full page means probably has more
+		hasMore = len(items) == size // 降级: 满页说明可能还有更多
 	}
 
 	// 叠加当前用户状态

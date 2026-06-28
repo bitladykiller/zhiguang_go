@@ -189,7 +189,7 @@ func (a *App) run(parent context.Context) error {
 
 	cancel()
 
-	// Phase 1: Stop accepting new HTTP requests (graceful shutdown)
+	// 第一阶段: 停止接受新 HTTP 请求（优雅关闭）
 	shutdownHTTPCtx, shutdownHTTPCancel := context.WithTimeout(parent, shutdownTimeoutHTTP)
 	shutdownErr := httpServer.Shutdown(shutdownHTTPCtx)
 	shutdownHTTPCancel()
@@ -201,12 +201,12 @@ func (a *App) run(parent context.Context) error {
 		listenErr = <-serverErrCh
 	}
 
-	// Phase 2: Wait for background runners to finish processing backlog
+	// 第二阶段: 等待后台 runner 完成积压工作
 	runnersCtx, runnersCancel := context.WithTimeout(parent, shutdownTimeoutRunners)
 	a.waitBackgroundRunners(runnersCtx, &runnerWG)
 	runnersCancel()
 
-	// Phase 3: Run cleanup functions
+	// 第三阶段: 执行资源清理函数
 	cleanupCtx, cleanupCancel := context.WithTimeout(parent, shutdownTimeoutCleanup)
 	cleanupErr := a.runCleanup(cleanupCtx)
 	cleanupCancel()

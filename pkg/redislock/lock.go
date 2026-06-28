@@ -90,7 +90,7 @@ return 0
 //
 // 语义说明：
 //   - 这是一次性的 try-lock，不会在包内部自旋等待。
-//   - 如果调用方需要“直到拿到锁或 ctx 结束”为止的语义，应使用 AcquireWithRetry。
+//   - 如果调用方需要"直到拿到锁或 ctx 结束"为止的语义，应使用 AcquireWithRetry。
 func TryAcquire(ctx context.Context, client *redis.Client, lockKey string, options Options, logger *zap.Logger) (*Lock, bool, error) {
 	opts := options.normalized()
 	token := uuid.NewString()
@@ -124,7 +124,7 @@ func TryAcquire(ctx context.Context, client *redis.Client, lockKey string, optio
 //   - 例如某些串行化写操作、后台任务抢占等场景。
 //
 // 注意：
-//   - 这里仅对“锁被占用（locked=false）”做重试。
+//   - 这里仅对"锁被占用（locked=false）"做重试。
 //   - 如果 Redis 自身返回错误，则直接返回给调用方，由上层决定是否降级或告警。
 //   - retryInterval <= 0 时，默认使用 50ms。
 func AcquireWithRetry(

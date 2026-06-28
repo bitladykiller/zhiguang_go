@@ -435,7 +435,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 //
 // WHY 抽成单独辅助函数：
 //   - Refresh 与 ResetPassword 需要共享同一把 user 级别锁，避免策略漂移。
-//   - 错误统一映射为内部错误，业务流程只关注“是否拿到锁”。
+//   - 错误统一映射为内部错误，业务流程只关注"是否拿到锁"。
 func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint64) (*redislock.Lock, context.CancelFunc, *errcode.AppError) {
 	if s.redis == nil {
 		return nil, nil, errcode.ErrInternal.WithMsg("redis client is unavailable")

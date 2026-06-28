@@ -49,9 +49,9 @@ const (
 
 // ServerConfig 控制 HTTP 服务监听配置。
 type ServerConfig struct {
-	Port                 int             `yaml:"port"` // default: 8080
-	Mode                 string          `yaml:"mode"` // "debug", "release", or "test"
-	RequestTimeoutMs     int             `yaml:"request_timeout_ms"` // default: 30000
+	Port                 int             `yaml:"port"` // 默认值: 8080
+	Mode                 string          `yaml:"mode"` // "debug", "release", 或 "test"
+	RequestTimeoutMs     int             `yaml:"request_timeout_ms"` // 默认值: 30000
 	CorsAllowedOrigins   []string        `yaml:"cors_allowed_origins"` // CORS 允许的来源，空时默认 ["*"]
 	RateLimit            RateLimitConfig `yaml:"rate_limit"`
 }
@@ -71,11 +71,11 @@ type DatabaseConfig struct {
 	User            string `yaml:"user"`
 	Password        string `yaml:"password"`
 	Name            string `yaml:"name"`
-	Charset         string `yaml:"charset"`           // default: utf8mb4
-	MaxOpenConns    int    `yaml:"max_open_conns"`    // max open connections
-	MaxIdleConns    int    `yaml:"max_idle_conns"`    // max idle connections
-	ConnMaxLifetime int    `yaml:"conn_max_lifetime"` // max connection lifetime in seconds
-	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"` // max idle connection time in seconds
+	Charset         string `yaml:"charset"`           // 默认值: utf8mb4
+	MaxOpenConns    int    `yaml:"max_open_conns"`    // 最大打开连接数
+	MaxIdleConns    int    `yaml:"max_idle_conns"`    // 最大空闲连接数
+	ConnMaxLifetime int    `yaml:"conn_max_lifetime"` // 连接最大生命周期（秒）
+	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"` // 最大空闲连接时间（秒）
 	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`   // 连接超时（毫秒）
 	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`   // 读超时（毫秒）
 	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`  // 写超时（毫秒）
@@ -122,8 +122,8 @@ type RedisConfig struct {
 	Port            int    `yaml:"port"`
 	Password        string `yaml:"password"`
 	RequirePass     bool   `yaml:"require_pass"`
-	DB              int    `yaml:"db"`                // Redis database number (0-15)
-	PoolSize        int    `yaml:"pool_size"`         // connection pool size
+	DB              int    `yaml:"db"`                // Redis 数据库编号 (0-15)
+	PoolSize        int    `yaml:"pool_size"`         // 连接池大小
 	MinIdleConns    int    `yaml:"min_idle_conns"`    // 最小空闲连接数
 	MaxRetries      int    `yaml:"max_retries"`       // 最大重试次数
 	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`   // 连接超时（毫秒）
@@ -180,7 +180,7 @@ type KafkaTopicsConfig struct {
 type ElasticsearchConfig struct {
 	Enabled    *bool    `yaml:"enabled"`    // 显式功能开关，nil 表示跟随配置完整性判断
 	URIs       []string `yaml:"uris"`
-	IndexName  string   `yaml:"index_name"`  // primary search index
+	IndexName  string   `yaml:"index_name"`  // 主搜索索引
 	MaxRetries int      `yaml:"max_retries"` // 最大重试次数
 }
 
@@ -421,145 +421,3 @@ type RateLimitConfig struct {
 type PrometheusConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
-
-// Validate 校验配置中的关键字段是否合法。
-//
-// 验证规则：
-//   - Server.Port 必须在 1~65535 范围内
-//   - Database.DSN 不能为空（DSN 方法内部从多个字段拼接，但此处校验 DSN() 返回值）
-//   - Redis.Addr 不能为空
-//   - Jwt.PrivateKeyPath 和 Jwt.PublicKeyPath 不能为空
-//
-// 注意：
-//   - DSN() 会拼接 User、Password、Host、Port、Name 等字段生成连接串，
-//     但 Validate() 直接用 Database.DSN 字段（若有独立 DSN 字段）。
-//     当前 DatabaseConfig 没有独立的 DSN 字段，而是通过 DSN() 方法拼装，
-//     因此此处校验 DSN() 返回值是否为 ""。
-//
-// 返回值：
-//   - error: 如果有任何字段不合法，返回包含所有错误信息的 error
-//   - nil: 所有字段合法
-// ApplyDefaults 为未显式配置的字段填充默认值（在 Validate 之前调用）。
-func (c *Config) ApplyDefaults() {
-	if c.Server.Port <= 0 {
-		c.Server.Port = DefaultServerPort
-	}
-	if c.Auth.Password.BcryptCost <= 0 {
-		c.Auth.Password.BcryptCost = 12
-	}
-	if c.Auth.Password.MinLength <= 0 {
-		c.Auth.Password.MinLength = 8
-	}
-}
-
-func (c *Config) Validate() error {
-	var errs []string
-
-	if c.Server.Port <= 0 || c.Server.Port > 65535 {
-		errs = append(errs, "server.port must be between 1 and 65535")
-	}
-	if c.Database.DSN() == "" {
-		errs = append(errs, "database.dsn is required")
-	}
-	if c.Redis.Addr() == "" {
-		errs = append(errs, "redis.addr is required")
-	}
-	if c.Server.RateLimit.Enabled && (c.Server.RateLimit.PerIP <= 0 || c.Server.RateLimit.WindowMs <= 0) {
-		errs = append(errs, "rate_limit: per_ip and window_ms must be positive when enabled")
-	}
-	if c.Auth.Jwt.PrivateKeyPath == "" {
-		errs = append(errs, "auth.jwt.private_key_path is required")
-	}
-	if c.Auth.Jwt.PublicKeyPath == "" {
-		errs = append(errs, "auth.jwt.public_key_path is required")
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
-	}
-
-	if c.Canal.Enabled && (c.Canal.Username == "" || c.Canal.Password == "") {
-		errs = append(errs, "canal: username and password are required when enabled")
-	}
-
-	// 7. Redis — 如果 RequirePass 为 true，密码不能为空
-	// 8. Kafka — Broker 列表不能为空，至少配置一个 topic
-	// 9. HotKey — BucketCount 必须 > 0
-	// 10. Elasticsearch — Addresses 不能为空
-	// 11. OSS — 若配置了任一字段，则所有必填字段不能为空
-	if c.Redis.RequirePass && c.Redis.Password == "" {
-		errs = append(errs, "redis: require_pass is true but password is empty")
-	}
-	if len(c.Kafka.Brokers) == 0 {
-		errs = append(errs, "kafka: at least one broker is required")
-	}
-	if c.Cache.HotKey.BucketCount <= 0 {
-		errs = append(errs, "hotkey: bucket_count must be > 0")
-	}
-	if len(c.Elasticsearch.URIs) == 0 {
-		errs = append(errs, "elasticsearch: uris is required")
-	}
-	if c.OSS.Endpoint != "" || c.OSS.Bucket != "" || c.OSS.AccessKeyID != "" || c.OSS.AccessKeySecret != "" {
-		if c.OSS.Endpoint == "" {
-			errs = append(errs, "oss: endpoint is required when oss is configured")
-		}
-		if c.OSS.Bucket == "" {
-			errs = append(errs, "oss: bucket is required when oss is configured")
-		}
-		if c.OSS.AccessKeyID == "" {
-			errs = append(errs, "oss: access_key_id is required when oss is configured")
-		}
-		if c.OSS.AccessKeySecret == "" {
-			errs = append(errs, "oss: access_key_secret is required when oss is configured")
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
-	}
-	return nil
-}
-
-// LoadConfig 从指定路径读取 YAML 配置文件并解析为 Config 结构体。
-//
-// 功能：
-//
-//	Step 1: 使用 os.ReadFile 读取 YAML 文件的完整内容。
-//	Step 2: 使用 yaml.Unmarshal 将 YAML 字节数据反序列化为 Config 结构体。
-//	Step 3: 返回解析后的 Config 指针。
-//
-// 参数：
-//   - path: YAML 配置文件的路径（如 "config/config-local.yaml"）
-//
-// 返回值：
-//   - *Config: 解析后的配置结构体
-//   - error: 文件读取失败或 YAML 格式非法时返回
-//
-// 函数调用说明：
-//   - os.ReadFile(path):
-//     Go 标准库函数，读取文件的完整内容为 []byte。
-//     在 Go 1.16 中引入，替代了旧的 ioutil.ReadFile。
-//   - yaml.Unmarshal(data, cfg):
-//     gopkg.in/yaml.v3 包的 YAML 反序列化函数。
-//     根据结构体上的 yaml tag 将 YAML 字段映射到结构体字段。
-//
-// 注意：
-//
-//	此函数不会校验配置中的字段值是否合理（如端口是否在有效范围、超时值是否为正等），
-//	调用方应在构造连接时自行检查或使用默认值。
-//	也不会设置默认值（如 charset 默认 utf8mb4），需要调用方自行处理。
-func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	cfg := &Config{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, err
-	}
-
-	return cfg, nil
-}
-
-// Validate 校验配置中的关键字段是否合法。
