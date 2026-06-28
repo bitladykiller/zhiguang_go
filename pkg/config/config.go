@@ -48,15 +48,16 @@ const (
 )
 
 // ServerConfig 控制 HTTP 服务监听配置。
+// 默认端口为 8080，模式可选 "debug"/"release"/"test"。
 type ServerConfig struct {
-	Port                 int             `yaml:"port"` // 默认值: 8080
-	Mode                 string          `yaml:"mode"` // "debug", "release", 或 "test"
-	RequestTimeoutMs     int             `yaml:"request_timeout_ms"` // 默认值: 30000
-	CorsAllowedOrigins   []string        `yaml:"cors_allowed_origins"` // CORS 允许的来源，空时默认 ["*"]
+	Port                 int             `yaml:"port"`
+	Mode                 string          `yaml:"mode"`
+	RequestTimeoutMs     int             `yaml:"request_timeout_ms"`
+	CorsAllowedOrigins   []string        `yaml:"cors_allowed_origins"`
 	RateLimit            RateLimitConfig `yaml:"rate_limit"`
 }
 
-// HTTPRequestTimeout 返回全局 HTTP 请求超时；未配置或非法时使用默认值。
+// HTTPRequestTimeout 返回全局 HTTP 请求超时；未配置或非法时使用默认值 30s。
 func (s ServerConfig) HTTPRequestTimeout() time.Duration {
 	if s.RequestTimeoutMs <= 0 {
 		return time.Duration(DefaultHTTPRequestTimeoutMs) * time.Millisecond
@@ -71,14 +72,14 @@ type DatabaseConfig struct {
 	User            string `yaml:"user"`
 	Password        string `yaml:"password"`
 	Name            string `yaml:"name"`
-	Charset         string `yaml:"charset"`           // 默认值: utf8mb4
-	MaxOpenConns    int    `yaml:"max_open_conns"`    // 最大打开连接数
-	MaxIdleConns    int    `yaml:"max_idle_conns"`    // 最大空闲连接数
-	ConnMaxLifetime int    `yaml:"conn_max_lifetime"` // 连接最大生命周期（秒）
-	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"` // 最大空闲连接时间（秒）
-	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`   // 连接超时（毫秒）
-	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`   // 读超时（毫秒）
-	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`  // 写超时（毫秒）
+	Charset         string `yaml:"charset"`
+	MaxOpenConns    int    `yaml:"max_open_conns"`
+	MaxIdleConns    int    `yaml:"max_idle_conns"`
+	ConnMaxLifetime int    `yaml:"conn_max_lifetime"`
+	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"`
+	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`
+	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`
+	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`
 }
 
 // DSN 根据配置字段拼装 MySQL 的数据源连接串。
@@ -92,17 +93,15 @@ type DatabaseConfig struct {
 //   - string: 格式为 "user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
 //
 // 注意：
-//   - 密码中包含特殊字符（如 @、: 等）可能造成连接串解析错误，
-//     但当前实现不做 URL 编码处理。
-//   - parseTime=True 告诉 MySQL 驱动程序将 DATE/DATETIME 类型自动解析为
-//     Go 的 time.Time 类型而非字符串。
+//   - 密码通过 url.QueryEscape 编码，避免特殊字符导致 DSN 解析错误。
+//   - parseTime=True 让驱动将 DATE/DATETIME 自动解析为 time.Time。
 //   - loc=Local 使用本地时区解析时间。
-//   - 超时参数（dial_timeout_ms、read_timeout_ms、write_timeout_ms）会添加到 DSN 参数中。
+//   - 超时参数（dial_timeout_ms、read_timeout_ms、write_timeout_ms）会追加到 DSN。
 func (c *DatabaseConfig) DSN() string {
 	dsn := c.User + ":" + url.QueryEscape(c.Password) + "@tcp(" + c.Host + ":" +
 		strconv.Itoa(c.Port) + ")/" + c.Name + "?charset=" + c.Charset + "&parseTime=True&loc=Local"
 
-	// 添加超时参数
+	// 添加超时参数到 DSN
 	if c.DialTimeoutMs > 0 {
 		dsn += "&timeout=" + strconv.Itoa(c.DialTimeoutMs) + "ms"
 	}
@@ -122,23 +121,23 @@ type RedisConfig struct {
 	Port            int    `yaml:"port"`
 	Password        string `yaml:"password"`
 	RequirePass     bool   `yaml:"require_pass"`
-	DB              int    `yaml:"db"`                // Redis 数据库编号 (0-15)
-	PoolSize        int    `yaml:"pool_size"`         // 连接池大小
-	MinIdleConns    int    `yaml:"min_idle_conns"`    // 最小空闲连接数
-	MaxRetries      int    `yaml:"max_retries"`       // 最大重试次数
-	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`   // 连接超时（毫秒）
-	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`   // 读超时（毫秒）
-	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`  // 写超时（毫秒）
-	ConnMaxLifetime int    `yaml:"conn_max_lifetime"` // 连接最大生命周期（秒）
+	DB              int    `yaml:"db"`
+	PoolSize        int    `yaml:"pool_size"`
+	MinIdleConns    int    `yaml:"min_idle_conns"`
+	MaxRetries      int    `yaml:"max_retries"`
+	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`
+	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`
+	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`
+	ConnMaxLifetime int    `yaml:"conn_max_lifetime"`
 }
 
 // IDGeneratorConfig 配置本地雪花 ID 生成器。
 //
-// 当前约定把 snowflake 的 10 位 node id 拆成：
+// snowflake 的 10 位 node id 拆成：
 //   - 5 位 machine_id
 //   - 5 位 worker_id
 //
-// 多实例部署时，必须保证不同实例的 machine_id + worker_id 组合唯一。
+// 多实例部署时，必须保证不同实例的 machine_id + worker_id 组合全局唯一。
 type IDGeneratorConfig struct {
 	MachineID int `yaml:"machine_id"`
 	WorkerID  int `yaml:"worker_id"`
@@ -166,9 +165,9 @@ type KafkaConfig struct {
 	Brokers        []string          `yaml:"brokers"`
 	ConsumerGroup  string            `yaml:"consumer_group"`
 	Topics         KafkaTopicsConfig `yaml:"topics"`
-	WriteTimeoutMs int               `yaml:"write_timeout_ms"` // 写超时（毫秒）
-	ReadTimeoutMs  int               `yaml:"read_timeout_ms"`  // 读超时（毫秒）
-	MaxAttempts    int               `yaml:"max_attempts"`     // 最大重试次数
+	WriteTimeoutMs int               `yaml:"write_timeout_ms"`
+	ReadTimeoutMs  int               `yaml:"read_timeout_ms"`
+	MaxAttempts    int               `yaml:"max_attempts"`
 }
 
 // KafkaTopicsConfig 将业务 topic 名称映射为实际 Kafka topic 标识。
@@ -178,10 +177,10 @@ type KafkaTopicsConfig struct {
 
 // ElasticsearchConfig 配置 Elasticsearch 集群连接信息。
 type ElasticsearchConfig struct {
-	Enabled    *bool    `yaml:"enabled"`    // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled    *bool    `yaml:"enabled"`
 	URIs       []string `yaml:"uris"`
-	IndexName  string   `yaml:"index_name"`  // 主搜索索引
-	MaxRetries int      `yaml:"max_retries"` // 最大重试次数
+	IndexName  string   `yaml:"index_name"`
+	MaxRetries int      `yaml:"max_retries"`
 }
 
 // AuthConfig 聚合所有鉴权相关配置。
@@ -234,14 +233,14 @@ type AuthLockConfig struct {
 
 // OssConfig 配置阿里云 OSS 对象存储。
 type OssConfig struct {
-	Enabled         *bool  `yaml:"enabled"`          // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled         *bool  `yaml:"enabled"`
 	Endpoint        string `yaml:"endpoint"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	AccessKeySecret string `yaml:"access_key_secret"`
 	Bucket          string `yaml:"bucket"`
 	PublicDomain    string `yaml:"public_domain"`
 	Folder          string `yaml:"folder"`
-	PresignExpiryMs int    `yaml:"presign_expiry_ms"` // 预签名 URL 过期时间（毫秒），默认 600000 (10分钟)
+	PresignExpiryMs int    `yaml:"presign_expiry_ms"`
 }
 
 // CanalConfig 配置阿里 Canal 的 MySQL binlog 订阅。
@@ -255,8 +254,8 @@ type CanalConfig struct {
 	Filter          string `yaml:"filter"`
 	BatchSize       int    `yaml:"batch_size"`
 	IntervalMs      int    `yaml:"interval_ms"`
-	SocketTimeoutMs int    `yaml:"socket_timeout_ms"` // Socket 超时（毫秒），默认 60000
-	IdleTimeoutMs   int    `yaml:"idle_timeout_ms"`   // 空闲超时（毫秒），默认 3600000
+	SocketTimeoutMs int    `yaml:"socket_timeout_ms"`
+	IdleTimeoutMs   int    `yaml:"idle_timeout_ms"`
 }
 
 // CounterConfig 配置 SDS 计数器重建行为。
@@ -264,10 +263,10 @@ type CounterConfig struct {
 	Consumer         ConsumerConfig `yaml:"consumer"`
 	Repair           RepairConfig   `yaml:"repair"`
 	Rebuild          RebuildConfig  `yaml:"rebuild"`
-	PublishTimeoutMs int            `yaml:"publish_timeout_ms"` // 异步发布 Kafka 超时，默认 3000
+	PublishTimeoutMs int            `yaml:"publish_timeout_ms"`
 }
 
-// PublishTimeout 返回计数事件异步发布的超时时间。
+// PublishTimeout 返回计数事件异步发布的超时时间，默认 3000ms。
 func (c CounterConfig) PublishTimeout() time.Duration {
 	if c.PublishTimeoutMs <= 0 {
 		return time.Duration(DefaultCounterPublishTimeoutMs) * time.Millisecond
@@ -335,26 +334,25 @@ type CacheItemConfig struct {
 
 // HotKeyConfig 控制热点键识别与 TTL 延长行为。
 //
-// 设计说明：
 // HotKeyDetector 使用本地 map + Redis Hash 实现滑动窗口热点检测。
 // 本地 map 在每次缓存访问时计数（无 Redis IO），
 // 每 BucketSizeSeconds 秒 flush 到 Redis Hash 完成跨实例聚合。
-// Redis Hash 的 field 是 6 秒窗口编号，value 是窗口内访问次数。
+// Redis Hash 的 field 是 BucketSizeSeconds 秒窗口编号，value 是窗口内访问次数。
 // 判断 hotkey 时，HGETALL 该哈希并累加最近 BucketCount 个窗口的值。
 //
 // 建议配置（6s 窗口 × 10 = 60s 滑动窗口）：
 //
-//	BucketSizeSeconds: 6         # 每个窗口大小
-//	BucketCount: 10               # 窗口数量（总窗口 = 6s × 10 = 60s）
-//	FlushIntervalSeconds: 6       # flush 间隔，与 BucketSizeSeconds 一致
-//	StatTTLSeconds: 120           # Redis Hash 的 TTL（略大于窗口总时长）
-//	HotMarkTTLSeconds: 60         # hotkey:active 标记的 TTL
+//	BucketSizeSeconds: 6
+//	BucketCount: 10
+//	FlushIntervalSeconds: 6
+//	StatTTLSeconds: 120
+//	HotMarkTTLSeconds: 60
 //
 // 阈值说明（基于 60s 窗口的全局总访问次数）：
 //
-//	LevelLow(50):   0.83 QPS 以上 → TTL +20s
-//	LevelMedium(200):  3.3 QPS 以上 → TTL +60s
-//	LevelHigh(500):   8.3 QPS 以上 → TTL +120s
+//	LevelLow(50):   0.83 QPS 以上 → TTL +ExtendLowSeconds 秒
+//	LevelMedium(200):  3.3 QPS 以上 → TTL +ExtendMediumSeconds 秒
+//	LevelHigh(500):   8.3 QPS 以上 → TTL +ExtendHighSeconds 秒
 type HotKeyConfig struct {
 	BucketSizeSeconds    int `yaml:"bucket_size_seconds"`    // 每个时间窗口的秒数（建议 6）
 	BucketCount          int `yaml:"bucket_count"`           // 窗口数量（建议 10，总窗口 = 6×10=60s）
@@ -372,13 +370,13 @@ type HotKeyConfig struct {
 
 // LLMConfig 配置 AI 模型连接信息。
 type LLMConfig struct {
-	Enabled       *bool          `yaml:"enabled"`    // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled       *bool          `yaml:"enabled"`
 	DeepSeek      DeepSeekConfig `yaml:"deepseek"`
 	OpenAI        OpenAIConfig   `yaml:"openai"`
-	TimeoutMs     int            `yaml:"timeout_ms"`     // HTTP 客户端超时（毫秒），默认 30000
-	MaxContentLen int            `yaml:"max_content_len"` // 内容截断长度，默认 2000
-	MaxTokens     int            `yaml:"max_tokens"`      // 生成最大 token 数，默认 100
-	SystemPrompt  string         `yaml:"system_prompt"`   // 系统提示词
+	TimeoutMs     int            `yaml:"timeout_ms"`
+	MaxContentLen int            `yaml:"max_content_len"`
+	MaxTokens     int            `yaml:"max_tokens"`
+	SystemPrompt  string         `yaml:"system_prompt"`
 }
 
 // DeepSeekConfig 配置 DeepSeek 对话模型 API。

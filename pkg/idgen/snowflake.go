@@ -28,7 +28,7 @@ type SnowflakeGenerator struct {
 	workerID  int
 }
 
-// NewSnowflakeGenerator 根据 machine_id 和 worker_id 创建本地雪花生成器。
+// NewSnowflakeGenerator 根据 machine_id 和 worker_id 创建本地雪花 ID 生成器。
 func NewSnowflakeGenerator(cfg *config.IDGeneratorConfig) (*SnowflakeGenerator, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("id generator config is nil")
