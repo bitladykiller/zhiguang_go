@@ -176,7 +176,7 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), s.cfg.Password.BcryptCost)
 		if err != nil {
-			return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to hash password")
+			return AuthResponse{}, errcode.ErrInternal.WithMsg("密码哈希失败")
 		}
 		h := string(hash)
 		passwordHash = &h
@@ -194,16 +194,16 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 	}
 
 	if err := s.repo.CreateUser(ctx, user); err != nil {
-		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to create user")
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("创建用户失败")
 	}
 
 	tokenPair, err := s.jwtSvc.IssueTokenPair(user)
 	if err != nil {
-		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("颁发令牌失败")
 	}
 
 	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
-		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("持久化刷新令牌失败")
 	}
 	s.recordLoginLog(ctx, user.ID, normalized, "REGISTER", LoginStatusSuccess, clientInfo)
 
@@ -275,11 +275,11 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 
 	tokenPair, err := s.jwtSvc.IssueTokenPair(user)
 	if err != nil {
-		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("颁发令牌失败")
 	}
 
 	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
-		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("持久化刷新令牌失败")
 	}
 	s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusSuccess, clientInfo)
 
@@ -333,7 +333,7 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 	}
 
 	if err := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); err != nil {
-		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to revoke refresh token")
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("吊销刷新令牌失败")
 	}
 
 	user, err := s.repo.FindUserByID(ctx, claims.UserID())
@@ -343,10 +343,10 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 
 	tokenPair, err := s.jwtSvc.IssueTokenPair(user)
 	if err != nil {
-		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to issue tokens")
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("颁发令牌失败")
 	}
 	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
-		return AuthResponse{}, errcode.ErrInternal.WithMsg("failed to persist refresh token")
+		return AuthResponse{}, errcode.ErrInternal.WithMsg("持久化刷新令牌失败")
 	}
 
 	return AuthResponse{
@@ -369,7 +369,7 @@ func (s *AuthService) Logout(ctx context.Context, req *TokenRefreshRequest) {
 	}
 	if jwtClaims, ok := claims.(*JwtClaims); ok {
 		if err := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); err != nil {
-			s.logger.Warn("failed to revoke refresh token during logout", zap.Uint64("userID", jwtClaims.UID), zap.String("tokenID", jwtClaims.ID), zap.Error(err))
+			s.logger.Warn("登出时吊销刷新令牌失败", zap.Uint64("userID", jwtClaims.UID), zap.String("tokenID", jwtClaims.ID), zap.Error(err))
 		}
 	}
 }
@@ -413,7 +413,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), s.cfg.Password.BcryptCost)
 	if err != nil {
-		return errcode.ErrInternal.WithMsg("failed to hash password")
+		return errcode.ErrInternal.WithMsg("密码哈希失败")
 	}
 
 	_, release, appErr := s.acquireRefreshSessionLock(ctx, user.ID)
@@ -423,10 +423,10 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 	defer release()
 
 	if err := s.repo.UpdatePassword(ctx, user.ID, string(hash)); err != nil {
-		return errcode.ErrInternal.WithMsg("failed to update password")
+		return errcode.ErrInternal.WithMsg("更新密码失败")
 	}
 	if err := s.tokenStore.RevokeAll(ctx, user.ID); err != nil {
-		return errcode.ErrInternal.WithMsg("failed to revoke refresh tokens")
+		return errcode.ErrInternal.WithMsg("吊销刷新令牌失败")
 	}
 	return nil
 }
@@ -438,7 +438,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 //   - 错误统一映射为内部错误，业务流程只关注"是否拿到锁"。
 func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint64) (*redislock.Lock, context.CancelFunc, *errcode.AppError) {
 	if s.redis == nil {
-		return nil, nil, errcode.ErrInternal.WithMsg("redis client is unavailable")
+		return nil, nil, errcode.ErrInternal.WithMsg("Redis 客户端不可用")
 	}
 
 	acquireCtx := ctx
@@ -459,7 +459,7 @@ func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint
 		cancel()
 	}
 	if err != nil {
-		return nil, nil, errcode.ErrInternal.WithMsg("failed to acquire refresh session lock")
+		return nil, nil, errcode.ErrInternal.WithMsg("获取刷新会话锁失败")
 	}
 	return lock, func() {
 		lock.Release()
@@ -530,11 +530,11 @@ func validateIdentifier(idType IdentifierType, identifier string) error {
 	switch idType {
 	case IdentifierPhone:
 		if !phoneRegex.MatchString(identifier) {
-			return fmt.Errorf("invalid phone number format")
+			return fmt.Errorf("手机号格式无效")
 		}
 	case IdentifierEmail:
 		if !emailRegex.MatchString(identifier) {
-			return fmt.Errorf("invalid email format")
+			return fmt.Errorf("邮箱格式无效")
 		}
 	}
 	return nil
@@ -554,7 +554,7 @@ func validateIdentifier(idType IdentifierType, identifier string) error {
 //   - unicode.IsDigit(ch): 判断字符是否为十进制数字（0-9）。
 func validatePassword(password string, cfg config.PasswordConfig) error {
 	if len(password) < cfg.MinLength {
-		return fmt.Errorf("password must be at least %d characters", cfg.MinLength)
+		return fmt.Errorf("密码长度至少为 %d 个字符", cfg.MinLength)
 	}
 	hasLetter, hasDigit := false, false
 	for _, ch := range password {
@@ -566,10 +566,10 @@ func validatePassword(password string, cfg config.PasswordConfig) error {
 		}
 	}
 	if !hasLetter {
-		return fmt.Errorf("password must contain at least one letter")
+		return fmt.Errorf("密码必须包含至少一个字母")
 	}
 	if !hasDigit {
-		return fmt.Errorf("password must contain at least one digit")
+		return fmt.Errorf("密码必须包含至少一个数字")
 	}
 	return nil
 }
@@ -633,7 +633,7 @@ func generateNickname(logger *zap.Logger) string {
 	for i := range suffix {
 		n, err := randomInt(int64(len(charset)))
 		if err != nil {
-			logger.Warn("failed to generate secure random number for nickname", zap.Error(err))
+			logger.Warn("生成昵称安全随机数失败", zap.Error(err))
 			n = 0
 		}
 		suffix[i] = charset[n]

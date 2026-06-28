@@ -78,7 +78,7 @@ func (s *RedisRefreshTokenStore) IsTokenValid(ctx context.Context, userID uint64
 	key := fmt.Sprintf("rt:%d:%s", userID, tokenID)
 	exists, err := s.redis.Exists(ctx, key).Result()
 	if err != nil {
-		s.logger.Warn("failed to check token existence", zap.String("key", key), zap.Error(err))
+		s.logger.Warn("检查令牌存在性失败", zap.String("key", key), zap.Error(err))
 	}
 	return exists > 0
 }
@@ -129,7 +129,7 @@ func (s *RedisRefreshTokenStore) RevokeAll(ctx context.Context, userID uint64) e
 	iter := s.redis.Scan(ctx, 0, pattern, 100).Iterator()
 	for iter.Next(ctx) {
 		if err := s.redis.Del(ctx, iter.Val()).Err(); err != nil {
-			s.logger.Warn("failed to delete refresh token during RevokeAll", zap.String("key", iter.Val()), zap.Error(err))
+			s.logger.Warn("RevokeAll 期间删除刷新令牌失败", zap.String("key", iter.Val()), zap.Error(err))
 		}
 	}
 	return iter.Err()

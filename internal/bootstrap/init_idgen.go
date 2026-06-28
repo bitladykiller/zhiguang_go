@@ -17,7 +17,7 @@ func initIDGenerator(cfg *config.Config, logger *zap.Logger) (*idgen.SnowflakeGe
 	if err != nil {
 		return nil, err
 	}
-	logger.Info("snowflake generator initialized",
+	logger.Info("雪花 ID 生成器已初始化",
 		zap.Int("machine_id", idGen.MachineID()),
 		zap.Int("worker_id", idGen.WorkerID()),
 		zap.Int64("node_id", idGen.NodeID()),

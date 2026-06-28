@@ -235,6 +235,6 @@ INSERT INTO login_logs (user_id, identifier, channel, ip, user_agent, status)
 VALUES (:user_id, :identifier, :channel, :ip, :user_agent, :status)
 `, log)
 	if err != nil {
-		r.logger.Warn("failed to record login log", zap.Error(err))
+		r.logger.Warn("记录登录日志失败", zap.Error(err))
 	}
 }
