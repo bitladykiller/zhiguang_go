@@ -10,41 +10,41 @@ import (
 	"go.uber.org/zap"
 )
 
-// UserCounterUpdater defines the user-dimension counter update interface needed for relation event processing.
+// UserCounterUpdater 定义关系事件处理所需的用户维度计数器更新接口。
 type UserCounterUpdater interface {
 	IncrementFollowings(ctx context.Context, userID uint64, delta int) error
 	IncrementFollowers(ctx context.Context, userID uint64, delta int) error
 }
 
-// EventProcessor processes relation events driven by canal-outbox.
+// EventProcessor 处理由 canal-outbox 驱动的关系事件。
 //
-// Responsible for consuming FollowCreated and FollowCanceled events and performing the following operations:
-//  1. Idempotency check (10-minute deduplication window based on Redis SETNX)
-//  2. Update the following/follower ZSet caches in Redis
-//  3. Update the user-dimension follow/follower counts (via CounterService)
+// 职责：消费 FollowCreated 和 FollowCanceled 事件，执行以下操作：
+//  1. 幂等检查（基于 Redis SETNX 的 10 分钟去重窗口）
+//  2. 更新 Redis 中的关注/粉丝 ZSet 缓存
+//  3. 更新用户维度的关注/粉丝计数（通过 CounterService）
 //
-// WHY: Caches are not updated directly in the follow/unfollow API because the Redis cache may have expired,
-// or the API request may have failed before the cache update. Event-driven asynchronous updates
-// ensure eventual consistency of the follow/follower list caches.
+// WHY：关注/取关 API 中不直接更新缓存，是因为 Redis 缓存可能已过期，
+// 或者 API 请求在更新缓存之前就失败了。事件驱动的异步更新
+// 保证了关注/粉丝列表缓存的最终一致性。
 type EventProcessor struct {
 	redis   *redis.Client
 	counter UserCounterUpdater
 	logger  *zap.Logger
 }
 
-// NewEventProcessor creates a relation event processor instance.
+// NewEventProcessor 创建一个关系事件处理器实例。
 //
-// Function: initializes EventProcessor, requires a Redis client and a counter updater.
+// 功能：初始化 EventProcessor，需要一个 Redis 客户端和一个计数器更新器。
 //
-// Parameters:
-//   - redisClient: *redis.Client, used for idempotency check and ZSet updates.
-//   - counter: UserCounterUpdater, used to update user follow/follower counts.
+// 参数：
+//   - redisClient: *redis.Client，用于幂等检查和 ZSet 更新。
+//   - counter: UserCounterUpdater，用于更新用户关注/粉丝计数。
 //
-// Returns: *EventProcessor, returns nil when redisClient is nil (to avoid panics on subsequent calls).
+// 返回：*EventProcessor，当 redisClient 为 nil 时返回 nil（避免后续调用出现 panic）。
 //
-// Design decision:
-//   Returning nil instead of panicking allows callers to safely consume messages
-//   even when the event processor is not initialized (graceful degradation when config is incomplete).
+// 设计决策：
+//   返回 nil 而非 panic，使得调用方在事件处理器未初始化时也能安全地消费消息
+//   （配置不完整时的优雅降级）。
 func NewEventProcessor(redisClient *redis.Client, counter UserCounterUpdater, logger *zap.Logger) *EventProcessor {
 	if redisClient == nil {
 		return nil
@@ -56,33 +56,33 @@ func NewEventProcessor(redisClient *redis.Client, counter UserCounterUpdater, lo
 	}
 }
 
-// Process processes relation events (FollowCreated / FollowCanceled), updating Redis ZSet and user counts.
+// Process 处理关系事件（FollowCreated / FollowCanceled），更新 Redis ZSet 和用户计数。
 //
-// Function: consumes relation events driven by canal-outbox, performing the following operations:
-//  1. Idempotency check (SETNX): based on a 10-minute deduplication key window, preventing duplicate processing.
-//  2. Update Redis ZSet according to event type:
-//     - FollowCreated: add relationship to both following ZSet and followers ZSet.
-//     - FollowCanceled: remove the member from both ZSets.
-//  3. Update follow/follower counts (via UserCounterUpdater interface).
+// 功能：消费由 canal-outbox 驱动的关系事件，执行以下操作：
+//  1. 幂等检查（SETNX）：基于 10 分钟的去重键窗口，防止重复处理。
+//  2. 根据事件类型更新 Redis ZSet：
+//     - FollowCreated：将关系同时添加到关注 ZSet 和粉丝 ZSet。
+//     - FollowCanceled：从两个 ZSet 中移除成员。
+//  3. 更新关注/粉丝计数（通过 UserCounterUpdater 接口）。
 //
-// SETNX idempotency check notes:
-//   - SetNX is the Redis "SET if Not eXists" command.
-//   - Format: SetNX(ctx, "dedup:rel:{eventType}:{fromUserID}:{toUserID}:{relationID}", "1", 10min).
-//   - Returns true for first-time processing; false if already processed (dedup hit), skip.
-//   - The dedup window is 10 minutes, ensuring no duplicate processing within the consumer retry window.
-//   - The dedup key includes relationID (optional), so that a FollowCreated and its corresponding FollowCanceled
-//     have independent dedup keys and do not interfere with each other.
+// SETNX 幂等检查说明：
+//   - SetNX 是 Redis 的 "SET if Not eXists" 命令。
+//   - 格式：SetNX(ctx, "dedup:rel:{eventType}:{fromUserID}:{toUserID}:{relationID}", "1", 10min)。
+//   - 首次处理返回 true；已处理返回 false（命中去重），跳过。
+//   - 去重窗口为 10 分钟，确保在消费者重试窗口内不会重复处理。
+//   - 去重键包含 relationID（可选），因此一个 FollowCreated 与其对应的 FollowCanceled
+//     拥有独立的去重键，互不干扰。
 //
-// Parameters:
-//   - ctx: context.Context.
-//   - evt: RelationEvent, contains event type and the two involved user IDs.
+// 参数：
+//   - ctx: context.Context。
+//   - evt: RelationEvent，包含事件类型和涉及的双方用户 ID。
 //
-// Returns:
-//   - error: returns error on idempotency check failure, Redis operation failure, or count update failure.
+// 返回：
+//   - error：幂等检查失败、Redis 操作失败或计数更新失败时返回错误。
 //
-// Edge cases:
-//   - p == nil: returns nil, allowing safe invocation when uninitialized.
-//   - Unknown event type: silently skipped (no error).
+// 边界情况：
+//   - p == nil：返回 nil，允许未初始化时安全调用。
+//   - 未知事件类型：静默跳过（无错误）。
 func (p *EventProcessor) Process(ctx context.Context, evt RelationEvent) error {
 	if p == nil {
 		return nil
@@ -146,14 +146,14 @@ func (p *EventProcessor) Process(ctx context.Context, evt RelationEvent) error {
 	return nil
 }
 
-// relationIDValue converts an optional relation ID pointer to a string for dedup key construction.
+// relationIDValue 将可选的关系 ID 指针转换为字符串，用于构建去重键。
 //
-// Function: safe dereference of *uint64. Returns "0" for nil pointer.
+// 功能：安全解引用 *uint64。nil 指针返回 "0"。
 //
-// Parameters:
-//   - id: *uint64, optional relation record ID.
+// 参数：
+//   - id: *uint64，可选的关系记录 ID。
 //
-// Returns: string, string representation of the ID; "0" for nil.
+// 返回：string，ID 的字符串表示；nil 时返回 "0"。
 func relationIDValue(id *uint64) string {
 	if id == nil {
 		return "0"
@@ -161,26 +161,26 @@ func relationIDValue(id *uint64) string {
 	return strconv.FormatUint(*id, 10)
 }
 
-// followingZSetKey generates the ZSet key for a user's following list.
+// followingZSetKey 生成用户关注列表的 ZSet 键。
 //
-// Function: format is "z:following:{userID}", consistent with zsetKey("following", userID) in relation/service.go.
+// 功能：格式为 "z:following:{userID}"，与 relation/service.go 中的 zsetKey("following", userID) 一致。
 //
-// Parameters:
-//   - userID: uint64, user ID.
+// 参数：
+//   - userID: uint64，用户 ID。
 //
-// Returns: string, ZSet key name.
+// 返回：string，ZSet 键名。
 func followingZSetKey(userID uint64) string {
 	return fmt.Sprintf("z:following:%d", userID)
 }
 
-// followersZSetKey generates the ZSet key for a user's followers list.
+// followersZSetKey 生成用户粉丝列表的 ZSet 键。
 //
-// Function: format is "z:followers:{userID}".
+// 功能：格式为 "z:followers:{userID}"。
 //
-// Parameters:
-//   - userID: uint64, user ID.
+// 参数：
+//   - userID: uint64，用户 ID。
 //
-// Returns: string, ZSet key name.
+// 返回：string，ZSet 键名。
 func followersZSetKey(userID uint64) string {
 	return fmt.Sprintf("z:followers:%d", userID)
 }

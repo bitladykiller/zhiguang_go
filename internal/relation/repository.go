@@ -7,28 +7,28 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// RelationRepository encapsulates database access for the relationship domain, using sqlx.ExtContext to support both DB and Tx.
+// RelationRepository 封装关系域的数据访问，使用 sqlx.ExtContext 来同时支持 DB 和 Tx。
 type RelationRepository struct {
 	db sqlx.ExtContext
 }
 
-// NewRelationRepository creates a RelationRepository instance.
+// NewRelationRepository 创建一个 RelationRepository 实例。
 //
-// Parameters:
-//   - db: sqlx.ExtContext, supports *sqlx.DB or *sqlx.Tx
+// 参数:
+//   - db: sqlx.ExtContext，支持 *sqlx.DB 或 *sqlx.Tx
 //
-// Returns:
-//   - *RelationRepository: initialized repository instance
+// 返回:
+//   - *RelationRepository: 初始化后的仓库实例
 func NewRelationRepository(db sqlx.ExtContext) *RelationRepository {
 	return &RelationRepository{db: db}
 }
 
-// WithDB clones the repository bound to the specified sqlx handle, for use in transactional contexts.
+// WithDB 克隆仓库并绑定到指定的 sqlx 句柄，用于事务上下文。
 func (r *RelationRepository) WithDB(db sqlx.ExtContext) *RelationRepository {
 	return &RelationRepository{db: db}
 }
 
-// UpsertFollowing INSERT ... ON DUPLICATE KEY UPDATE, using ExecContext.
+// UpsertFollowing INSERT ... ON DUPLICATE KEY UPDATE，使用 ExecContext。
 func (r *RelationRepository) UpsertFollowing(ctx context.Context, id, fromUserID, toUserID uint64, status int) error {
 	now := time.Now()
 	_, err := r.db.ExecContext(ctx, `
@@ -39,7 +39,7 @@ ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(upd
 	return err
 }
 
-// UpsertFollower INSERT ... ON DUPLICATE KEY UPDATE, using ExecContext.
+// UpsertFollower INSERT ... ON DUPLICATE KEY UPDATE，使用 ExecContext。
 func (r *RelationRepository) UpsertFollower(ctx context.Context, id, toUserID, fromUserID uint64, status int) error {
 	now := time.Now()
 	_, err := r.db.ExecContext(ctx, `
@@ -50,7 +50,7 @@ ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(upd
 	return err
 }
 
-// CancelFollowing cancels the forward follow (rel_status → 0), using ExecContext.
+// CancelFollowing 取消正向关注（rel_status → 0），使用 ExecContext。
 func (r *RelationRepository) CancelFollowing(ctx context.Context, fromUserID, toUserID uint64) (int64, error) {
 	result, err := r.db.ExecContext(ctx,
 		"UPDATE following SET rel_status = 0, updated_at = ? WHERE from_user_id = ? AND to_user_id = ? AND rel_status = 1",
@@ -62,7 +62,7 @@ func (r *RelationRepository) CancelFollowing(ctx context.Context, fromUserID, to
 	return result.RowsAffected()
 }
 
-// CancelFollower cancels the reverse follow, using ExecContext.
+// CancelFollower 取消反向关注，使用 ExecContext。
 func (r *RelationRepository) CancelFollower(ctx context.Context, toUserID, fromUserID uint64) (int64, error) {
 	result, err := r.db.ExecContext(ctx,
 		"UPDATE follower SET rel_status = 0, updated_at = ? WHERE to_user_id = ? AND from_user_id = ? AND rel_status = 1",
@@ -74,7 +74,7 @@ func (r *RelationRepository) CancelFollower(ctx context.Context, toUserID, fromU
 	return result.RowsAffected()
 }
 
-// ExistsFollowing checks whether a follow relationship exists, using sqlx.GetContext.
+// ExistsFollowing 检查关注关系是否存在，使用 sqlx.GetContext。
 func (r *RelationRepository) ExistsFollowing(ctx context.Context, fromUserID, toUserID uint64) (int, error) {
 	var count int
 	err := sqlx.GetContext(ctx, r.db, &count, `
@@ -85,7 +85,7 @@ WHERE from_user_id = ? AND to_user_id = ? AND rel_status = 1
 	return count, err
 }
 
-// ListFollowingRows queries the following list with pagination, using sqlx.SelectContext.
+// ListFollowingRows 查询关注列表并分页，使用 sqlx.SelectContext。
 func (r *RelationRepository) ListFollowingRows(ctx context.Context, userID uint64, limit, offset int) ([]FollowingRow, error) {
 	var rows []FollowingRow
 	err := sqlx.SelectContext(ctx, r.db, &rows, `
@@ -98,7 +98,7 @@ LIMIT ? OFFSET ?
 	return rows, err
 }
 
-// ListFollowerRows queries the follower list with pagination, using sqlx.SelectContext.
+// ListFollowerRows 查询粉丝列表并分页，使用 sqlx.SelectContext。
 func (r *RelationRepository) ListFollowerRows(ctx context.Context, userID uint64, limit, offset int) ([]FollowerRow, error) {
 	var rows []FollowerRow
 	err := sqlx.SelectContext(ctx, r.db, &rows, `
@@ -111,7 +111,7 @@ LIMIT ? OFFSET ?
 	return rows, err
 }
 
-// ListFollowerRowsFromFollowing queries followers from the following table as a fallback (backward compatibility for old data), using sqlx.SelectContext.
+// ListFollowerRowsFromFollowing 从 following 表查询粉丝作为降级方案（向后兼容旧数据），使用 sqlx.SelectContext。
 func (r *RelationRepository) ListFollowerRowsFromFollowing(ctx context.Context, userID uint64, limit, offset int) ([]FollowerRow, error) {
 	var rows []FollowerRow
 	err := sqlx.SelectContext(ctx, r.db, &rows, `

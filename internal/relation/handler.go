@@ -10,18 +10,18 @@ import (
 	"github.com/zhiguang/app/pkg/response"
 )
 
-// RelationHandler exposes HTTP endpoints for follow, unfollow, and relationship list operations.
+// RelationHandler 暴露关注、取关和关系列表查询的 HTTP 端点。
 type RelationHandler struct {
 	svc RelationServiceInterface
 }
 
-// NewRelationHandler creates a RelationHandler instance.
+// NewRelationHandler 创建一个 RelationHandler 实例。
 //
-// Parameters:
-//   - svc: RelationServiceInterface implementation, handles relation business logic
+// 参数:
+//   - svc: RelationServiceInterface 实现，处理关系业务逻辑
 //
-// Returns:
-//   - *RelationHandler: initialized Handler instance
+// 返回:
+//   - *RelationHandler: 初始化后的处理器实例
 func NewRelationHandler(svc RelationServiceInterface) *RelationHandler {
 	return &RelationHandler{svc: svc}
 }
@@ -39,15 +39,15 @@ func (h *RelationHandler) RegisterRoutes(r *gin.RouterGroup) {
 	}
 }
 
-// Follow handles POST /relations/follow.
+// Follow 处理 POST /relations/follow。
 //
-// Request: {"to_user_id": 12345}
-// Response: 200 {"code": 0, "data": {"success": true}}
+// 请求: {"to_user_id": 12345}
+// 响应: 200 {"code": 0, "data": {"success": true}}
 //
-// Edge cases:
-//   - Following yourself: returns 400 "cannot follow yourself".
-//   - Rate limited (too fast): returns 429 "rate limited or already following".
-//   - Not logged in: returns 401.
+// 边界情况:
+//   - 关注自己: 返回 400 "cannot follow yourself"。
+//   - 被限流（操作过快）: 返回 429 "rate limited or already following"。
+//   - 未登录: 返回 401。
 func (h *RelationHandler) Follow(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -76,11 +76,11 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 	response.Success(c, gin.H{"success": true})
 }
 
-// Unfollow handles POST /relations/unfollow.
+// Unfollow 处理 POST /relations/unfollow。
 //
-// Request: {"to_user_id": 12345}
-// Response: 200 {"code": 0, "data": {"success": true, "changed": true}}
-//   changed=true indicates unfollow succeeded; changed=false indicates already unfollowed.
+// 请求: {"to_user_id": 12345}
+// 响应: 200 {"code": 0, "data": {"success": true, "changed": true}}
+//   changed=true 表示取关成功；changed=false 表示已经取消关注。
 func (h *RelationHandler) Unfollow(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -101,10 +101,10 @@ func (h *RelationHandler) Unfollow(c *gin.Context) {
 	response.Success(c, gin.H{"success": true, "changed": ok})
 }
 
-// Status handles GET /relations/status?other_id=12345.
+// Status 处理 GET /relations/status?other_id=12345。
 //
-// Function: returns the relationship status between the current logged-in user and the target user.
-// Response: {"status": "mutual" | "following" | "followed" | "none"}
+// 功能: 返回当前登录用户与目标用户之间的关系状态。
+// 响应: {"status": "mutual" | "following" | "followed" | "none"}
 func (h *RelationHandler) Status(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -125,10 +125,10 @@ func (h *RelationHandler) Status(c *gin.Context) {
 	response.Success(c, gin.H{"status": status})
 }
 
-// Following handles GET /relations/following?user_id=12345&limit=20&offset=0.
+// Following 处理 GET /relations/following?user_id=12345&limit=20&offset=0。
 //
-// Function: queries the list of users that a given user follows, using offset pagination.
-// Note: this is a public endpoint and does not require authentication.
+// 功能: 查询指定用户关注的人列表，使用 offset 分页。
+// 注意: 这是一个公开端点，无需身份验证。
 func (h *RelationHandler) Following(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
 	limit := httputil.QueryInt(c, "limit", 20)
@@ -143,10 +143,10 @@ func (h *RelationHandler) Following(c *gin.Context) {
 	response.Success(c, gin.H{"data": data})
 }
 
-// Followers handles GET /relations/followers?user_id=12345&limit=20&offset=0.
+// Followers 处理 GET /relations/followers?user_id=12345&limit=20&offset=0。
 //
-// Function: queries the list of followers for a given user, using offset pagination.
-// Note: this is a public endpoint and does not require authentication.
+// 功能: 查询指定用户的粉丝列表，使用 offset 分页。
+// 注意: 这是一个公开端点，无需身份验证。
 func (h *RelationHandler) Followers(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
 	limit := httputil.QueryInt(c, "limit", 20)
@@ -161,13 +161,13 @@ func (h *RelationHandler) Followers(c *gin.Context) {
 	response.Success(c, gin.H{"data": data})
 }
 
-// FollowingCursor handles GET /relations/following/cursor?user_id=12345&limit=20&cursor=0.
+// FollowingCursor 处理 GET /relations/following/cursor?user_id=12345&limit=20&cursor=0。
 //
-// Function: queries the list of users that a given user follows, using cursor pagination.
-// Note: this is a public endpoint and does not require authentication.
+// 功能: 查询指定用户关注的人列表，使用游标分页。
+// 注意: 这是一个公开端点，无需身份验证。
 //
-// The cursor is based on the millisecond timestamp of the follow time. cursor=0 means start from the beginning (newest follows).
-// The response includes next_cursor which can be used for subsequent requests.
+// 游标基于关注时间的毫秒时间戳。cursor=0 表示从头开始（最新的关注）。
+// 响应中包含 next_cursor，可用于后续请求。
 func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
 	limit := httputil.QueryInt(c, "limit", 20)
@@ -182,10 +182,10 @@ func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
 }
 
-// FollowersCursor handles GET /relations/followers/cursor?user_id=12345&limit=20&cursor=0.
+// FollowersCursor 处理 GET /relations/followers/cursor?user_id=12345&limit=20&cursor=0。
 //
-// Function: queries the list of followers for a given user, using cursor pagination.
-// Note: this is a public endpoint and does not require authentication.
+// 功能: 查询指定用户的粉丝列表，使用游标分页。
+// 注意: 这是一个公开端点，无需身份验证。
 func (h *RelationHandler) FollowersCursor(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
 	limit := httputil.QueryInt(c, "limit", 20)
@@ -200,9 +200,9 @@ func (h *RelationHandler) FollowersCursor(c *gin.Context) {
 	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
 }
 
-// queryInt64 parses an int64 value from query parameters, returning 0 if missing or invalid.
+// queryInt64 从查询参数中解析 int64 值，缺失或无效时返回 0。
 //
-// Function: used to parse cursor values. Cursor is an int64 millisecond timestamp.
+// 功能: 用于解析游标值。游标是 int64 类型的毫秒时间戳。
 func queryInt64(c *gin.Context, key string) int64 {
 	s := c.Query(key)
 	if s == "" {
@@ -215,10 +215,10 @@ func queryInt64(c *gin.Context, key string) int64 {
 	return v
 }
 
-// queryUint64 parses a uint64 value from query parameters, returning 0 if missing or invalid.
+// queryUint64 从查询参数中解析 uint64 值，缺失或无效时返回 0。
 //
-// Function: used to parse user_id from query parameters.
-// The difference from queryInt64 is that the return value is unsigned.
+// 功能: 用于从查询参数中解析 user_id。
+// 与 queryInt64 的区别在于返回值是无符号的。
 func queryUint64(c *gin.Context, key string) uint64 {
 	s := c.Query(key)
 	if s == "" {

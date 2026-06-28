@@ -12,7 +12,7 @@ import (
 	"github.com/zhiguang/app/internal/outbox"
 )
 
-// Follow creates a follow relationship.
+// Follow 创建关注关系。
 func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	rlKey := fmt.Sprintf("rl:follow:%d", fromUserID)
 	capacity, rate := s.tokenBucketParams()
@@ -58,7 +58,7 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 	return true, nil
 }
 
-// Unfollow cancels a follow relationship, writing an outbox event in the same transaction.
+// Unfollow 取消关注关系，在同一事务中写入 outbox 事件。
 func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	outboxID := s.idGen.NextID()
 	event := RelationEvent{EventType: "FollowCanceled", FromUserID: fromUserID, ToUserID: toUserID}

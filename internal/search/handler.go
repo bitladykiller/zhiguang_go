@@ -8,38 +8,38 @@ import (
 	"github.com/zhiguang/app/pkg/response"
 )
 
-// SearchHandler exposes HTTP endpoints for content search.
+// SearchHandler 暴露内容搜索的 HTTP 端点。
 type SearchHandler struct {
 	svc SearchServiceInterface
 }
 
-// NewSearchHandler creates a search HTTP handler.
+// NewSearchHandler 创建一个搜索 HTTP handler。
 //
-// Parameters:
-//   - svc: search service instance (can be nil for degraded mode when ES config is incomplete)
+// 参数：
+//   - svc: 搜索服务实例（可为 nil，当 ES 配置不完整时进入降级模式）
 //
-// Returns:
-//   - *SearchHandler: handler instance
+// 返回：
+//   - *SearchHandler: handler 实例
 //
-// Remarks:
-//   svc can be nil (when ES config is incomplete), in which case all endpoints return 503 Service Unavailable.
-//   This design prevents startup failure from ES unavailability, allowing other modules to work normally.
+// 说明：
+//   svc 可为 nil（当 ES 配置不完整时），此时所有端点返回 503 Service Unavailable。
+//   这种设计防止 ES 不可用导致启动失败，使其他模块可以正常工作。
 func NewSearchHandler(svc SearchServiceInterface) *SearchHandler {
 	return &SearchHandler{svc: svc}
 }
 
-// RegisterRoutes registers search-related HTTP endpoints under the given router group.
+// RegisterRoutes 在给定的路由组下注册搜索相关的 HTTP 端点。
 //
-// Parameters:
-//   - r: Gin router group (typically a sub-group under /api/v1)
+// 参数：
+//   - r: Gin 路由组（通常是 /api/v1 的子组）
 //
-// Registered endpoints:
-//   - GET /search: full-text search (Search)
-//   - GET /search/suggest: auto-complete suggestions (Suggest)
+// 注册的端点：
+//   - GET /search: 全文搜索（Search）
+//   - GET /search/suggest: 自动补全建议（Suggest）
 //
-// Remarks:
-//   All search endpoints use GET method, conforming to RESTful query semantics.
-//   Search parameters (keyword, tags, cursor) are passed via query string.
+// 说明：
+//   所有搜索端点使用 GET 方法，符合 RESTful 查询语义。
+//   搜索参数（关键字、标签、游标）通过查询字符串传递。
 func (h *SearchHandler) RegisterRoutes(r *gin.RouterGroup) {
 	sr := r.Group("/search")
 	{
@@ -48,25 +48,25 @@ func (h *SearchHandler) RegisterRoutes(r *gin.RouterGroup) {
 	}
 }
 
-// Search handles GET /search, performing full-text search and returning results.
+// Search 处理 GET /search，执行全文搜索并返回结果。
 //
-// Request parameters (query string):
-//   - q:     search keyword (required)
-//   - size:  results per page (optional, default 20)
-//   - tags:  tag filter, comma-separated (optional)
-//   - after: cursor value, provided by next_after from previous page response (optional)
+// 请求参数（查询字符串）：
+//   - q:     搜索关键字（必填）
+//   - size:  每页结果数（可选，默认 20）
+//   - tags:  标签过滤，逗号分隔（可选）
+//   - after: 游标值，由上一页响应的 next_after 提供（可选）
 //
-// Response:
-//   - Success: HTTP 200 + SearchResponse JSON (contains items list, next_after, has_more)
-//   - Failure: HTTP 400 (missing q parameter), HTTP 500 (internal search error), HTTP 503 (service unavailable)
+// 响应：
+//   - 成功: HTTP 200 + SearchResponse JSON（包含 items 列表、next_after、has_more）
+//   - 失败: HTTP 400（缺少 q 参数）、HTTP 500（内部搜索错误）、HTTP 503（服务不可用）
 //
-// Authentication:
-//   Search endpoints do not require login, but will attempt to retrieve user info from context.
-//   If the user is logged in, search results include like/favorite status for each result.
+// 认证：
+//   搜索端点不需要登录，但会尝试从上下文中获取用户信息。
+//   如果用户已登录，搜索结果会包含每条结果的点赞/收藏状态。
 //
-// Edge cases:
-//   - Returns 503 when svc is nil (ES config missing or connection failed)
-//   - Returns 400 when keyword is empty
+// 边界情况：
+//   - 当 svc 为 nil 时返回 503（ES 配置缺失或连接失败）
+//   - 当关键字为空时返回 400
 func (h *SearchHandler) Search(c *gin.Context) {
 	if h.svc == nil {
 		response.Error(c, errcode.ErrServiceUnavailable.WithMsg("search service is unavailable"))
@@ -97,23 +97,23 @@ func (h *SearchHandler) Search(c *gin.Context) {
 	response.Success(c, result)
 }
 
-// Suggest handles GET /search/suggest, returning prefix-matched auto-complete suggestions.
+// Suggest 处理 GET /search/suggest，返回前缀匹配的自动补全建议。
 //
-// Request parameters (query string):
-//   - prefix: user input prefix (required)
-//   - size:   number of suggestions (optional, default 10)
+// 请求参数（查询字符串）：
+//   - prefix: 用户输入的前缀（必填）
+//   - size:   建议数量（可选，默认 10）
 //
-// Response:
-//   - Success: HTTP 200 + JSON { items: ["suggestion1", "suggestion2", ...] }
-//   - Failure: HTTP 500 (internal search error), HTTP 503 (service unavailable)
+// 响应：
+//   - 成功: HTTP 200 + JSON { items: ["suggestion1", "suggestion2", ...] }
+//   - 失败: HTTP 500（内部搜索错误）、HTTP 503（服务不可用）
 //
-// Remarks:
-//   Suggestions come from knowpost titles and tags,
-//   using ES completion suggester for prefix matching on FST data structure.
+// 说明：
+//   建议来自知文标题和标签，
+//   使用 ES completion suggester 基于 FST 数据结构进行前缀匹配。
 //
-// Edge cases:
-//   - Returns 503 when svc is nil
-//   - ES will error if prefix is empty; caller must ensure a valid prefix is passed
+// 边界情况：
+//   - 当 svc 为 nil 时返回 503
+//   - ES 在 prefix 为空时会返回错误；调用方必须确保传入有效的前缀
 func (h *SearchHandler) Suggest(c *gin.Context) {
 	if h.svc == nil {
 		response.Error(c, errcode.ErrServiceUnavailable.WithMsg("search service is unavailable"))

@@ -23,11 +23,11 @@ type relationListCacheTarget struct {
 	userID   uint64
 }
 
-// listCacheLockKey returns the distributed lock key for relationship list cache.
+// listCacheLockKey 返回关系列表缓存的分布式锁键。
 //
-// WHY lock by listType + userID:
-//   - "Following list" and "Followers list" are two independent caches and should not block each other.
-//   - For the same user and same list type, cold-start backfill and post-write invalidation need global serialization.
+// WHY 按 listType + userID 锁定：
+//   - "关注列表"和"粉丝列表"是两个独立的缓存，不应相互阻塞。
+//   - 对于同一用户的同一列表类型，冷启动回填和写后失效需要全局串行化。
 func listCacheLockKey(listType string, userID uint64) string {
 	return fmt.Sprintf("lock:relation:list:%s:%d", listType, userID)
 }
@@ -40,7 +40,7 @@ func relationListCacheLockOptions() redislock.Options {
 	}
 }
 
-// acquireListCacheLock acquires a single relationship list cache lock.
+// acquireListCacheLock 获取单个关系列表缓存锁。
 func (s *RelationService) acquireListCacheLock(ctx context.Context, listType string, userID uint64) (*redislock.Lock, error) {
 	return redislock.AcquireWithRetry(
 		ctx,
@@ -52,7 +52,7 @@ func (s *RelationService) acquireListCacheLock(ctx context.Context, listType str
 	)
 }
 
-// acquireListCacheLocks acquires multiple relationship list cache locks, sorted by lock key to avoid deadlocks.
+// acquireListCacheLocks 获取多个关系列表缓存锁，按键排序以避免死锁。
 func (s *RelationService) acquireListCacheLocks(ctx context.Context, targets []relationListCacheTarget) ([]*redislock.Lock, error) {
 	sorted := append([]relationListCacheTarget(nil), targets...)
 	sort.Slice(sorted, func(i, j int) bool {
