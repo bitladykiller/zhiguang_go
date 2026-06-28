@@ -65,6 +65,14 @@ func (s *Service) FanoutPost(ctx context.Context, event *model.FanoutEvent) erro
 			break
 		}
 		allFans = append(allFans, fans...)
+		if len(allFans) > s.cfg.FanoutMaxFans {
+			s.logger.Info("fanout skipped: too many fans",
+				zap.Uint64("creatorID", event.CreatorID),
+				zap.Int("fanCount", len(allFans)),
+				zap.Int("maxFans", s.cfg.FanoutMaxFans),
+			)
+			return nil
+		}
 		if len(fans) < limit {
 			break
 		}
@@ -76,15 +84,6 @@ func (s *Service) FanoutPost(ctx context.Context, event *model.FanoutEvent) erro
 	}
 
 	if len(allFans) == 0 {
-		return nil
-	}
-
-	if len(allFans) > s.cfg.FanoutMaxFans {
-		s.logger.Info("fanout skipped: too many fans",
-			zap.Uint64("creatorID", event.CreatorID),
-			zap.Int("fanCount", len(allFans)),
-			zap.Int("maxFans", s.cfg.FanoutMaxFans),
-		)
 		return nil
 	}
 

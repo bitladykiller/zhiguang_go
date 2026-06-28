@@ -33,6 +33,7 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/internal/model"
+	"github.com/zhiguang/app/pkg/contextutil"
 	"github.com/zhiguang/app/pkg/jsonutil"
 	"go.uber.org/zap"
 )
@@ -157,7 +158,7 @@ type SearchService struct {
 // 返回值:
 //   - *SearchService: 搜索服务实例
 //   - error: 如果创建客户端失败或索引创建/校验出错则返回非 nil 错误
-func NewSearchService(cfg ESConfig, counter SearchCounterClient, logger *zap.Logger) (*SearchService, error) {
+func NewSearchService(ctx context.Context, cfg ESConfig, counter SearchCounterClient, logger *zap.Logger) (*SearchService, error) {
 	client, err := elasticsearch.NewClient(elasticsearch.Config{
 		Addresses:     cfg.URIs,
 		MaxRetries:    cfg.MaxRetries,
@@ -178,7 +179,7 @@ func NewSearchService(cfg ESConfig, counter SearchCounterClient, logger *zap.Log
 		}
 		if attempt < defaultEnsureRetries {
 			logger.Warn("ensure index failed, retrying", zap.Int("attempt", attempt), zap.Error(ensureErr))
-			time.Sleep(time.Duration(attempt) * time.Second)
+			contextutil.Sleep(ctx, time.Duration(attempt)*time.Second)
 		}
 	}
 	if ensureErr != nil {
@@ -292,12 +293,12 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 	tags := parseCSV(tagsCSV)
 	afterValues := parseAfter(after)
 
-	query, err := s.buildSearchQuery(keyword, tags, afterValues, size)
+	body, err := s.buildSearchQuery(keyword, tags, afterValues, size)
 	if err != nil {
 		return nil, err
 	}
 
-	raw, err := s.executeSearch(ctx, query)
+	raw, err := s.executeSearch(ctx, body)
 	if err != nil {
 		return nil, err
 	}
@@ -315,87 +316,106 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 }
 
 // buildSearchQuery 构造 ES 搜索请求体 JSON。
-func (s *SearchService) buildSearchQuery(keyword string, tags []string, afterValues []interface{}, size int) (map[string]interface{}, error) {
-	query := map[string]interface{}{
-		"query": map[string]interface{}{
-			"function_score": map[string]interface{}{
-				"query": map[string]interface{}{
-					"bool": map[string]interface{}{
-						"must": []map[string]interface{}{
-							{"multi_match": map[string]interface{}{
-								"query":  keyword,
-								"fields": []string{"title^3", "body"},
-							}},
+func (s *SearchService) buildSearchQuery(keyword string, tags []string, afterValues []interface{}, size int) ([]byte, error) {
+	body := &esSearchBody{
+		Size: size,
+		Track: &esTrackTotalHits{TrackTotalHits: true},
+	}
+
+	bq := &esBoolClauses{}
+
+	if keyword != "" {
+		bq.Must = append(bq.Must, &esMultiMatchQuery{
+			MultiMatch: map[string]interface{}{
+				"query":  keyword,
+				"fields": []string{"title^3", "body"},
+			},
+		})
+	}
+
+	// 过滤条件: status=published, visible=public
+	bq.Filter = append(bq.Filter, &esTermQuery{
+		Term: map[string]interface{}{"status": "published"},
+	})
+	bq.Filter = append(bq.Filter, &esTermQuery{
+		Term: map[string]interface{}{"visible": "public"},
+	})
+
+	if len(bq.Must) > 0 || len(bq.Filter) > 0 || len(bq.Should) > 0 {
+		body.Query = &esBoolQuery{Bool: bq}
+	}
+
+	// function_score 包装，融合 like_count / view_count 权重
+	fsQuery := body.Query
+	body.Query = &esBoolQuery{
+		Bool: &esBoolClauses{
+			Must: []interface{}{
+				&esFunctionScoreQuery{
+					FunctionScore: &esFunctionScore{
+						Query: fsQuery,
+						Functions: []esFunction{
+							{
+								ScriptScore: &esScriptScore{
+									Script: &esScript{
+										Source: "Math.log(1 + (doc['like_count'].value ?: 0)) * 2.0 + Math.log(1 + (doc['view_count'].value ?: 0)) * 1.0",
+									},
+								},
+							},
 						},
-						"filter": []map[string]interface{}{
-							{"term": map[string]interface{}{"status": "published"}},
-							{"term": map[string]interface{}{"visible": "public"}},
-						},
+						ScoreMode: "sum",
 					},
 				},
-				"functions": []map[string]interface{}{
-					{"field_value_factor": map[string]interface{}{"field": "like_count", "modifier": "log1p"}, "weight": 2.0},
-					{"field_value_factor": map[string]interface{}{"field": "view_count", "modifier": "log1p"}, "weight": 1.0},
-				},
-				"boost_mode": "sum",
 			},
 		},
-		"size": size,
-		"highlight": map[string]interface{}{
-			"fields": map[string]interface{}{
-				"title": map[string]interface{}{},
-				"body":  map[string]interface{}{},
-			},
-		},
-		"sort": []map[string]interface{}{
-			{"_score": map[string]string{"order": "desc"}},
-			{"publish_time": map[string]string{"order": "desc"}},
-			{"like_count": map[string]string{"order": "desc"}},
-			{"view_count": map[string]string{"order": "desc"}},
-			{"id": map[string]string{"order": "desc"}},
-		},
+	}
+
+	// 排序
+	body.Sort = []esSortField{
+		{Field: "_score", Order: "desc"},
+		{Field: "publish_time", Order: "desc"},
+		{Field: "like_count", Order: "desc"},
+		{Field: "view_count", Order: "desc"},
+		{Field: "id", Order: "desc"},
 	}
 
 	if len(tags) > 0 {
-		if err := s.addTagFilter(query, tags); err != nil {
+		var err error
+		body, err = s.addTagFilter(body, tags)
+		if err != nil {
 			return nil, err
 		}
 	}
-	if len(afterValues) > 0 {
-		query["search_after"] = afterValues
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("build search query: marshal: %w", err)
 	}
-	return query, nil
+
+	return data, nil
 }
 
 // addTagFilter 向已构建的 ES query 中添加 tags 过滤条件。
-func (s *SearchService) addTagFilter(query map[string]interface{}, tags []string) error {
-	fs, ok := query["query"].(map[string]interface{})["function_score"].(map[string]interface{})
-	if !ok {
-		err := fmt.Errorf("addTagFilter: query[query][function_score] type assertion failed")
-		s.logger.Error(err.Error())
-		return err
+func (s *SearchService) addTagFilter(body *esSearchBody, tags []string) (*esSearchBody, error) {
+	if len(tags) == 0 {
+		return body, nil
 	}
-	inner, ok := fs["query"].(map[string]interface{})
-	if !ok {
-		err := fmt.Errorf("addTagFilter: function_score[query] type assertion failed")
-		s.logger.Error(err.Error())
-		return err
+
+	if body.Query != nil && body.Query.Bool != nil && len(body.Query.Bool.Must) > 0 {
+		for i, clause := range body.Query.Bool.Must {
+			if fs, ok := clause.(*esFunctionScoreQuery); ok {
+				if fs.FunctionScore != nil {
+					if bq, ok := fs.FunctionScore.Query.(*esBoolQuery); ok && bq.Bool != nil {
+						bq.Bool.Filter = append(bq.Bool.Filter, &esTermsQuery{
+							Terms: map[string]interface{}{"tags": tags},
+						})
+						_ = i
+					}
+				}
+			}
+		}
 	}
-	bq, ok := inner["bool"].(map[string]interface{})
-	if !ok {
-		err := fmt.Errorf("addTagFilter: query[bool] type assertion failed")
-		s.logger.Error(err.Error())
-		return err
-	}
-	filter, ok := bq["filter"].([]map[string]interface{})
-	if !ok {
-		err := fmt.Errorf("addTagFilter: bool[filter] type assertion failed")
-		s.logger.Error(err.Error())
-		return err
-	}
-	filter = append(filter, map[string]interface{}{"terms": map[string]interface{}{"tags": tags}})
-	bq["filter"] = filter
-	return nil
+
+	return body, nil
 }
 
 // searchHit 表示 ES 搜索结果中的单个 hit。
@@ -407,16 +427,13 @@ type searchHit struct {
 }
 
 // executeSearch 发送 ES 搜索请求并返回原始响应。
-func (s *SearchService) executeSearch(ctx context.Context, query map[string]interface{}) ([]searchHit, error) {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(query); err != nil {
-		return nil, fmt.Errorf("search: encode query: %w", err)
-	}
+func (s *SearchService) executeSearch(ctx context.Context, query []byte) ([]searchHit, error) {
+	buf := bytes.NewBuffer(query)
 
 	res, err := s.client.Search(
 		s.client.Search.WithContext(ctx),
 		s.client.Search.WithIndex(s.indexName),
-		s.client.Search.WithBody(&buf),
+		s.client.Search.WithBody(buf),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search: es request: %w", err)
@@ -845,4 +862,97 @@ func (s *SearchService) DeleteDocument(ctx context.Context, id string) error {
 		return s.readESError(res, "delete document")
 	}
 	return nil
+}
+
+// ES 查询结构体，替代嵌套 map[string]interface{}
+type esSearchBody struct {
+	Query   *esBoolQuery         `json:"query,omitempty"`
+	Size    int                  `json:"size,omitempty"`
+	From    int                  `json:"from,omitempty"`
+	Sort    []esSortField        `json:"sort,omitempty"`
+	Suggest *esSuggest           `json:"suggest,omitempty"`
+	Track   *esTrackTotalHits    `json:"track_total_hits,omitempty"`
+}
+
+type esBoolQuery struct {
+	Bool *esBoolClauses `json:"bool,omitempty"`
+}
+
+type esBoolClauses struct {
+	Must    []interface{} `json:"must,omitempty"`
+	Filter  []interface{} `json:"filter,omitempty"`
+	Should  []interface{} `json:"should,omitempty"`
+}
+
+type esSortField struct {
+	Field string
+	Order string
+}
+
+func (s esSortField) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]interface{}{
+		s.Field: map[string]string{"order": s.Order},
+	})
+}
+
+type esSuggest struct {
+	Suggest *esSuggestConfig `json:"suggest,omitempty"`
+}
+
+type esSuggestConfig struct {
+	Prefix     string              `json:"prefix"`
+	Completion *esCompletionField  `json:"completion"`
+}
+
+type esCompletionField struct {
+	Field string `json:"field"`
+	Size  int    `json:"size"`
+}
+
+type esTrackTotalHits struct {
+	TrackTotalHits interface{} `json:"track_total_hits"`
+}
+
+type esTermQuery struct {
+	Term map[string]interface{} `json:"term"`
+}
+
+type esTermsQuery struct {
+	Terms map[string]interface{} `json:"terms"`
+}
+
+type esMatchQuery struct {
+	Match map[string]interface{} `json:"match"`
+}
+
+type esMultiMatchQuery struct {
+	MultiMatch map[string]interface{} `json:"multi_match"`
+}
+
+type esRangeQuery struct {
+	Range map[string]interface{} `json:"range"`
+}
+
+type esFunctionScoreQuery struct {
+	FunctionScore *esFunctionScore `json:"function_score"`
+}
+
+type esFunctionScore struct {
+	Query     interface{}   `json:"query"`
+	Functions []esFunction `json:"functions,omitempty"`
+	ScoreMode string       `json:"score_mode"`
+}
+
+type esFunction struct {
+	Filter      interface{}   `json:"filter,omitempty"`
+	Weight      *int          `json:"weight,omitempty"`
+	ScriptScore *esScriptScore `json:"script_score,omitempty"`
+}
+
+type esScriptScore struct {
+	Script *esScript `json:"script"`
+}
+
+type esScript struct {
+	Source string `json:"source"`
 }

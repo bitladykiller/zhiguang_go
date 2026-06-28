@@ -4,6 +4,25 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+x-kafka-common: &kafka-common
+  image: confluentinc/cp-kafka:7.5.3
+  restart: unless-stopped
+  depends_on:
+    - zookeeper
+  environment: &kafka-env
+    KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+    KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  networks:
+    - backend
+  logging: *default-logging
+
 services:
   frontend:
     build:
@@ -123,79 +142,37 @@ services:
     logging: *default-logging
 
   kafka:
-    image: confluentinc/cp-kafka:7.5.3
+    <<: *kafka-common
     container_name: zhiguang-kafka-1
-    restart: unless-stopped
-    depends_on:
-      - zookeeper
     environment:
+      <<: *kafka-env
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
-      KAFKA_MIN_INSYNC_REPLICAS: 2
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     volumes:
       - kafka1_data:/var/lib/kafka/data
-    networks:
-      - backend
-    logging: *default-logging
 
   kafka2:
-    image: confluentinc/cp-kafka:7.5.3
+    <<: *kafka-common
     container_name: zhiguang-kafka-2
-    restart: unless-stopped
-    depends_on:
-      - zookeeper
     environment:
+      <<: *kafka-env
       KAFKA_BROKER_ID: 2
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
-      KAFKA_MIN_INSYNC_REPLICAS: 2
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     volumes:
       - kafka2_data:/var/lib/kafka/data
-    networks:
-      - backend
-    logging: *default-logging
 
   kafka3:
-    image: confluentinc/cp-kafka:7.5.3
+    <<: *kafka-common
     container_name: zhiguang-kafka-3
-    restart: unless-stopped
-    depends_on:
-      - zookeeper
     environment:
+      <<: *kafka-env
       KAFKA_BROKER_ID: 3
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka3:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
-      KAFKA_MIN_INSYNC_REPLICAS: 2
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     volumes:
       - kafka3_data:/var/lib/kafka/data
-    networks:
-      - backend
-    logging: *default-logging
 
   kafka-init:
     image: confluentinc/cp-kafka:7.5.3

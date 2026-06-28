@@ -1,6 +1,13 @@
 server:
   port: 8080
   mode: debug
+  rate_limit:
+    enabled: true
+    per_ip: 100
+    window_ms: 60000
+    ban_duration_ms: 600000
+  cors_allowed_origins:
+    - "http://localhost:3000"
 
 database:
   host: localhost
@@ -41,7 +48,7 @@ elasticsearch:
 auth:
   jwt:
     issuer: zhiguang
-    key_id: zhiguang-key
+    key_id: zhiguang-local
     private_key_path: config/keys/private.pem
     public_key_path: config/keys/public.pem
     access_token_ttl: 15m

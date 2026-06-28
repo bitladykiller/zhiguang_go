@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -464,6 +465,9 @@ func (c *Config) Validate() error {
 	if c.Redis.Addr() == "" {
 		errs = append(errs, "redis.addr is required")
 	}
+	if c.Server.RateLimit.Enabled && (c.Server.RateLimit.PerIP <= 0 || c.Server.RateLimit.WindowMs <= 0) {
+		errs = append(errs, "rate_limit: per_ip and window_ms must be positive when enabled")
+	}
 	if c.Auth.Jwt.PrivateKeyPath == "" {
 		errs = append(errs, "auth.jwt.private_key_path is required")
 	}
@@ -473,6 +477,10 @@ func (c *Config) Validate() error {
 
 	if len(errs) > 0 {
 		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
+	}
+
+	if c.Canal.Enabled && (c.Canal.Username == "" || c.Canal.Password == "") {
+		zap.L().Warn("canal is enabled but username or password is empty, authentication may fail")
 	}
 
 	// 7. Redis — 如果 RequirePass 为 true，密码不能为空

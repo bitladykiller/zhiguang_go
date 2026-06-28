@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -40,7 +41,7 @@ func initSearch(
 
 	if hasElasticsearchConfig(cfg) {
 		var err error
-		searchSvc, err = search.NewSearchService(search.ESConfig{
+		searchSvc, err = search.NewSearchService(context.Background(), search.ESConfig{
 		URIs:      cfg.Elasticsearch.URIs,
 		IndexName: cfg.Elasticsearch.IndexName,
 		MaxRetries: cfg.Elasticsearch.MaxRetries,
