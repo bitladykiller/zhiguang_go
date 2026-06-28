@@ -41,6 +41,11 @@ func (fc *FanoutConsumer) Start(ctx context.Context) {
 		return
 	}
 	defer fc.reader.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			fc.logger.Error("fanout consumer panicked", zap.Any("panic", r), zap.Stack("stack"))
+		}
+	}()
 
 	fetchLimit := 100
 	for {

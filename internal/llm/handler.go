@@ -17,10 +17,11 @@ import (
 type LlmHandler struct {
 	descSvc DescriptionServiceInterface
 	ragSvc  RagQueryServiceInterface
+	logger  *zap.Logger
 }
 
-func NewLlmHandler(descSvc DescriptionServiceInterface, ragSvc RagQueryServiceInterface) *LlmHandler {
-	return &LlmHandler{descSvc: descSvc, ragSvc: ragSvc}
+func NewLlmHandler(descSvc DescriptionServiceInterface, ragSvc RagQueryServiceInterface, logger *zap.Logger) *LlmHandler {
+	return &LlmHandler{descSvc: descSvc, ragSvc: ragSvc, logger: logger}
 }
 
 func (h *LlmHandler) RegisterRoutes(r *gin.RouterGroup) {
@@ -99,7 +100,7 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 		defer close(done)
 		defer func() {
 			if r := recover(); r != nil {
-				zap.L().Error("ragSvc.Query panicked", zap.Any("panic", r))
+				h.logger.Error("ragSvc.Query panicked", zap.Any("panic", r))
 				select {
 				case streamChan <- fmt.Sprintf("data: {\"error\": \"internal server error\"}\n\n"):
 				default:

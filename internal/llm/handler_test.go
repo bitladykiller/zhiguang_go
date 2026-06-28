@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // ============================================================================
@@ -74,7 +75,7 @@ func (m *mockRagSvc) Query(ctx context.Context, postID uint64, question string, 
 
 func setupHandler(descSvc DescriptionServiceInterface, ragSvc RagQueryServiceInterface) *LlmHandler {
 	gin.SetMode(gin.TestMode)
-	return NewLlmHandler(descSvc, ragSvc)
+	return NewLlmHandler(descSvc, ragSvc, nil)
 }
 
 const ctxUserID = "user_id"
@@ -384,6 +385,9 @@ func TestRagQuery_RecoverFromPanicInGoroutine(t *testing.T) {
 	}
 
 	handler := setupHandler(nil, ragSvc)
+	if handler.logger == nil {
+		handler.logger = zap.NewNop()
+	}
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -534,7 +538,7 @@ func TestRagQuery_ConcurrentRequests(t *testing.T) {
 // ============================================================================
 
 func TestNewLlmHandler_ZeroValues(t *testing.T) {
-	h := NewLlmHandler(nil, nil)
+	h := NewLlmHandler(nil, nil, nil)
 	if h.descSvc != nil {
 		t.Error("descSvc should be nil")
 	}

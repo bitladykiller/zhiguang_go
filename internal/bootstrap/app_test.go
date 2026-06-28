@@ -52,7 +52,7 @@ func TestHotKeyRunner_Start(t *testing.T) {
 		ExtendMediumSeconds:  60,
 		ExtendHighSeconds:    120,
 		HotMarkTTLSeconds:    60,
-	}, nil)
+	}, nil, nil)
 	r := &hotKeyRunner{d: detector}
 	r.Start(ctx)
 }

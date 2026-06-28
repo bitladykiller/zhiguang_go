@@ -32,16 +32,16 @@ func InitializeApp(configPath string) (*server.App, error) {
 		return nil, err
 	}
 
-	db, err := database.NewDB(&cfg.Database)
+	db, err := database.NewDB(&cfg.Database, logger)
 	if err != nil {
 		return nil, err
 	}
-	redisClient, err := database.NewRedisClient(&cfg.Redis)
+	redisClient, err := database.NewRedisClient(&cfg.Redis, logger)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := database.RunMigrations(db); err != nil {
+	if err := database.RunMigrations(db, logger); err != nil {
 		return nil, fmt.Errorf("database migration: %w", err)
 	}
 
@@ -49,7 +49,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 	canalOutboxWriter := messaging.NewTopicWriter(&cfg.Kafka, outbox.CanalOutboxTopic, false)
 
 	sharedFreeCache := newFreeCacheWithConfig(cfg)
-	hotKeyDetector := cache.NewHotKeyDetector(&cfg.Cache.HotKey, redisClient)
+	hotKeyDetector := cache.NewHotKeyDetector(&cfg.Cache.HotKey, redisClient, logger)
 
 	authHandler, jwtSvc, err := initAuth(db, redisClient, cfg, logger)
 	if err != nil {
@@ -72,7 +72,7 @@ func InitializeApp(configPath string) (*server.App, error) {
 
 	fanoutConsumer := initFanout(redisClient, relSvc, cfg, logger)
 
-	searchHandler, searchOutboxConsumer, relationOutboxConsumer := initSearch(db, redisClient, counterSvc, cfg, logger)
+	searchHandler, searchOutboxConsumer, relationOutboxConsumer := initSearch(context.Background(), db, redisClient, counterSvc, cfg, logger)
 
 	llmHandler := initLLM(cfg, logger)
 	storageHandler := initStorage(cfg, logger)

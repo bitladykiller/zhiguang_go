@@ -190,7 +190,7 @@ func (a *App) run(parent context.Context) error {
 	cancel()
 
 	// Phase 1: Stop accepting new HTTP requests (graceful shutdown)
-	shutdownHTTPCtx, shutdownHTTPCancel := context.WithTimeout(context.Background(), shutdownTimeoutHTTP)
+	shutdownHTTPCtx, shutdownHTTPCancel := context.WithTimeout(parent, shutdownTimeoutHTTP)
 	shutdownErr := httpServer.Shutdown(shutdownHTTPCtx)
 	shutdownHTTPCancel()
 	if shutdownErr != nil && !errors.Is(shutdownErr, http.ErrServerClosed) {
@@ -202,12 +202,12 @@ func (a *App) run(parent context.Context) error {
 	}
 
 	// Phase 2: Wait for background runners to finish processing backlog
-	runnersCtx, runnersCancel := context.WithTimeout(context.Background(), shutdownTimeoutRunners)
+	runnersCtx, runnersCancel := context.WithTimeout(parent, shutdownTimeoutRunners)
 	a.waitBackgroundRunners(runnersCtx, &runnerWG)
 	runnersCancel()
 
 	// Phase 3: Run cleanup functions
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), shutdownTimeoutCleanup)
+	cleanupCtx, cleanupCancel := context.WithTimeout(parent, shutdownTimeoutCleanup)
 	cleanupErr := a.runCleanup(cleanupCtx)
 	cleanupCancel()
 

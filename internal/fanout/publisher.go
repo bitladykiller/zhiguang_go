@@ -34,10 +34,15 @@ func NewFanoutPublisher(brokers []string, topic string, logger *zap.Logger) *Fan
 	}
 }
 
-func (p *FanoutPublisher) Publish(ctx context.Context, event *model.FanoutEvent) error {
+func (p *FanoutPublisher) Publish(ctx context.Context, event *model.FanoutEvent) (err error) {
 	if p == nil || p.writer == nil {
 		return nil
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("fanout publisher panicked: %v", r)
+		}
+	}()
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("fanout publisher: marshal: %w", err)

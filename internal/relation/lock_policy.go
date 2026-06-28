@@ -48,6 +48,7 @@ func (s *RelationService) acquireListCacheLock(ctx context.Context, listType str
 		listCacheLockKey(listType, userID),
 		relationListCacheLockOptions(),
 		relationListCacheLockRetry,
+		s.logger,
 	)
 }
 

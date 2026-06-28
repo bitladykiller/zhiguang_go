@@ -44,7 +44,7 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 	}
 
 	lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
-	lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval)
+	lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval, s.logger)
 	if err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, fmt.Errorf("acquire rebuild lock: %w", err)

@@ -18,9 +18,10 @@ import (
 type KnowPostDescriptionService struct {
 	cfg    *config.LLMConfig
 	client *http.Client
+	logger *zap.Logger
 }
 
-func NewKnowPostDescriptionService(cfg *config.LLMConfig) (*KnowPostDescriptionService, error) {
+func NewKnowPostDescriptionService(cfg *config.LLMConfig, logger *zap.Logger) (*KnowPostDescriptionService, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("llm config is nil")
 	}
@@ -28,12 +29,13 @@ func NewKnowPostDescriptionService(cfg *config.LLMConfig) (*KnowPostDescriptionS
 	if cfg.TimeoutMs > 0 {
 		timeout = time.Duration(cfg.TimeoutMs) * time.Millisecond
 	}
-	if cfg.DeepSeek.APIKey == "" {
-		zap.L().Warn("llm deepseek api_key is empty, description service will fail at runtime")
+	if cfg.DeepSeek.APIKey == "" && logger != nil {
+		logger.Warn("llm deepseek api_key is empty, description service will fail at runtime")
 	}
 	return &KnowPostDescriptionService{
 		cfg:    cfg,
 		client: &http.Client{Timeout: timeout},
+		logger: logger,
 	}, nil
 }
 

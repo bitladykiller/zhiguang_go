@@ -20,7 +20,6 @@ import (
 	"strings"
 	"time"
 
-	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -480,7 +479,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Canal.Enabled && (c.Canal.Username == "" || c.Canal.Password == "") {
-		zap.L().Warn("canal is enabled but username or password is empty, authentication may fail")
+		errs = append(errs, "canal: username and password are required when enabled")
 	}
 
 	// 7. Redis — 如果 RequirePass 为 true，密码不能为空

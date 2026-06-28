@@ -48,14 +48,14 @@ import (
 //
 // 超时配置：
 //   - 连接超时、读超时、写超时已通过 cfg.DSN() 中的 DSN 参数传递给 MySQL 驱动。
-func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
+func NewDB(cfg *config.DatabaseConfig, logger *zap.Logger) (*sqlx.DB, error) {
 	db, err := sqlx.Open("mysql", cfg.DSN())
 	if err != nil {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
 		if closeErr := db.Close(); closeErr != nil {
-			zap.L().Warn("failed to close db after ping failure", zap.Error(closeErr))
+			logger.Warn("failed to close db after ping failure", zap.Error(closeErr))
 		}
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func NewDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
 //   - MinIdleConns: 最小空闲连接数，确保连接池预热
 //   - MaxRetries: 命令执行失败时的最大重试次数
 //   - ConnMaxLifetime: 连接最大生命周期（秒），超时后连接会被关闭重建
-func NewRedisClient(cfg *config.RedisConfig) (*redis.Client, error) {
+func NewRedisClient(cfg *config.RedisConfig, logger *zap.Logger) (*redis.Client, error) {
 	opts := &redis.Options{
 		Addr:     cfg.Addr(),
 		Password: cfg.Password,
@@ -127,7 +127,7 @@ func NewRedisClient(cfg *config.RedisConfig) (*redis.Client, error) {
 	defer cancel()
 	if err := client.Ping(pingCtx).Err(); err != nil {
 		client.Close()
-		zap.L().Error("redis ping failed", zap.Error(err))
+		logger.Error("redis ping failed", zap.Error(err))
 		return nil, fmt.Errorf("redis ping: %w", err)
 	}
 	return client, nil
@@ -135,7 +135,7 @@ func NewRedisClient(cfg *config.RedisConfig) (*redis.Client, error) {
 
 // NewRedisClientOrDie 创建 Redis 客户端，Ping 失败时不返回 error 而是 warn 降级返回 client。
 // 用于不需要强制依赖 Redis 的模块（如缓存加速）。
-func NewRedisClientOrDie(cfg *config.RedisConfig) *redis.Client {
+func NewRedisClientOrDie(cfg *config.RedisConfig, logger *zap.Logger) *redis.Client {
 	opts := &redis.Options{
 		Addr:     cfg.Addr(),
 		Password: cfg.Password,
@@ -166,7 +166,7 @@ func NewRedisClientOrDie(cfg *config.RedisConfig) *redis.Client {
 	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(pingCtx).Err(); err != nil {
-		zap.L().Error("redis ping failed at startup, service may degrade silently", zap.String("addr", cfg.Addr()), zap.Error(err))
+		logger.Error("redis ping failed at startup, service may degrade silently", zap.String("addr", cfg.Addr()), zap.Error(err))
 	}
 	return client
 }

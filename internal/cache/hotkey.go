@@ -57,6 +57,7 @@ const (
 type HotKeyDetector struct {
 	config *config.HotKeyConfig
 	redis  *redis.Client
+	logger *zap.Logger
 
 	// 本地计数缓冲：key → 桶编号 → 桶内计数
 	mu  sync.Mutex
@@ -81,10 +82,11 @@ type HotKeyDetector struct {
 }
 
 // NewHotKeyDetector 根据配置和 Redis 客户端创建跨实例热点键探测器。
-func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client) *HotKeyDetector {
+func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client, logger *zap.Logger) *HotKeyDetector {
 	d := &HotKeyDetector{
 		config:        cfg,
 		redis:         redisClient,
+		logger:        logger,
 		buf:           make(map[string]map[int64]int64),
 		levels:        make(map[string]HotKeyLevel),
 		bucketSize:    time.Duration(cfg.BucketSizeSeconds) * time.Second,
@@ -95,6 +97,9 @@ func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client) *Hot
 	}
 	if cfg.MaxLocalKeys > 0 {
 		d.maxKeys = cfg.MaxLocalKeys
+	}
+	if d.logger == nil {
+		d.logger = zap.L()
 	}
 	return d
 }
@@ -169,7 +174,7 @@ func (d *HotKeyDetector) currentBucket() int64 {
 func (d *HotKeyDetector) flushLoop(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			zap.L().Error("hotkey flushLoop panic recovered", zap.Any("panic", r))
+			d.logger.Error("hotkey flushLoop panic recovered", zap.Any("panic", r))
 		}
 	}()
 
@@ -226,7 +231,7 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 			cmds[i] = pipeRead.HGetAll(ctx, statKey)
 		}
 		if _, err := pipeRead.Exec(ctx); err != nil {
-			zap.L().Warn("hotkey pipeRead exec failed", zap.Error(err))
+			d.logger.Warn("hotkey pipeRead exec failed", zap.Error(err))
 		}
 
 		pipeMark := d.redis.Pipeline()
@@ -243,7 +248,7 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 			}
 		}
 		if _, err := pipeMark.Exec(ctx); err != nil {
-			zap.L().Warn("hotkey pipeMark exec failed", zap.Error(err))
+			d.logger.Warn("hotkey pipeMark exec failed", zap.Error(err))
 		}
 	}
 

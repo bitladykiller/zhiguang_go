@@ -18,7 +18,7 @@ import (
 // ============================================================================
 
 func newTestDescService(cfg *config.LLMConfig) *KnowPostDescriptionService {
-	svc, _ := NewKnowPostDescriptionService(cfg)
+	svc, _ := NewKnowPostDescriptionService(cfg, nil)
 	return svc
 }
 
@@ -267,18 +267,18 @@ func TestSuggestDescription_ShortContent(t *testing.T) {
 // ============================================================================
 
 func TestNewKnowPostDescriptionService_NilConfig(t *testing.T) {
-	svc, err := NewKnowPostDescriptionService(nil)
+	svc, err := NewKnowPostDescriptionService(nil, nil)
 	if err == nil {
-		t.Fatal("NewKnowPostDescriptionService(nil) should return error")
+		t.Fatal("NewKnowPostDescriptionService(nil, nil) should return error")
 	}
 	if svc != nil {
-		t.Fatal("NewKnowPostDescriptionService(nil) should return nil svc")
+		t.Fatal("NewKnowPostDescriptionService(nil, nil) should return nil svc")
 	}
 }
 
 func TestNewKnowPostDescriptionService_Config(t *testing.T) {
 	cfg := defaultLLMConfig()
-	svc, err := NewKnowPostDescriptionService(cfg)
+	svc, err := NewKnowPostDescriptionService(cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestDefaultTimeout_ZeroMs(t *testing.T) {
 	svc, err := NewKnowPostDescriptionService(&config.LLMConfig{
 		DeepSeek: config.DeepSeekConfig{BaseURL: "http://localhost:1"},
 		TimeoutMs: 0,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestDefaultTimeout_PositiveMs(t *testing.T) {
 	svc, err := NewKnowPostDescriptionService(&config.LLMConfig{
 		DeepSeek: config.DeepSeekConfig{BaseURL: "http://localhost:1"},
 		TimeoutMs: 100,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

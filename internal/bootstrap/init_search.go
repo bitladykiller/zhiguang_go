@@ -30,6 +30,7 @@ import (
 //   - *outbox.Consumer: 搜索索引消费者（需 Start）
 //   - *outbox.Consumer: 关系事件消费者（需 Start）
 func initSearch(
+	ctx context.Context,
 	db *sqlx.DB,
 	redisClient *redis.Client,
 	counterSvc *counter.CounterService,
@@ -41,7 +42,7 @@ func initSearch(
 
 	if hasElasticsearchConfig(cfg) {
 		var err error
-		searchSvc, err = search.NewSearchService(context.Background(), search.ESConfig{
+		searchSvc, err = search.NewSearchService(ctx, search.ESConfig{
 		URIs:      cfg.Elasticsearch.URIs,
 		IndexName: cfg.Elasticsearch.IndexName,
 		MaxRetries: cfg.Elasticsearch.MaxRetries,

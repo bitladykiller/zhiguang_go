@@ -154,7 +154,7 @@ func (s *CounterService) ReplayFailedMessages(ctx context.Context, limit int) er
 		}
 
 		lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", record.EntityType, record.EntityID)
-		lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval)
+		lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval, s.logger)
 		if err != nil {
 			continue
 		}

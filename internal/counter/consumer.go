@@ -410,7 +410,9 @@ func (c *AggregationConsumer) addToBatch(msg kafka.Message, evt CounterEvent) {
 		batch = newCounterBatch(c.batchSize)
 		c.batches[msg.Partition] = batch
 	}
-	_ = batch.addEvent(msg, evt) // skip error since event is already validated
+	if addErr := batch.addEvent(msg, evt); addErr != nil {
+		c.logger.Warn("addToBatch addEvent failed", zap.Error(addErr))
+	}
 }
 
 func nextBatchDeadline(batches map[int]*counterBatch, flushInterval time.Duration) (time.Time, bool) {
@@ -478,7 +480,7 @@ func (c *AggregationConsumer) repairLoop(ctx context.Context) {
 }
 
 func (c *AggregationConsumer) repairAsLeader(ctx context.Context) error {
-	lock, locked, err := redislock.TryAcquire(ctx, c.service.redis, counterRepairLeaderLockKey, counterRepairLockOptions())
+	lock, locked, err := redislock.TryAcquire(ctx, c.service.redis, counterRepairLeaderLockKey, counterRepairLockOptions(), c.logger)
 	if err != nil {
 		return err
 	}
@@ -535,7 +537,7 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 	}
 
 	lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
-	lock, locked, err := redislock.TryAcquire(ctx, c.service.redis, lockKey, c.service.rebuildLockOptions)
+	lock, locked, err := redislock.TryAcquire(ctx, c.service.redis, lockKey, c.service.rebuildLockOptions, c.logger)
 	if err != nil {
 		return fmt.Errorf("repair dirty member: acquire lock: %w", err)
 	}

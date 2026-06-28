@@ -2,6 +2,7 @@ package counter
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -83,7 +84,10 @@ func (r *CounterFailedMessageRepository) CreateBatch(ctx context.Context, messag
 	committed := false
 	defer func() {
 		if !committed {
-			_ = tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				// Rollback 失败时仅记录，不影响主流程
+				_ = fmt.Errorf("failure recorder rollback failed: %w", rbErr)
+			}
 		}
 	}()
 

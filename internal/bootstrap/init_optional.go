@@ -25,7 +25,7 @@ import (
 func initLLM(cfg *config.Config, logger *zap.Logger) *llm.LlmHandler {
 	descSvc := buildDescriptionService(cfg, logger)
 	ragQuerySvc := buildRagQueryService(cfg, logger)
-	return llm.NewLlmHandler(descSvc, ragQuerySvc)
+	return llm.NewLlmHandler(descSvc, ragQuerySvc, logger)
 }
 
 // initStorage 创建 OSS 存储模块的服务栈（可选，配置不完整时降级）。
@@ -58,7 +58,7 @@ func buildDescriptionService(cfg *config.Config, logger *zap.Logger) *llm.KnowPo
 		logger.Warn("LLM description service disabled: DeepSeek config is incomplete")
 		return nil
 	}
-	svc, err := llm.NewKnowPostDescriptionService(&cfg.LLM)
+	svc, err := llm.NewKnowPostDescriptionService(&cfg.LLM, logger)
 	if err != nil {
 		logger.Warn("LLM description service disabled: failed to create service", zap.Error(err))
 		return nil

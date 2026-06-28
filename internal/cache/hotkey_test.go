@@ -42,7 +42,7 @@ func TestNewHotKeyDetector(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 	if d == nil {
 		t.Fatal("expected non-nil detector")
 	}
@@ -59,7 +59,7 @@ func TestRecord(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 
 	d.Record("key:a")
 	d.Record("key:a")
@@ -80,7 +80,7 @@ func TestCurrentBucket(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 	b := d.currentBucket()
 	if b <= 0 {
 		t.Fatalf("currentBucket() = %d, want > 0", b)
@@ -92,7 +92,7 @@ func TestSnapshotAndReset_NonEmpty(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 	d.Record("k1")
 	d.Record("k1")
 	d.Record("k2")
@@ -114,7 +114,7 @@ func TestSnapshotAndReset_Empty(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 	snapshot := d.snapshotAndReset()
 	if snapshot != nil {
 		t.Fatal("expected nil for empty snapshot")
@@ -126,7 +126,7 @@ func TestCalcLevel(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 
 	tests := []struct {
 		total int64
@@ -154,7 +154,7 @@ func TestSumBucketsInWindow(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 
 	nowBucket := d.currentBucket()
 	values := map[string]string{
@@ -177,7 +177,7 @@ func TestSumBucketsInWindow_InvalidField(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 
 	nowBucket := d.currentBucket()
 	values := map[string]string{
@@ -196,7 +196,7 @@ func TestTtlForLevel(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 
 	tests := []struct {
 		level HotKeyLevel
@@ -239,7 +239,7 @@ func TestRun_StartOnce(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -252,7 +252,7 @@ func TestFlushOnce_EmptySnapshot(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 	d.flushOnce(context.Background())
 }
 
@@ -261,7 +261,7 @@ func TestGetLevel_FromCache(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 	d.levelMu.Lock()
 	d.levels["hotkey"] = LevelHigh
 	d.levelMu.Unlock()
@@ -277,7 +277,7 @@ func TestGetLevel_FallbackToRedis(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 
 	level := d.getLevel(context.Background(), "nonexistent")
 	if level != LevelCold {
@@ -290,7 +290,7 @@ func TestTtlForPublic(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 	d.levelMu.Lock()
 	d.levels["mykey"] = LevelMedium
 	d.levelMu.Unlock()
@@ -307,7 +307,7 @@ func TestReadLevelCache_NotFound(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	d := NewHotKeyDetector(cfg, rdb)
+	d := NewHotKeyDetector(cfg, rdb, nil)
 	_, ok := d.readLevelCache("missing")
 	if ok {
 		t.Fatal("expected ok=false for missing key")

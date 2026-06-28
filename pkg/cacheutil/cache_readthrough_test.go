@@ -119,7 +119,7 @@ func TestCacheReadThrough_ContextCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	lock1, ok, err := redislock.TryAcquire(ctx, rdb, "lock:cancel", redislock.Options{TTL: 5 * time.Second})
+	lock1, ok, err := redislock.TryAcquire(ctx, rdb, "lock:cancel", redislock.Options{TTL: 5 * time.Second}, nil)
 	if err != nil || !ok {
 		t.Fatalf("pre-acquire lock: %v, ok=%v", err, ok)
 	}

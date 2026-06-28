@@ -64,7 +64,7 @@ func CacheReadThrough[T any](
 	missHandler func(ctx context.Context) (T, error),
 ) (T, error) {
 	for {
-		lock, locked, err := redislock.TryAcquire(ctx, rdb, lockKey, lockOpts)
+		lock, locked, err := redislock.TryAcquire(ctx, rdb, lockKey, lockOpts, nil)
 		if err != nil {
 			var zero T
 			return zero, err

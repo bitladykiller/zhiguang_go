@@ -104,6 +104,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 		verificationFlowLockKey(scene, identifier),
 		s.sendLockOptions,
 		s.sendLockRetryWait,
+		s.logger,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("send code: acquire lock: %w", err)
@@ -204,6 +205,7 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 		verificationFlowLockKey(scene, identifier),
 		s.sendLockOptions,
 		s.sendLockRetryWait,
+		s.logger,
 	)
 	if err != nil {
 		return fail(StatusNotFound)

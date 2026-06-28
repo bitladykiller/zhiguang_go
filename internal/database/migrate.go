@@ -19,7 +19,7 @@ const schemaMigrationsTable = `CREATE TABLE IF NOT EXISTS schema_migrations (
     PRIMARY KEY (version)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 
-func RunMigrations(db *sqlx.DB) error {
+func RunMigrations(db *sqlx.DB, logger *zap.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -64,12 +64,16 @@ func RunMigrations(db *sqlx.DB) error {
 		}
 
 		if _, err := tx.ExecContext(ctx, string(content)); err != nil {
-			_ = tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				logger.Warn("migration rollback failed", zap.String("version", version), zap.Error(rbErr))
+			}
 			return fmt.Errorf("apply migration %s: %w", version, err)
 		}
 
 		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations (version) VALUES (?)", version); err != nil {
-			_ = tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				logger.Warn("migration rollback failed", zap.String("version", version), zap.Error(rbErr))
+			}
 			return fmt.Errorf("record migration %s: %w", version, err)
 		}
 
@@ -77,7 +81,7 @@ func RunMigrations(db *sqlx.DB) error {
 			return fmt.Errorf("commit migration %s: %w", version, err)
 		}
 
-		zap.L().Info("applied database migration", zap.String("version", version))
+		logger.Info("applied database migration", zap.String("version", version))
 	}
 
 	return nil

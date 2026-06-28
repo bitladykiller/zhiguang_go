@@ -453,6 +453,7 @@ func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint
 		refreshSessionLockKey(userID),
 		s.refreshLockOptions,
 		s.refreshLockRetryWait,
+		s.logger,
 	)
 	if cancel != nil {
 		cancel()
