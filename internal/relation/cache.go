@@ -31,7 +31,7 @@ func (s *RelationService) fillL1(ctx context.Context, listType string, userID ui
 	s.l1.Set([]byte(key), []byte(strings.Join(idStrs, ",")), l1CacheTTL)
 }
 
-// invalidateCaches 在关注/取关操作后，失效涉及用户的 L1（freecache）和 L2（Redis ZSet）缓存。
+// invalidateCaches 在关注/取关操作后，使涉及的用户的 L1（freecache）和 L2（Redis ZSet）缓存失效。
 func (s *RelationService) invalidateCaches(ctx context.Context, fromUserID, toUserID uint64) {
 	cacheCtx, cancel := context.WithTimeout(ctx, relationInvalidateLockWaitLimit)
 	defer cancel()
@@ -64,7 +64,7 @@ func (s *RelationService) invalidateCaches(ctx context.Context, fromUserID, toUs
 	}
 }
 
-// fillZSet 从数据库读取关注/粉丝列表并回填到 Redis ZSet。
+// fillZSet 从数据库读取关注/粉丝列表并回填到 Redis ZSet 中。
 func (s *RelationService) fillZSet(ctx context.Context, listType string, userID uint64) (bool, error) {
 	zsetKey := s.zsetKey(listType, userID)
 	entries, err := s.readFromDB(ctx, listType, userID, relationListCacheWarmLimit, 0)
@@ -92,7 +92,7 @@ func (s *RelationService) fillZSet(ctx context.Context, listType string, userID 
 	return true, nil
 }
 
-// ensureListCacheWarm 在分布式锁保护下回填某个用户的关注/粉丝 ZSet。
+// ensureListCacheWarm 在分布式锁保护下回填用户的关注/粉丝 ZSet。
 func (s *RelationService) ensureListCacheWarm(ctx context.Context, listType string, userID uint64) (bool, error) {
 	zsetKey := s.zsetKey(listType, userID)
 	exists, err := s.redis.Exists(ctx, zsetKey).Result()
@@ -115,7 +115,7 @@ func (s *RelationService) ensureListCacheWarm(ctx context.Context, listType stri
 	return s.fillZSet(ctx, listType, userID)
 }
 
-// cacheEndReached 判断当前 offset 是否已经超过预热缓存的可覆盖范围。
+// cacheEndReached 检查当前 offset 是否已超过暖缓存的可覆盖范围。
 func (s *RelationService) cacheEndReached(ctx context.Context, zsetKey string, offset int) bool {
 	size, err := s.redis.ZCard(ctx, zsetKey).Result()
 	if err != nil {
@@ -127,8 +127,8 @@ func (s *RelationService) cacheEndReached(ctx context.Context, zsetKey string, o
 	return false
 }
 
-// isBigV 判断某个用户是否是 BigV（粉丝数 >= 500）。
-// 使用本地 L1 缓存 5 分钟，避免每次都查 Redis ZCard。
+// isBigV 判断用户是否为 BigV（粉丝数 >= 500）。
+// 使用本地 L1 缓存 5 分钟，避免每次都查询 Redis ZCard。
 func (s *RelationService) isBigV(ctx context.Context, userID uint64) bool {
 	cacheKey := fmt.Sprintf("bigv:%d", userID)
 	if data, err := s.l1.Get([]byte(cacheKey)); err == nil && len(data) > 0 {
@@ -151,7 +151,7 @@ func (s *RelationService) isBigV(ctx context.Context, userID uint64) bool {
 	return bigV
 }
 
-// shouldFallbackToFollowing 判断是否需要从 following 表降级查询粉丝。
+// shouldFallbackToFollowing 检查是否需要从 following 表降级查询粉丝。
 func (s *RelationService) shouldFallbackToFollowing(ctx context.Context, userID uint64) bool {
 	key := fmt.Sprintf("follower:fallback:exhausted:%d", userID)
 	exists, err := s.redis.Exists(ctx, key).Result()
@@ -161,7 +161,7 @@ func (s *RelationService) shouldFallbackToFollowing(ctx context.Context, userID 
 	return exists == 0
 }
 
-// markFollowerFallbackExhausted 标记该用户的粉丝降级查询已穷尽。
+// markFollowerFallbackExhausted 标记该用户的粉丝降级查询已耗尽。
 func (s *RelationService) markFollowerFallbackExhausted(ctx context.Context, userID uint64) {
 	key := fmt.Sprintf("follower:fallback:exhausted:%d", userID)
 	if err := s.redis.Set(ctx, key, "1", fallbackExhaustedTTL).Err(); err != nil {

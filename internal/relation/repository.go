@@ -7,23 +7,23 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// RelationRepository 封装关系域的数据库访问，使用 sqlx.ExtContext 同时支持 DB 和 Tx。
+// RelationRepository 封装关系域的数据访问，使用 sqlx.ExtContext 来同时支持 DB 和 Tx。
 type RelationRepository struct {
 	db sqlx.ExtContext
 }
 
-// NewRelationRepository 创建 RelationRepository 实例。
+// NewRelationRepository 创建一个 RelationRepository 实例。
 //
 // 参数:
 //   - db: sqlx.ExtContext，支持 *sqlx.DB 或 *sqlx.Tx
 //
-// 返回值:
-//   - *RelationRepository: 已初始化的仓储实例
+// 返回:
+//   - *RelationRepository: 初始化后的仓库实例
 func NewRelationRepository(db sqlx.ExtContext) *RelationRepository {
 	return &RelationRepository{db: db}
 }
 
-// WithDB 克隆绑定到指定 sqlx 句柄的仓储实例，用于事务上下文。
+// WithDB 克隆仓库并绑定到指定的 sqlx 句柄，用于事务上下文。
 func (r *RelationRepository) WithDB(db sqlx.ExtContext) *RelationRepository {
 	return &RelationRepository{db: db}
 }
@@ -74,7 +74,7 @@ func (r *RelationRepository) CancelFollower(ctx context.Context, toUserID, fromU
 	return result.RowsAffected()
 }
 
-// ExistsFollowing 判断关注关系是否存在，使用 sqlx.GetContext。
+// ExistsFollowing 检查关注关系是否存在，使用 sqlx.GetContext。
 func (r *RelationRepository) ExistsFollowing(ctx context.Context, fromUserID, toUserID uint64) (int, error) {
 	var count int
 	err := sqlx.GetContext(ctx, r.db, &count, `
@@ -85,7 +85,7 @@ WHERE from_user_id = ? AND to_user_id = ? AND rel_status = 1
 	return count, err
 }
 
-// ListFollowingRows 分页查询关注列表，使用 sqlx.SelectContext。
+// ListFollowingRows 查询关注列表并分页，使用 sqlx.SelectContext。
 func (r *RelationRepository) ListFollowingRows(ctx context.Context, userID uint64, limit, offset int) ([]FollowingRow, error) {
 	var rows []FollowingRow
 	err := sqlx.SelectContext(ctx, r.db, &rows, `
@@ -98,7 +98,7 @@ LIMIT ? OFFSET ?
 	return rows, err
 }
 
-// ListFollowerRows 分页查询粉丝列表，使用 sqlx.SelectContext。
+// ListFollowerRows 查询粉丝列表并分页，使用 sqlx.SelectContext。
 func (r *RelationRepository) ListFollowerRows(ctx context.Context, userID uint64, limit, offset int) ([]FollowerRow, error) {
 	var rows []FollowerRow
 	err := sqlx.SelectContext(ctx, r.db, &rows, `
@@ -111,7 +111,7 @@ LIMIT ? OFFSET ?
 	return rows, err
 }
 
-// ListFollowerRowsFromFollowing 从 following 表降级查询粉丝（向后兼容旧数据），使用 sqlx.SelectContext。
+// ListFollowerRowsFromFollowing 从 following 表查询粉丝作为降级方案（向后兼容旧数据），使用 sqlx.SelectContext。
 func (r *RelationRepository) ListFollowerRowsFromFollowing(ctx context.Context, userID uint64, limit, offset int) ([]FollowerRow, error) {
 	var rows []FollowerRow
 	err := sqlx.SelectContext(ctx, r.db, &rows, `

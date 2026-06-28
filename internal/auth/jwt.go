@@ -46,12 +46,12 @@ type JwtService struct {
 func NewJwtService(cfg *config.JwtConfig) (*JwtService, error) {
 	privateKey, err := loadPrivateKey(cfg.PrivateKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load private key from %s: %w", cfg.PrivateKeyPath, err)
+		return nil, fmt.Errorf("从 %s 加载私钥失败: %w", cfg.PrivateKeyPath, err)
 	}
 
 	publicKey, err := loadPublicKey(cfg.PublicKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load public key from %s: %w", cfg.PublicKeyPath, err)
+		return nil, fmt.Errorf("从 %s 加载公钥失败: %w", cfg.PublicKeyPath, err)
 	}
 
 	return &JwtService{
@@ -88,12 +88,12 @@ func (s *JwtService) IssueTokenPair(user *User) (*TokenPair, error) {
 
 	accessToken, err := s.encode(user, now, accessExpiresAt, "access", uuid.New().String())
 	if err != nil {
-		return nil, fmt.Errorf("issue token pair: encode access token: %w", err)
+		return nil, fmt.Errorf("颁发令牌对: 编码 access token: %w", err)
 	}
 
 	refreshToken, err := s.encode(user, now, refreshExpiresAt, "refresh", refreshTokenID)
 	if err != nil {
-		return nil, fmt.Errorf("issue token pair: encode refresh token: %w", err)
+		return nil, fmt.Errorf("颁发令牌对: 编码 refresh token: %w", err)
 	}
 
 	return &TokenPair{
@@ -127,19 +127,19 @@ func (s *JwtService) IssueTokenPair(user *User) (*TokenPair, error) {
 func (s *JwtService) ValidateToken(tokenStr string) (middleware.TokenClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &JwtClaims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			return nil, fmt.Errorf("意外的签名方法: %v", token.Header["alg"])
 		}
 		return s.publicKey, nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("validate token: parse: %w", err)
+		return nil, fmt.Errorf("验证令牌: 解析: %w", err)
 	}
 
 	if claims, ok := token.Claims.(*JwtClaims); ok && token.Valid {
 		return claims, nil
 	}
 
-	return nil, fmt.Errorf("invalid token")
+	return nil, fmt.Errorf("无效的令牌")
 }
 
 // encode 根据自定义 claims 生成带 RS256 签名的 JWT 字符串。
@@ -205,14 +205,14 @@ func (s *JwtService) encode(user *User, issuedAt, expiresAt time.Time, tokenType
 //     这是 RSA 私钥的传统格式，只支持 RSA。
 //     如果 PKCS#8 解析失败，会回退尝试此格式。
 func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
-data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("load private key: read file: %w", err)
+		return nil, fmt.Errorf("加载私钥: 读取文件: %w", err)
 	}
 
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("no PEM block found")
+		return nil, fmt.Errorf("未找到 PEM 块")
 	}
 
 	// 先尝试解析 PKCS#8（较新的标准格式）
@@ -221,13 +221,13 @@ data, err := os.ReadFile(path)
 		// 如果失败则回退到 PKCS#1（较旧格式）
 		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse private key: %w", err)
+			return nil, fmt.Errorf("解析私钥失败: %w", err)
 		}
 	}
 
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("key is not an RSA private key")
+		return nil, fmt.Errorf("密钥不是 RSA 私钥")
 	}
 
 	return rsaKey, nil
@@ -250,17 +250,17 @@ func loadPublicKey(path string) (*rsa.PublicKey, error) {
 
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("no PEM block found")
+		return nil, fmt.Errorf("未找到 PEM 块")
 	}
 
 	key, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse public key: %w", err)
+		return nil, fmt.Errorf("解析公钥失败: %w", err)
 	}
 
 	rsaKey, ok := key.(*rsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("key is not an RSA public key")
+		return nil, fmt.Errorf("密钥不是 RSA 公钥")
 	}
 
 	return rsaKey, nil

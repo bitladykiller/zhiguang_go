@@ -48,11 +48,11 @@ func initSearch(
 		MaxRetries: cfg.Elasticsearch.MaxRetries,
 	}, counterSvc, logger)
 		if err != nil {
-			logger.Warn("Failed to initialize search service (ES may be unavailable)", zap.Error(err))
+			logger.Warn("初始化搜索服务失败（ES 可能不可用）", zap.Error(err))
 			searchSvc = nil
 		}
 	} else {
-		logger.Warn("Search service disabled: elasticsearch config is incomplete")
+		logger.Warn("搜索服务已禁用: Elasticsearch 配置不完整")
 	}
 
 	searchHandler := search.NewSearchHandler(searchSvc)

@@ -20,10 +20,10 @@ import (
 
 // CacheReadThrough 封装「锁 → 双重检查缓存 → 回源」的通用模式。
 //
-// 用于任何需要防止缓存击穿的读取场景——详情读取、Feed 读取、关系列表读取等。
+// 用于任何需要防止缓存击穿的读取场景。
 //
 // 类型参数：
-//   - T: 缓存值类型（如 *KnowPostDetailResponse、*FeedPageResponse 等）
+//   - T: 缓存值类型
 //
 // 参数：
 //   - ctx: 请求上下文
@@ -43,17 +43,6 @@ import (
 //   - 抢锁失败时先检查缓存（可能已被其他实例回填），命中则直接返回
 //   - 抢锁成功后再次检查缓存（双重检查），命中则释放锁返回
 //   - 仍未命中则调用 missHandler 回源
-//
-// 使用示例：
-//
-//	result, err := cacheutil.CacheReadThrough(ctx, rdb, lockKey, lockOpts, retryInterval,
-//	    func(ctx context.Context) (*MyType, bool, error) {
-//	        // 检查 L2 缓存
-//	    },
-//	    func(ctx context.Context) (*MyType, error) {
-//	        // 回源 DB
-//	    },
-//	)
 func CacheReadThrough[T any](
 	ctx context.Context,
 	rdb *redis.Client,

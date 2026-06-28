@@ -25,7 +25,7 @@ func initFanout(
 	logger *zap.Logger,
 ) server.BackgroundRunner {
 	if len(cfg.Kafka.Brokers) == 0 {
-		logger.Warn("kafka not configured, fanout disabled")
+		logger.Warn("Kafka 未配置，fanout 已禁用")
 		return nil
 	}
 

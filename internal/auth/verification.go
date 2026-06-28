@@ -107,7 +107,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 		s.logger,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("send code: acquire lock: %w", err)
+		return nil, fmt.Errorf("发送验证码: 获取锁: %w", err)
 	}
 	defer lock.Release()
 
@@ -115,7 +115,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	intervalKey := fmt.Sprintf("%s%s:%s", prefixInterval, scene, identifier)
 	exists, err := s.redis.Exists(ctx, intervalKey).Result()
 	if err != nil {
-		return nil, fmt.Errorf("send code: check interval: %w", err)
+		return nil, fmt.Errorf("发送验证码: 检查间隔: %w", err)
 	}
 	if exists > 0 {
 		// 对调用方保持正常返回，避免暴露限流细节
@@ -126,10 +126,10 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	dailyKey := fmt.Sprintf("%s%s:%s:%s", prefixDaily, scene, identifier, time.Now().Format("20060102"))
 	dailyCount, err := s.redis.Get(ctx, dailyKey).Int()
 	if err != nil && err != redis.Nil {
-		return nil, fmt.Errorf("send code: get daily count: %w", err)
+		return nil, fmt.Errorf("发送验证码: 获取日计数: %w", err)
 	}
 	if dailyCount >= s.config.DailyLimit {
-		return nil, fmt.Errorf("daily limit exceeded")
+		return nil, fmt.Errorf("超过每日上限")
 	}
 
 	// 生成验证码
@@ -142,18 +142,18 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	pipe.Set(ctx, intervalKey, "1", s.config.SendInterval)
 
 	if _, err = pipe.Exec(ctx); err != nil {
-		return nil, fmt.Errorf("send code: pipeline exec: %w", err)
+		return nil, fmt.Errorf("发送验证码: pipeline 执行: %w", err)
 	}
 
 	// 日计数使用 Lua 脚本原子递增 + 首次设置过期，避免 INCR + EXPIRE 竞态
 	if _, err = incrAndExpireScript.Run(ctx, s.redis, []string{dailyKey}, int(24*time.Hour/time.Second)).Result(); err != nil {
-		return nil, fmt.Errorf("send code: incr daily: %w", err)
+		return nil, fmt.Errorf("发送验证码: 递增日计数: %w", err)
 	}
 
 	// 重置尝试次数计数器（新验证码意味着新的尝试配额）
 	attemptKey := fmt.Sprintf("%s%s:%s", prefixAttempts, scene, identifier)
 	if err := s.redis.Del(ctx, attemptKey).Err(); err != nil {
-		s.logger.Warn("failed to reset attempt counter", zap.String("attemptKey", attemptKey), zap.Error(err))
+		s.logger.Warn("重置尝试计数器失败", zap.String("attemptKey", attemptKey), zap.Error(err))
 	}
 
 	return &SendCodeResult{Identifier: identifier, Scene: scene, ExpireSeconds: int(s.config.TTL.Seconds())}, nil
@@ -174,7 +174,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 //	使用 Lua 脚本将检查、递增和 EXPIRE 合为原子操作，杜绝并发绕过。
 //
 // 为什么这里还要再加分布式锁：
-//   - codeKey 的删除动作发生在 Lua 脚本之外，原实现会出现“两个实例几乎同时读到同一个正确验证码”的并发复用。
+//   - codeKey 的删除动作发生在 Lua 脚本之外，原实现会出现"两个实例几乎同时读到同一个正确验证码"的并发复用。
 //   - 串行化后，同一验证码在跨实例环境下只能被一个请求成功消费。
 //
 // 参数:
@@ -243,7 +243,7 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 
 	// 成功后清理验证码和尝试次数
 	if err := s.redis.Del(ctx, codeKey, attemptKey).Err(); err != nil {
-		s.logger.Warn("failed to delete code/attempt keys after successful verification", zap.String("codeKey", codeKey), zap.String("attemptKey", attemptKey), zap.Error(err))
+		s.logger.Warn("验证成功后删除验证码/尝试键失败", zap.String("codeKey", codeKey), zap.String("attemptKey", attemptKey), zap.Error(err))
 	}
 	return success()
 }
@@ -269,7 +269,7 @@ func generateCode(length int, logger *zap.Logger) string {
 	for i := range code {
 		n, err := randomInt(10)
 		if err != nil {
-			logger.Warn("failed to generate secure random code digit", zap.Error(err))
+			logger.Warn("生成安全随机验证码数字失败", zap.Error(err))
 			n = 0
 		}
 		code[i] = byte('0' + n)

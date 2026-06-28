@@ -72,7 +72,7 @@ func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
 func (h *AuthHandler) SendCode(c *gin.Context) {
 	var req SendCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
+		response.Error(c, errcode.ErrBadRequest.WithMsg("无效的请求"))
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
+		response.Error(c, errcode.ErrBadRequest.WithMsg("无效的请求"))
 		return
 	}
 
@@ -135,7 +135,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
+		response.Error(c, errcode.ErrBadRequest.WithMsg("无效的请求"))
 		return
 	}
 
@@ -170,7 +170,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	var req TokenRefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
+		response.Error(c, errcode.ErrBadRequest.WithMsg("无效的请求"))
 		return
 	}
 
@@ -196,7 +196,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 // 参数:
 //   - c: Gin 上下文
 //
-// 返回值: 无（返回 {"message": "logged out"}）
+// 返回值: 无（返回 {"message": "已登出"}）
 //
 // 异常处理:
 //   - JSON 绑定失败 -> HTTP 400
@@ -204,12 +204,12 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 func (h *AuthHandler) Logout(c *gin.Context) {
 	var req TokenRefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
+		response.Error(c, errcode.ErrBadRequest.WithMsg("无效的请求"))
 		return
 	}
 
 	h.svc.Logout(c.Request.Context(), &req)
-	response.Success(c, gin.H{"message": "logged out"})
+	response.Success(c, gin.H{"message": "已登出"})
 }
 
 // ResetPassword 处理密码重置请求（POST /auth/reset-password）。
@@ -226,7 +226,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 // 参数:
 //   - c: Gin 上下文
 //
-// 返回值: 无（返回 {"message": "password reset successful"}）
+// 返回值: 无（返回 {"message": "密码重置成功"}）
 //
 // 异常处理:
 //   - JSON 绑定失败 -> HTTP 400
@@ -235,7 +235,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	var req PasswordResetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
+		response.Error(c, errcode.ErrBadRequest.WithMsg("无效的请求"))
 		return
 	}
 
@@ -243,7 +243,7 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 		response.Error(c, appErr)
 		return
 	}
-	response.Success(c, gin.H{"message": "password reset successful"})
+	response.Success(c, gin.H{"message": "密码重置成功"})
 }
 
 // Me 获取当前登录用户的个人信息（GET /auth/me）。

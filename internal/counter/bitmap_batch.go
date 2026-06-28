@@ -7,14 +7,14 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// BatchIsLiked checks if a user liked multiple entities in one pipeline.
-// Returns map[entityID]bool where entityID keys match the entityIDs input.
+// BatchIsLiked 批量检查用户是否对多个实体点过赞，使用一次 Pipeline 完成。
+// 返回 map[entityID]bool，其中 entityID 键与输入的 entityIDs 一致。
 func (s *CounterService) BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error) {
 	return s.batchGetBit(ctx, userID, entityType, entityIDs, "like")
 }
 
-// BatchIsFaved checks if a user faved multiple entities in one pipeline.
-// Returns map[entityID]bool where entityID keys match the entityIDs input.
+// BatchIsFaved 批量检查用户是否收藏了多个实体，使用一次 Pipeline 完成。
+// 返回 map[entityID]bool，其中 entityID 键与输入的 entityIDs 一致。
 func (s *CounterService) BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error) {
 	return s.batchGetBit(ctx, userID, entityType, entityIDs, "fav")
 }

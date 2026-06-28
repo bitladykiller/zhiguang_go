@@ -12,7 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// stubService implements RelationServiceInterface for handler testing.
+// stubService 实现 RelationServiceInterface，用于 handler 测试。
 type stubService struct {
 	followFn           func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
 	unfollowFn         func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
@@ -88,8 +88,7 @@ func perform(r *gin.Engine, method, path string, body []byte) *httptest.Response
 	return w
 }
 
-// ============================================================================
-// Follow handler tests
+// Follow handler 测试
 // ============================================================================
 
 func TestHandler_Follow_Success(t *testing.T) {
@@ -202,8 +201,7 @@ func TestHandler_Follow_EmptyBody(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Unfollow handler tests
+// Unfollow handler 测试
 // ============================================================================
 
 func TestHandler_Unfollow_Success(t *testing.T) {
@@ -285,8 +283,7 @@ func TestHandler_Unfollow_InvalidBody(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Status handler tests
+// Status handler 测试
 // ============================================================================
 
 func TestHandler_Status_Success(t *testing.T) {
@@ -378,8 +375,7 @@ func TestHandler_Status_InternalError(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Following handler tests (offset-based)
+// Following handler 测试（offset 分页）
 // ============================================================================
 
 func TestHandler_Following_Success(t *testing.T) {
@@ -442,8 +438,7 @@ func TestHandler_Following_InternalError(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Followers handler tests (offset-based)
+// Followers handler 测试（offset 分页）
 // ============================================================================
 
 func TestHandler_Followers_Success(t *testing.T) {
@@ -476,8 +471,7 @@ func TestHandler_Followers_InternalError(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// FollowingCursor handler tests
+// FollowingCursor handler 测试
 // ============================================================================
 
 func TestHandler_FollowingCursor_Success(t *testing.T) {
@@ -540,8 +534,7 @@ func TestHandler_FollowingCursor_InternalError(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// FollowersCursor handler tests
+// FollowersCursor handler 测试
 // ============================================================================
 
 func TestHandler_FollowersCursor_Success(t *testing.T) {
@@ -574,8 +567,7 @@ func TestHandler_FollowersCursor_InternalError(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Helper function tests
+// 辅助函数测试
 // ============================================================================
 
 func TestQueryUint64(t *testing.T) {

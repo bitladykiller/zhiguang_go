@@ -72,8 +72,8 @@ func TestEmptyCounts(t *testing.T) {
 	if result["like"] != 0 || result["fav"] != 0 {
 		t.Fatalf("expected zero counts, got %+v", result)
 	}
-	// Note: "unknown" IS included in result because emptyCounts includes all requested metrics.
-	// The comment in the original test was incorrect.
+	// Note: "unknown" 也包含在结果中，因为 emptyCounts 包含所有请求的指标。
+	// 原测试中的注释不正确。
 	if _, ok := result["unknown"]; !ok {
 		t.Fatal("unknown metric should appear in result (all requested metrics are included)")
 	}
@@ -118,7 +118,7 @@ func TestGetCounts_MissingKeyRebuilds(t *testing.T) {
 	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
 	ctx := context.Background()
 
-	// Apply 2 likes and 1 fav before rebuilding
+	// 重建前应用 2 个点赞和 1 个收藏
 	svc.Like(ctx, 1001, "post", "1")
 	svc.Like(ctx, 1002, "post", "1")
 	svc.Fav(ctx, 1001, "post", "1")
@@ -158,10 +158,10 @@ func TestGetCounts_RedisError(t *testing.T) {
 	svc := NewCounterService(rdb, nil, nil, nil, "", nil, zap.NewNop())
 
 	_, err := svc.GetCounts(context.Background(), "post", "1", []string{"like"})
-	// After redis.Close(), the connection is closed.
-	// go-redis may return either an error or a nil result depending on timing.
-	// Since we closed the client, we should expect some error or nil result.
-	// The key behavior is: the function should not panic.
+	// 关闭 redis 后，连接已关闭。
+	// go-redis 可能返回错误或 nil 结果，取决于时机。
+	// 由于客户端已关闭，应预期某种错误或 nil 结果。
+	// 关键行为：函数不应 panic。
 	if err != nil {
 		t.Logf("expected and got error for closed redis: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestGetCountsBatch_SkipsMissingKeys(t *testing.T) {
 }
 
 // ============================================================================
-// SDS rebuild (sds_rebuild.go) — integration via miniredis
+// SDS 重建（sds_rebuild.go）— 通过 miniredis 集成测试
 // ============================================================================
 
 func TestRebuildSds_FromScratch(t *testing.T) {
@@ -454,7 +454,7 @@ func TestBitCountShards_CountsBits(t *testing.T) {
 }
 
 // ============================================================================
-// SDS key helpers
+// SDS 键辅助函数
 // ============================================================================
 
 func TestSdsKey(t *testing.T) {
@@ -494,9 +494,9 @@ func TestParseDirtyMember_Valid(t *testing.T) {
 }
 
 func TestParseDirtyMember_Invalid(t *testing.T) {
-	// "a:b:c" with SplitN limit 2 returns [a, b:c], which passes validation
-	// because entityType="a" and entityID="b:c" are both non-empty.
-	// This is expected behavior — the function only splits on first colon.
+	// "a:b:c" 使用 SplitN limit 2 返回 [a, b:c]，验证通过
+	// 因为 entityType="a" 和 entityID="b:c" 均非空。
+	// 这是预期行为 — 函数只以第一个冒号分割。
 	tests := []string{"", "nocolon", ":"}
 	for _, m := range tests {
 		_, _, err := ParseDirtyMember(m)
@@ -526,8 +526,8 @@ func TestNameToIdx(t *testing.T) {
 	if got := NameToIdx("unknown"); got != 0 {
 		t.Errorf("NameToIdx(unknown)=%d want=0 (zero value for missing map key)", got)
 	}
-	// Note: Go map returns zero value for missing keys, so NameToIdx("unknown") returns 0 (IdxLike).
-	// This is expected behavior; callers must use nameToIdx directly with ok check if distinction is needed.
+	// Note: Go map 对缺失键返回零值，所以 NameToIdx("unknown") 返回 0 (IdxLike)。
+	// 这是预期行为；调用者如需区分，应直接用 nameToIdx + ok 检查。
 }
 
 // ============================================================================
@@ -578,7 +578,7 @@ func TestIsUserMetric(t *testing.T) {
 }
 
 // ============================================================================
-// SDS serialization format consistency
+// SDS 序列化格式一致性
 // ============================================================================
 
 func TestSdsSchemaLayout(t *testing.T) {
@@ -608,7 +608,7 @@ func TestSdsTotalSize(t *testing.T) {
 }
 
 // ============================================================================
-// Large-endian byte order verification
+// 大端字节序验证
 // ============================================================================
 
 func TestBigEndianByteOrder(t *testing.T) {

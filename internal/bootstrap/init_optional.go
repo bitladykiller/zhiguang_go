@@ -49,18 +49,18 @@ func initStorage(cfg *config.Config, logger *zap.Logger) *storage.StorageHandler
 //  3. 配置完整 → 启用
 func buildDescriptionService(cfg *config.Config, logger *zap.Logger) *llm.KnowPostDescriptionService {
 	if !isOptionalEnabled(cfg.LLM.Enabled) {
-		logger.Warn("LLM description service disabled: explicitly disabled")
+		logger.Warn("LLM 摘要服务已禁用: 显式禁用")
 		return nil
 	}
 	if strings.TrimSpace(cfg.LLM.DeepSeek.APIKey) == "" ||
 		strings.TrimSpace(cfg.LLM.DeepSeek.BaseURL) == "" ||
 		strings.TrimSpace(cfg.LLM.DeepSeek.Model) == "" {
-		logger.Warn("LLM description service disabled: DeepSeek config is incomplete")
+		logger.Warn("LLM 摘要服务已禁用: DeepSeek 配置不完整")
 		return nil
 	}
 	svc, err := llm.NewKnowPostDescriptionService(&cfg.LLM, logger)
 	if err != nil {
-		logger.Warn("LLM description service disabled: failed to create service", zap.Error(err))
+		logger.Warn("LLM 摘要服务已禁用: 创建服务失败", zap.Error(err))
 		return nil
 	}
 	return svc
@@ -69,25 +69,25 @@ func buildDescriptionService(cfg *config.Config, logger *zap.Logger) *llm.KnowPo
 // buildRagQueryService 根据配置创建 RAG 问答服务。
 func buildRagQueryService(cfg *config.Config, logger *zap.Logger) *llm.RagQueryService {
 	if !isOptionalEnabled(cfg.LLM.Enabled) {
-		logger.Warn("RAG query service disabled: explicitly disabled")
+		logger.Warn("RAG 问答服务已禁用: 显式禁用")
 		return nil
 	}
 	if !hasElasticsearchConfig(cfg) {
-		logger.Warn("RAG query service disabled: elasticsearch config is incomplete")
+		logger.Warn("RAG 问答服务已禁用: Elasticsearch 配置不完整")
 		return nil
 	}
 	if strings.TrimSpace(cfg.LLM.OpenAI.APIKey) == "" || strings.TrimSpace(cfg.LLM.OpenAI.BaseURL) == "" {
-		logger.Warn("RAG query service disabled: embedding config is incomplete")
+		logger.Warn("RAG 问答服务已禁用: embedding 配置不完整")
 		return nil
 	}
 	if strings.TrimSpace(cfg.LLM.DeepSeek.APIKey) == "" ||
 		strings.TrimSpace(cfg.LLM.DeepSeek.BaseURL) == "" ||
 		strings.TrimSpace(cfg.LLM.DeepSeek.Model) == "" {
-		logger.Warn("RAG query service disabled: chat model config is incomplete")
+		logger.Warn("RAG 问答服务已禁用: 聊天模型配置不完整")
 		return nil
 	}
 	if len(cfg.Elasticsearch.URIs) == 0 {
-		logger.Warn("RAG query service disabled: elasticsearch URIs is empty")
+		logger.Warn("RAG 问答服务已禁用: Elasticsearch URIs 为空")
 		return nil
 	}
 	return llm.NewRagQueryService(&cfg.LLM, cfg.Elasticsearch.URIs[0])
@@ -96,20 +96,20 @@ func buildRagQueryService(cfg *config.Config, logger *zap.Logger) *llm.RagQueryS
 // buildOssService 根据配置创建 OSS 存储服务。
 func buildOssService(cfg *config.Config, logger *zap.Logger) *storage.OssStorageService {
 	if !isOptionalEnabled(cfg.OSS.Enabled) {
-		logger.Warn("Storage service disabled: explicitly disabled")
+		logger.Warn("存储服务已禁用: 显式禁用")
 		return nil
 	}
 	if strings.TrimSpace(cfg.OSS.Endpoint) == "" ||
 		strings.TrimSpace(cfg.OSS.AccessKeyID) == "" ||
 		strings.TrimSpace(cfg.OSS.AccessKeySecret) == "" ||
 		strings.TrimSpace(cfg.OSS.Bucket) == "" {
-		logger.Warn("Storage service disabled: OSS config is incomplete")
+		logger.Warn("存储服务已禁用: OSS 配置不完整")
 		return nil
 	}
 
 	ossSvc, err := storage.NewOssStorageService(&cfg.OSS)
 	if err != nil {
-		logger.Warn("Failed to initialize OSS service", zap.Error(err))
+		logger.Warn("初始化 OSS 服务失败", zap.Error(err))
 		return nil
 	}
 	return ossSvc

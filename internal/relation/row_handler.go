@@ -1,2 +1,2 @@
-// This file is empty - row_handler logic is in outbox_consumer.go
+// 该文件为空 - row_handler 逻辑在 outbox_consumer.go 中
 package relation

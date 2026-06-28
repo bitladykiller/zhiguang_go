@@ -16,5 +16,5 @@ type LikersResponse struct {
 // LikerItem 表示一个点赞/收藏用户。
 type LikerItem struct {
 	UserID  uint64 `json:"user_id"`
-	LikedAt int64  `json:"liked_at"` // Unix timestamp
+	LikedAt int64  `json:"liked_at"` // Unix 时间戳
 }

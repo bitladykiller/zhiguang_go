@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// getListWithOffset 以 Offset 分页方式读取关注/粉丝列表（含三级缓存）。
+// getListWithOffset 读取关注/粉丝列表，使用 offset 分页（三级缓存）。
 func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, listType string, limit, offset int) ([]uint64, error) {
 	if s.isBigV(ctx, userID) {
 		l1Key := s.l1KeyStr(listType, userID)
@@ -69,7 +69,7 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 	return ids[offset:end], nil
 }
 
-// getListWithCursor 以游标分页方式读取关注/粉丝列表。
+// getListWithCursor 读取关注/粉丝列表，使用游标分页。
 func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, listType string, limit int, cursor int64) ([]uint64, int64, error) {
 	zsetKey := s.zsetKey(listType, userID)
 	exists, err := s.redis.Exists(ctx, zsetKey).Result()
@@ -118,7 +118,7 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 	return result, nextCursor, nil
 }
 
-// zsetKey 生成 Redis ZSet 的缓存键。
+// zsetKey 生成 Redis ZSet 缓存键。
 func (s *RelationService) zsetKey(listType string, userID uint64) string {
 	return fmt.Sprintf("z:%s:%d", listType, userID)
 }

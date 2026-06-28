@@ -35,15 +35,14 @@ import (
 //   - status < 400：使用 logger.Info（正常请求）
 //
 // 噪声控制：
-//   跳过 /health 和 /metrics 等低价值接口的日志输出，
+//   跳过 /health 和 /ready、/metrics 和 /debug/pprof/* 等低价值接口的日志输出，
 //   避免日志量过大影响问题排查。
 //
 // 函数调用说明：
-//   - time.Now():   记录请求开始时间
-//   - time.Since(start):  计算从 start 到当前时间的差值（请求耗时）
 //   - c.Request.URL.Path:  Gin 中获取请求路径
 //   - c.Request.Method:    Gin 中获取 HTTP 方法
 //   - c.Writer.Status():   Gin 中获取已写入的响应状态码
+//   - time.Since(start):   计算从 start 到当前时间的差值（请求耗时）
 //   - c.ClientIP():        Gin 中获取客户端 IP（考虑代理转发）
 //   - c.Request.UserAgent(): 获取客户端 User-Agent
 //   - c.Writer.Size():     获取已写入的响应体大小
@@ -54,7 +53,7 @@ import (
 //   - 使用 zap.Field 而非格式化字符串：
 //     结构化日志便于日志中心（如 ELK/Loki）做索引和聚合查询。
 func LoggerMiddleware(logger *zap.Logger) gin.HandlerFunc {
-		return func(c *gin.Context) {
+	return func(c *gin.Context) {
 		// 跳过健康检查和指标接口
 		path := c.Request.URL.Path
 		if path == "/health" || path == "/ready" || path == "/metrics" || strings.HasPrefix(path, "/debug/pprof") {
@@ -81,7 +80,7 @@ func LoggerMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			zap.Int("body_size", c.Writer.Size()),
 		}
 
-		// 根据状态码选择日志级别：错误用 warn/error，成功用 info
+		// 根据状态码选择日志级别：错误用 warn/error，正常用 info
 		status := c.Writer.Status()
 		if status >= 500 {
 			logger.Error("request completed with server error", fields...)

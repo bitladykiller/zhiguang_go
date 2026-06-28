@@ -377,7 +377,7 @@ func createTempKeyPair() (string, string, string) {
 }
 
 // ============================================================================
-// Benchmarks
+// 基准测试
 // ============================================================================
 
 func BenchmarkRegisterHandler(b *testing.B) {

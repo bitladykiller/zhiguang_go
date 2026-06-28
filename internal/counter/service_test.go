@@ -205,7 +205,7 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 		t.Fatalf("like second user: %v", err)
 	}
 
-	// Seed wrong SDS value
+	// 写入错误的 SDS 值
 	if err := rdb.HSet(ctx, SdsKey(entityType, entityID), "like", 9).Err(); err != nil {
 		t.Fatalf("seed wrong sds: %v", err)
 	}
