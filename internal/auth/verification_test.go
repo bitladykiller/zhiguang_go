@@ -81,7 +81,7 @@ func TestVerification_SendCode(t *testing.T) {
 			}
 		}
 		_, err := svc.SendCode(ctx, SceneRegister, "13800138002")
-		if err == nil || err.Error() != "daily limit exceeded" {
+		if err == nil || err.Error() != "超过每日上限" {
 			t.Fatalf("expected daily limit exceeded, got: %v", err)
 		}
 	})
