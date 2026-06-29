@@ -78,6 +78,13 @@ func relationFillL1Limit(cfg *config.RelationConfig) int {
 	return 500
 }
 
+func relationMaxOffset(cfg *config.RelationConfig) int {
+	if cfg != nil && cfg.MaxOffset > 0 {
+		return cfg.MaxOffset
+	}
+	return 1000
+}
+
 func relationFallbackExhaustedTTL(cfg *config.RelationConfig) time.Duration {
 	if cfg != nil && cfg.Fallback.ExhaustedTTLMinutes > 0 {
 		return time.Duration(cfg.Fallback.ExhaustedTTLMinutes) * time.Minute

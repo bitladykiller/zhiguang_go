@@ -51,6 +51,12 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 		return []uint64{}, nil
 	}
 
+	// 防止翻页过深导致 DB 负载线性增长
+	maxOffset := relationMaxOffset(s.cfg)
+	if offset > maxOffset {
+		return []uint64{}, nil
+	}
+
 	rows, err := s.readFromDB(ctx, listType, userID, limit+offset, 0)
 	if err != nil {
 		return nil, fmt.Errorf("get list with offset: read from db: %w", err)

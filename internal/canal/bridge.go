@@ -12,6 +12,7 @@ package canal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -221,9 +222,7 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		batchID := message.Id
 		payloads, err := parseEntries(entryPtrSlice(message.Entries))
 		if err != nil {
-			if rbErr := connector.RollBack(batchID); rbErr != nil {
-				b.logger.Warn("rollback canal batch failed after parse error", zap.Int64("batchID", batchID), zap.Error(rbErr))
-			}
+			rollbackOrPanic(connector, batchID, b.logger)
 			return err
 		}
 		if len(payloads) == 0 {
@@ -238,9 +237,7 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 			var key []byte
 			rows, err := outbox.ExtractRows(payload)
 			if err != nil {
-				if rbErr := connector.RollBack(batchID); rbErr != nil {
-					b.logger.Warn("rollback canal batch failed after extract error", zap.Int64("batchID", batchID), zap.Error(rbErr))
-				}
+				rollbackOrPanic(connector, batchID, b.logger)
 				return err
 			}
 			if len(rows) > 0 {
@@ -249,9 +246,7 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 			messages = append(messages, kafka.Message{Key: key, Value: payload})
 		}
 		if err := b.writer.WriteMessages(ctx, messages...); err != nil {
-			if rbErr := connector.RollBack(batchID); rbErr != nil {
-				b.logger.Warn("rollback canal batch failed after write error", zap.Int64("batchID", batchID), zap.Error(rbErr))
-			}
+			rollbackOrPanic(connector, batchID, b.logger)
 			return err
 		}
 		if err := connector.Ack(batchID); err != nil {
@@ -292,5 +287,21 @@ func entryPtrSlice(entries []pbe.Entry) []*pbe.Entry {
 		result[i] = &entries[i]
 	}
 	return result
+}
+
+// rollbackOrPanic 回滚 Canal batch，失败时 panic 触发重启以推进位点。
+//
+// RollBack 失败的典型场景：Canal 连接已断开或超时。
+// 此时位点无法回退，Canal 端会认为该 batch 已被处理，
+// 导致数据丢失。panic 触发进程重启（Canal 连接重置），
+// 是最安全的数据一致性保护策略。
+func rollbackOrPanic(connector client.CanalConnector, batchID int64, logger *zap.Logger) {
+	if err := connector.RollBack(batchID); err != nil {
+		if logger != nil {
+			logger.Error("rollback canal batch failed, panicking to trigger restart",
+				zap.Int64("batchID", batchID), zap.Error(err))
+		}
+		panic(fmt.Sprintf("canal rollback batch %d failed: %v", batchID, err))
+	}
 }
 

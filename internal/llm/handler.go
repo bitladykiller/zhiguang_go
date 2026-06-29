@@ -96,12 +96,9 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	streamChan := make(chan string, 10)
 	done := make(chan struct{})
 
-	// 使用独立的 context 而非 c.Request.Context()，防止客户端断开后 goroutine 泄漏。
-	ragCtx, ragCancel := context.WithCancel(context.Background())
+	// 使用请求上下文穿透 goroutine，客户端断开时自动取消 RAG 查询。
+	ragCtx, ragCancel := context.WithCancel(ctx)
 	go func() {
-		timeout := 30 * time.Second
-		ctxWithTimeout, timeoutCancel := context.WithTimeout(ragCtx, timeout)
-		defer timeoutCancel()
 		defer ragCancel()
 		defer close(done)
 		defer func() {
@@ -117,7 +114,7 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 				}
 			}
 		}()
-		h.ragSvc.Query(ctxWithTimeout, postID, req.Question, streamChan)
+		h.ragSvc.Query(ragCtx, postID, req.Question, streamChan)
 	}()
 
 	flusher, _ := c.Writer.(interface{ Flush() })

@@ -366,7 +366,7 @@ func (c *AggregationConsumer) handleMessage(ctx context.Context, msg kafka.Messa
 		c.mu.Lock()
 		if batch := c.batches[msg.Partition]; batch != nil && batch.size() > 0 {
 			delete(c.batches, msg.Partition)
-			defer c.mu.Unlock()
+			c.mu.Unlock()
 			c.skipMalformedMessage(ctx, msg, err)
 			return batch
 		}

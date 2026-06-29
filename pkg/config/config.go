@@ -373,6 +373,7 @@ type RelationConfig struct {
 	InvalidateLock RelationInvalidateLockConfig    `yaml:"invalidate_lock"`
 	L1Cache       RelationL1CacheConfig            `yaml:"l1_cache"`
 	Fallback      RelationFallbackConfig           `yaml:"fallback"`
+	MaxOffset     int                              `yaml:"max_offset"`
 }
 
 // RelationTokenBucketConfig 配置令牌桶限流。

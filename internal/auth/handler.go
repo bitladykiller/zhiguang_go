@@ -209,7 +209,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	}
 
 	h.svc.Logout(c.Request.Context(), &req)
-	response.Success(c, gin.H{"message": errcode.ErrLogoutFailed.Msg()})
+	response.Success(c, gin.H{"message": "登出成功"})
 }
 
 // ResetPassword 处理密码重置请求（POST /auth/reset-password）。
