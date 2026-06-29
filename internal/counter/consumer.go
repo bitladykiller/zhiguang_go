@@ -504,8 +504,8 @@ func (c *AggregationConsumer) repairDirtyMembers(ctx context.Context) error {
 			if !errors.Is(err, errLockNotAcquired) {
 				// 锁竞争跳过的成员已被 SPOP 移除，需加回
 				if err := c.service.redis.SAdd(ctx, DirtySetKey(), member).Err(); err != nil {
-				c.logger.Warn("repair re-add dirty member failed", zap.String("member", member), zap.Error(err))
-			}
+					c.logger.Warn("repair re-add dirty member failed", zap.String("member", member), zap.Error(err))
+				}
 			}
 			if firstErr == nil {
 				firstErr = err
@@ -559,21 +559,21 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 				return
 			case <-ticker.C:
 				if err := c.service.redis.Expire(watchCtx, rebuildMarker, defaultRebuildMarkerTTL).Err(); err != nil {
-				c.logger.Warn("watchdog expire rebuild marker failed", zap.Error(err))
-			}
+					c.logger.Warn("watchdog expire rebuild marker failed", zap.Error(err))
+				}
 			}
 		}
 	}()
 	if err := c.service.redis.Set(ctx, rebuildMarker, "1", defaultRebuildMarkerTTL).Err(); err != nil {
-	c.logger.Warn("set rebuild marker failed", zap.Error(err))
-}
+		c.logger.Warn("set rebuild marker failed", zap.Error(err))
+	}
 	defer func() {
 		watchCancel()
 		<-watchDone
 		lock.Release()
 		if err := c.service.redis.Del(ctx, rebuildMarker).Err(); err != nil {
-		c.logger.Warn("delete rebuild marker failed", zap.Error(err))
-	}
+			c.logger.Warn("delete rebuild marker failed", zap.Error(err))
+		}
 	}()
 
 	sdsRaw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)

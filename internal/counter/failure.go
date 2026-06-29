@@ -167,7 +167,11 @@ func (s *CounterService) ReplayFailedMessages(ctx context.Context, limit int) er
 		var snapshot map[string]int32
 		rebuildErr := func() error {
 			defer lock.Release()
-			defer s.redis.Del(ctx, rebuildMarker)
+			defer func() {
+				if delErr := s.redis.Del(ctx, rebuildMarker).Err(); delErr != nil {
+					s.logger.Warn("delete rebuild marker failed", zap.String("entityType", record.EntityType), zap.String("entityID", record.EntityID), zap.Error(delErr))
+				}
+			}()
 
 			var err error
 			snapshot, err = s.buildSnapshotFromBitmap(ctx, record.EntityType, record.EntityID)

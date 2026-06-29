@@ -96,7 +96,9 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 	streamChan := make(chan string, 10)
 	done := make(chan struct{})
 
+	ragCtx, ragCancel := context.WithTimeout(ctx, 30*time.Second)
 	go func() {
+		defer ragCancel()
 		defer close(done)
 		defer func() {
 			if r := recover(); r != nil {
@@ -111,7 +113,7 @@ func (h *LlmHandler) RagQuery(c *gin.Context) {
 				}
 			}
 		}()
-		h.ragSvc.Query(ctx, postID, req.Question, streamChan)
+		h.ragSvc.Query(ragCtx, postID, req.Question, streamChan)
 	}()
 
 	flusher, _ := c.Writer.(interface{ Flush() })
