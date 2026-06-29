@@ -94,7 +94,7 @@ func (s *CounterService) GetLikers(ctx context.Context, entityType string, entit
 
 	cacheKey := fmt.Sprintf("likers_cache:%s:%d:%s", entityType, entityID, metric)
 	results, err := s.redis.ZRangeByScore(ctx, cacheKey, &redis.ZRangeBy{
-		Min:   fmt.Sprintf("(%d", cursor),
+		Min:   "(" + strconv.FormatUint(cursor, 10),
 		Max:   "+inf",
 		Count: int64(limit + 1),
 	}).Result()

@@ -146,6 +146,11 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 	for i := 0; i < defaultCounterFlushWorkers; i++ {
 		flushWg.Add(1)
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error("flush worker panic", zap.Any("recover", r))
+				}
+			}()
 			defer flushWg.Done()
 			for batch := range c.flushCh {
 				c.flushAndReset(flushCtx, batch)
@@ -551,6 +556,11 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.logger.Error("watchdog panic", zap.Any("recover", r))
+			}
+		}()
 		defer close(watchDone)
 		ticker := time.NewTicker(defaultExpireExtendInterval)
 		defer ticker.Stop()

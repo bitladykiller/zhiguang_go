@@ -88,7 +88,7 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 
 	var maxVal string
 	if cursor > 0 {
-		maxVal = fmt.Sprintf("(%d", cursor)
+		maxVal = "(" + strconv.FormatInt(cursor, 10)
 	} else {
 		maxVal = "+inf"
 	}

@@ -12,12 +12,16 @@ import (
 	"github.com/zhiguang/app/pkg/response"
 )
 
-// CounterServiceInterface 定义计数器模块对外暴露的业务方法。
-type CounterServiceInterface interface {
+// CounterToggleServiceInterface 定义计数器 toggle 操作接口。
+type CounterToggleServiceInterface interface {
 	Like(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	Unlike(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	Fav(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	Unfav(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+}
+
+// CounterQueryServiceInterface 定义计数器查询接口。
+type CounterQueryServiceInterface interface {
 	GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
 	GetCountsBatch(ctx context.Context, entityType string, entityIDs, metrics []string) (map[string]map[string]int32, error)
 	IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
@@ -26,6 +30,12 @@ type CounterServiceInterface interface {
 	BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
 	GetLikers(ctx context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error)
 	IsLikedAndFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, bool, error)
+}
+
+// CounterServiceInterface 组合 Toggle 和 Query 接口，保留向后兼容。
+type CounterServiceInterface interface {
+	CounterToggleServiceInterface
+	CounterQueryServiceInterface
 }
 
 // CounterHandler 暴露计数器模块的 HTTP 接口。
