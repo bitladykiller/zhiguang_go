@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -13,9 +14,10 @@ import (
 )
 
 type FanoutConsumer struct {
-	service *Service
-	reader  *kafka.Reader
-	logger  *zap.Logger
+	service   *Service
+	reader    *kafka.Reader
+	logger    *zap.Logger
+	closeOnce sync.Once
 }
 
 func NewFanoutConsumer(brokers []string, groupID string, topic string, service *Service, logger *zap.Logger) *FanoutConsumer {
@@ -40,7 +42,7 @@ func (fc *FanoutConsumer) Start(ctx context.Context) {
 	if fc == nil || fc.reader == nil {
 		return
 	}
-	defer fc.reader.Close()
+	defer fc.closeOnce.Do(func() { fc.reader.Close() })
 	defer func() {
 		if r := recover(); r != nil {
 			fc.logger.Error("fanout consumer panicked", zap.Any("panic", r), zap.Stack("stack"))
@@ -94,7 +96,9 @@ func (fc *FanoutConsumer) Stop() error {
 	if fc == nil || fc.reader == nil {
 		return nil
 	}
-	return fc.reader.Close()
+	var err error
+	fc.closeOnce.Do(func() { err = fc.reader.Close() })
+	return err
 }
 
 func (fc *FanoutConsumer) String() string {

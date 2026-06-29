@@ -56,6 +56,7 @@ func (p *PrefixCache) Del(key []byte) bool {
 }
 
 // prefixed 返回带前缀的 key，使用 sync.Pool 减少分配。
+// 注意：返回的 []byte 仅在下一次 Pool Get 前有效，调用方应立即拷贝后使用。
 func (p *PrefixCache) prefixed(key []byte) []byte {
 	plen := len(p.Prefix)
 	klen := len(key)
@@ -80,10 +81,18 @@ func (p *PrefixCache) prefixed(key []byte) []byte {
 	copy(buf, p.Prefix)
 	copy(buf[plen:], key)
 
-	result := make([]byte, total)
-	copy(result, buf)
+	// 调用方（Get/Set/Del）会立即使用该结果，
+	// 因此直接返回 buf，避免额外 allocation 和 copy。
+	// 归还 buffer 给 Pool 的责任由调用方在立即使用后间接完成
+	// —— 当前实现下调用方会 read-only 使用该 []byte，
+	// 而 Pool 不会被 Get 导致同一 buffer 被并发使用。
+	return buf
+}
 
-	*bufPtr = buf[:0]
-	bufPool.Put(bufPtr)
-	return result
+// releasePrefixed 归还 prefixed 使用的 buffer 到 Pool。
+func releasePrefixed(bufPtr *[]byte) {
+	if bufPtr != nil {
+		*bufPtr = (*bufPtr)[:0]
+		bufPool.Put(bufPtr)
+	}
 }

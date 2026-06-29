@@ -724,8 +724,14 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 		itemIDs[i] = item.ID
 	}
 
-	likedMap, _ := s.counter.BatchIsLiked(ctx, *userID, "knowpost", itemIDs)
-	favedMap, _ := s.counter.BatchIsFaved(ctx, *userID, "knowpost", itemIDs)
+	likedMap, err := s.counter.BatchIsLiked(ctx, *userID, "knowpost", itemIDs)
+	if err != nil {
+		s.logger.Warn("feed: batch is liked failed", zap.Error(err))
+	}
+	favedMap, favErr := s.counter.BatchIsFaved(ctx, *userID, "knowpost", itemIDs)
+	if favErr != nil {
+		s.logger.Warn("feed: batch is faved failed", zap.Error(favErr))
+	}
 
 	enriched := make([]FeedItemResponse, len(items))
 	for i, item := range items {
