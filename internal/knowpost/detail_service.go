@@ -212,8 +212,9 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 				return nil, err
 			}
 
+		idStr := strconv.FormatUint(id, 10)
+
 		if s.counter != nil {
-				idStr := strconv.FormatUint(id, 10)
 				counts, err := s.counter.GetCounts(ctx, "knowpost", idStr, []string{"like", "fav"})
 				if err != nil {
 					s.logger.Warn("failed to get detail counts", zap.Uint64("knowpostID", id), zap.Error(err))
@@ -227,7 +228,6 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			if err != nil {
 				return s.enrichDetail(ctx, resp, currentUserID, false), nil
 			}
-			idStr := strconv.FormatUint(id, 10)
 			baseTTL := l2Base + rand.Intn(l2Jitter)
 			hotKeyID := fmt.Sprintf("knowpost:%s", idStr)
 			targetTTL := baseTTL

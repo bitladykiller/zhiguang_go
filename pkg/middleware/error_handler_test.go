@@ -62,8 +62,8 @@ func TestToAppErr_PlainError(t *testing.T) {
 	if result.Code != errcode.CodeInternalError {
 		t.Errorf("code = %d, want %d", result.Code, errcode.CodeInternalError)
 	}
-	if result.Message != "db error" {
-		t.Errorf("message = %q, want %q", result.Message, "db error")
+	if result.Message != "internal error" {
+		t.Errorf("message = %q, want %q", result.Message, "internal error")
 	}
 }
 

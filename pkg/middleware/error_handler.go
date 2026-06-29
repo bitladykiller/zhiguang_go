@@ -74,5 +74,5 @@ func ToAppErr(err error) *errcode.AppError {
 	if appErr, ok := err.(*errcode.AppError); ok {
 		return appErr
 	}
-	return errcode.ErrInternal.WithMsg(err.Error())
+	return errcode.ErrInternal.WithMsg("internal error")
 }

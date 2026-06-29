@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -108,6 +109,30 @@ func NewKnowPostFeedService(
 		counter:  counter,
 		logger:   logger,
 	}
+}
+
+// idsPool 为 GetMineFeed 中的临时 []uint64 切片提供复用。
+var idsPool = sync.Pool{
+	New: func() any {
+		ids := make([]uint64, 0, 50)
+		return &ids
+	},
+}
+
+// itemKeysPool 为 assembleFromCache 中的临时 []string 切片提供复用。
+var itemKeysPool = sync.Pool{
+	New: func() any {
+		keys := make([]string, 0, 50)
+		return &keys
+	},
+}
+
+// itemIDsPool 为 enrichItems 中的临时 []string 切片提供复用。
+var itemIDsPool = sync.Pool{
+	New: func() any {
+		ids := make([]string, 0, 50)
+		return &ids
+	},
 }
 
 // ============================================================================
@@ -284,7 +309,9 @@ func (s *KnowPostFeedService) GetMineFeed(ctx context.Context, userID uint64, pa
 	timelineKey := fmt.Sprintf("timeline:%d", userID)
 	memberIDs, err := s.redis.ZRevRange(ctx, timelineKey, int64(offset), int64(offset+safeSize-1)).Result()
 	if err == nil && len(memberIDs) > 0 {
-		ids := make([]uint64, 0, len(memberIDs))
+		idsPtr := idsPool.Get().(*[]uint64)
+		ids := *idsPtr
+		ids = ids[:0]
 		for _, idStr := range memberIDs {
 			if id, parseErr := strconv.ParseUint(idStr, 10, 64); parseErr == nil {
 				ids = append(ids, id)
@@ -292,6 +319,8 @@ func (s *KnowPostFeedService) GetMineFeed(ctx context.Context, userID uint64, pa
 		}
 		if len(ids) > 0 {
 			rows, dbErr := s.repo.FindByIDs(ctx, ids)
+			idsPtr = &ids
+			idsPool.Put(idsPtr)
 			if dbErr == nil && len(rows) > 0 {
 				items := s.mapRowsToItems(ctx, rows, &userID, true)
 				enriched := s.enrichItems(ctx, items, &userID)
@@ -311,6 +340,9 @@ func (s *KnowPostFeedService) GetMineFeed(ctx context.Context, userID uint64, pa
 					HasMore: hasMore,
 				}, nil
 			}
+		} else {
+			idsPtr = &ids
+			idsPool.Put(idsPtr)
 		}
 	}
 
@@ -447,13 +479,17 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 	}
 
 	// 批量读取条目碎片
-	itemKeys := make([]string, len(idStrs))
-	for i, idStr := range idStrs {
-		itemKeys[i] = "feed:item:" + idStr
+	itemKeysPtr := itemKeysPool.Get().(*[]string)
+	itemKeys := *itemKeysPtr
+	itemKeys = itemKeys[:0]
+	for _, idStr := range idStrs {
+		itemKeys = append(itemKeys, "feed:item:"+idStr)
 	}
 	itemJsons, err := s.redis.MGet(ctx, itemKeys...).Result()
 	if err != nil {
 		s.logger.Warn("failed to MGet feed item cache entries", zap.Strings("itemKeys", itemKeys), zap.Error(err))
+		itemKeysPtr = &itemKeys
+		itemKeysPool.Put(itemKeysPtr)
 		return nil
 	}
 
@@ -461,18 +497,26 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 	items := make([]FeedItemResponse, 0, len(idStrs))
 	for _, itemJson := range itemJsons {
 		if itemJson == nil {
+			itemKeysPtr = &itemKeys
+			itemKeysPool.Put(itemKeysPtr)
 			return nil // 任意碎片缺失则视为缓存未命中
 		}
 		itemStr, ok := itemJson.(string)
 		if !ok {
+			itemKeysPtr = &itemKeys
+			itemKeysPool.Put(itemKeysPtr)
 			return nil
 		}
 		var item FeedItemResponse
 		if err := json.Unmarshal([]byte(itemStr), &item); err != nil {
+			itemKeysPtr = &itemKeys
+			itemKeysPool.Put(itemKeysPtr)
 			return nil
 		}
 		items = append(items, item)
 	}
+	itemKeysPtr = &itemKeys
+	itemKeysPool.Put(itemKeysPtr)
 
 	// 读取 hasMore 软缓存
 	hasMore := false
@@ -648,8 +692,8 @@ func (s *KnowPostFeedService) mapRowsToItems(ctx context.Context, rows []KnowPos
 
 	// 批量获取计数信息
 	var countsBatch map[string]map[string]int32
+	entityIDs := make([]string, len(rows))
 	if s.counter != nil && len(rows) > 0 {
-		entityIDs := make([]string, len(rows))
 		for i, r := range rows {
 			entityIDs[i] = strconv.FormatUint(r.ID, 10)
 		}
@@ -669,7 +713,7 @@ func (s *KnowPostFeedService) mapRowsToItems(ctx context.Context, rows []KnowPos
 			cover = &imgs[0]
 		}
 
-		eid := strconv.FormatUint(r.ID, 10)
+		eid := entityIDs[i]
 		item := FeedItemResponse{
 			ID:             eid,
 			Title:          r.Title,
@@ -719,9 +763,11 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 		return items
 	}
 
-	itemIDs := make([]string, len(items))
-	for i, item := range items {
-		itemIDs[i] = item.ID
+	itemIDsPtr := itemIDsPool.Get().(*[]string)
+	itemIDs := *itemIDsPtr
+	itemIDs = itemIDs[:0]
+	for _, item := range items {
+		itemIDs = append(itemIDs, item.ID)
 	}
 
 	likedMap, err := s.counter.BatchIsLiked(ctx, *userID, "knowpost", itemIDs)
@@ -732,6 +778,8 @@ func (s *KnowPostFeedService) enrichItems(ctx context.Context, items []FeedItemR
 	if favErr != nil {
 		s.logger.Warn("feed: batch is faved failed", zap.Error(favErr))
 	}
+	itemIDsPtr = &itemIDs
+	itemIDsPool.Put(itemIDsPtr)
 
 	enriched := make([]FeedItemResponse, len(items))
 	for i, item := range items {

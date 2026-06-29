@@ -606,10 +606,6 @@ func (c *Config) Validate() error {
 		errs = append(errs, "auth.jwt.public_key_path is required")
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
-	}
-
 	if c.Canal.Enabled && (c.Canal.Username == "" || c.Canal.Password == "") {
 		errs = append(errs, "canal: username and password are required when enabled")
 	}
@@ -639,6 +635,24 @@ func (c *Config) Validate() error {
 		if c.OSS.AccessKeySecret == "" {
 			errs = append(errs, "oss: access_key_secret is required when oss is configured")
 		}
+	}
+
+	if c.Auth.Jwt.AccessTokenTTL <= 0 {
+		errs = append(errs, "auth.jwt.access_token_ttl must be positive")
+	}
+	if c.Auth.Jwt.RefreshTokenTTL <= 0 {
+		errs = append(errs, "auth.jwt.refresh_token_ttl must be positive")
+	}
+
+	if c.Database.MaxOpenConns <= 0 {
+		errs = append(errs, "database.max_open_conns must be positive")
+	}
+	if c.Database.MaxIdleConns <= 0 {
+		errs = append(errs, "database.max_idle_conns must be positive")
+	}
+
+	if len(c.Kafka.Brokers) == 0 {
+		errs = append(errs, "kafka.brokers must contain at least one broker address")
 	}
 
 	if len(errs) > 0 {

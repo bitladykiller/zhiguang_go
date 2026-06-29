@@ -11,7 +11,8 @@ import (
 
 // getListWithOffset 读取关注/粉丝列表，使用 offset 分页（三级缓存）。
 func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, listType string, limit, offset int) ([]uint64, error) {
-	if s.isBigV(ctx, userID) {
+	isBigV := s.isBigV(ctx, userID)
+	if isBigV {
 		l1Key := s.l1KeyStr(listType, userID)
 		if data, err := s.l1.Get([]byte(l1Key)); err == nil {
 			ids := s.toLongList(string(data))
@@ -38,7 +39,7 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 		if !warmed {
 			return []uint64{}, nil
 		}
-		if s.isBigV(ctx, userID) {
+		if isBigV {
 			s.fillL1(ctx, listType, userID)
 		}
 	}

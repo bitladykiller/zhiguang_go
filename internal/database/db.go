@@ -168,6 +168,7 @@ func NewRedisClientOrDie(cfg *config.RedisConfig, logger *zap.Logger) *redis.Cli
 	if err := client.Ping(pingCtx).Err(); err != nil {
 		client.Close()
 		logger.Error("redis ping failed at startup, service may degrade silently", zap.String("addr", cfg.Addr()), zap.Error(err))
+		return nil
 	}
 	return client
 }

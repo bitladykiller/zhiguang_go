@@ -115,7 +115,8 @@ func (s *AuthService) SendCode(ctx context.Context, req *SendCodeRequest) (SendC
 
 	result, err := s.verifSvc.SendCode(ctx, req.Scene, normalized)
 	if err != nil {
-		return SendCodeResponse{}, errcode.ErrInternal.WithMsg(err.Error())
+		s.logger.Error("发送验证码失败", zap.String("scene", string(req.Scene)), zap.String("identifier", normalized), zap.Error(err))
+		return SendCodeResponse{}, errcode.ErrInternal.WithMsg("发送验证码失败")
 	}
 
 	return SendCodeResponse{
@@ -176,6 +177,7 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), s.cfg.Password.BcryptCost)
 		if err != nil {
+			s.logger.Error("密码哈希失败", zap.String("identifier", normalized), zap.Error(err))
 			return AuthResponse{}, errcode.ErrInternal.WithMsg("密码哈希失败")
 		}
 		h := string(hash)
@@ -194,15 +196,18 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 	}
 
 	if err := s.repo.CreateUser(ctx, user); err != nil {
+		s.logger.Error("创建用户失败", zap.String("identifier", normalized), zap.Error(err))
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("创建用户失败")
 	}
 
 	tokenPair, err := s.jwtSvc.IssueTokenPair(user)
 	if err != nil {
+		s.logger.Error("颁发令牌失败", zap.Uint64("userID", user.ID), zap.Error(err))
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("颁发令牌失败")
 	}
 
 	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+		s.logger.Error("持久化刷新令牌失败", zap.Uint64("userID", user.ID), zap.Error(err))
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("持久化刷新令牌失败")
 	}
 	s.recordLoginLog(ctx, user.ID, normalized, "REGISTER", LoginStatusSuccess, clientInfo)
@@ -251,6 +256,7 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 
 	user, err := s.repo.FindUserByIdentifier(ctx, req.IdentifierType, normalized)
 	if err != nil {
+		s.logger.Warn("登录查找用户失败", zap.String("identifier", normalized), zap.Error(err))
 		return AuthResponse{}, errcode.ErrIdentifierNotFound
 	}
 
@@ -268,6 +274,7 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 			return AuthResponse{}, errcode.ErrInvalidCredentials
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(*user.PasswordHash), []byte(req.Password)); err != nil {
+			s.logger.Warn("密码登录失败：密码不匹配", zap.Uint64("userID", user.ID), zap.String("identifier", normalized), zap.String("ip", clientInfo.IP), zap.Error(err))
 			s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusFailed, clientInfo)
 			return AuthResponse{}, errcode.ErrInvalidCredentials
 		}
@@ -275,10 +282,12 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 
 	tokenPair, err := s.jwtSvc.IssueTokenPair(user)
 	if err != nil {
+		s.logger.Error("颁发令牌失败", zap.Uint64("userID", user.ID), zap.Error(err))
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("颁发令牌失败")
 	}
 
 	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+		s.logger.Error("持久化刷新令牌失败", zap.Uint64("userID", user.ID), zap.Error(err))
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("持久化刷新令牌失败")
 	}
 	s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusSuccess, clientInfo)
@@ -333,19 +342,23 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 	}
 
 	if err := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); err != nil {
+		s.logger.Error("吊销刷新令牌失败", zap.Uint64("userID", jwtClaims.UID), zap.String("tokenID", jwtClaims.ID), zap.Error(err))
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("吊销刷新令牌失败")
 	}
 
 	user, err := s.repo.FindUserByID(ctx, claims.UserID())
 	if err != nil {
+		s.logger.Warn("Refresh查找用户失败", zap.Uint64("userID", claims.UserID()), zap.Error(err))
 		return AuthResponse{}, errcode.ErrIdentifierNotFound
 	}
 
 	tokenPair, err := s.jwtSvc.IssueTokenPair(user)
 	if err != nil {
+		s.logger.Error("颁发令牌失败", zap.Uint64("userID", user.ID), zap.Error(err))
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("颁发令牌失败")
 	}
 	if err := s.tokenStore.StoreToken(ctx, user.ID, tokenPair.RefreshTokenID, s.cfg.Jwt.RefreshTokenTTL); err != nil {
+		s.logger.Error("持久化刷新令牌失败", zap.Uint64("userID", user.ID), zap.Error(err))
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("持久化刷新令牌失败")
 	}
 
@@ -399,6 +412,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 
 	user, err := s.repo.FindUserByIdentifier(ctx, req.IdentifierType, normalized)
 	if err != nil {
+		s.logger.Warn("重置密码查找用户失败", zap.String("identifier", normalized), zap.Error(err))
 		return errcode.ErrIdentifierNotFound
 	}
 
@@ -413,6 +427,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), s.cfg.Password.BcryptCost)
 	if err != nil {
+		s.logger.Error("密码哈希失败", zap.Error(err))
 		return errcode.ErrInternal.WithMsg("密码哈希失败")
 	}
 
@@ -423,9 +438,11 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 	defer release()
 
 	if err := s.repo.UpdatePassword(ctx, user.ID, string(hash)); err != nil {
+		s.logger.Error("更新密码失败", zap.Uint64("userID", user.ID), zap.Error(err))
 		return errcode.ErrInternal.WithMsg("更新密码失败")
 	}
 	if err := s.tokenStore.RevokeAll(ctx, user.ID); err != nil {
+		s.logger.Error("吊销刷新令牌失败", zap.Uint64("userID", user.ID), zap.Error(err))
 		return errcode.ErrInternal.WithMsg("吊销刷新令牌失败")
 	}
 	return nil
@@ -459,6 +476,7 @@ func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint
 		cancel()
 	}
 	if err != nil {
+		s.logger.Error("获取刷新会话锁失败", zap.Uint64("userID", userID), zap.Error(err))
 		return nil, nil, errcode.ErrInternal.WithMsg("获取刷新会话锁失败")
 	}
 	return lock, func() {
@@ -477,6 +495,7 @@ func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint
 func (s *AuthService) CurrentUser(ctx context.Context, userID uint64) (AuthUserResponse, *errcode.AppError) {
 	user, err := s.repo.FindUserByID(ctx, userID)
 	if err != nil {
+		s.logger.Warn("CurrentUser查找用户失败", zap.Uint64("userID", userID), zap.Error(err))
 		return AuthUserResponse{}, errcode.ErrIdentifierNotFound
 	}
 	return mapUserToResponse(user), nil
