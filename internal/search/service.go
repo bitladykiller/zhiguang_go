@@ -401,14 +401,13 @@ func (s *SearchService) addTagFilter(body *esSearchBody, tags []string) (*esSear
 	}
 
 	if body.Query != nil && body.Query.Bool != nil && len(body.Query.Bool.Must) > 0 {
-		for i, clause := range body.Query.Bool.Must {
+		for _, clause := range body.Query.Bool.Must {
 			if fs, ok := clause.(*esFunctionScoreQuery); ok {
 				if fs.FunctionScore != nil {
 					if bq, ok := fs.FunctionScore.Query.(*esBoolQuery); ok && bq.Bool != nil {
 						bq.Bool.Filter = append(bq.Bool.Filter, &esTermsQuery{
 							Terms: map[string]interface{}{"tags": tags},
 						})
-						_ = i
 					}
 				}
 			}

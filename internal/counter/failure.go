@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
-	"go.uber.org/zap"
 	"github.com/zhiguang/app/pkg/redislock"
+	"go.uber.org/zap"
 )
 
 func (s *CounterService) publishCounterEvent(ctx context.Context, event *CounterEvent) {
@@ -154,7 +154,7 @@ func (s *CounterService) ReplayFailedMessages(ctx context.Context, limit int) er
 		}
 
 		lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", record.EntityType, record.EntityID)
-		lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval, s.logger)
+		lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildRetryInterval(), s.logger)
 		if err != nil {
 			continue
 		}
@@ -167,7 +167,11 @@ func (s *CounterService) ReplayFailedMessages(ctx context.Context, limit int) er
 		var snapshot map[string]int32
 		rebuildErr := func() error {
 			defer lock.Release()
-			defer s.redis.Del(ctx, rebuildMarker)
+			defer func() {
+				if delErr := s.redis.Del(ctx, rebuildMarker).Err(); delErr != nil {
+					s.logger.Warn("delete rebuild marker failed", zap.String("entityType", record.EntityType), zap.String("entityID", record.EntityID), zap.Error(delErr))
+				}
+			}()
 
 			var err error
 			snapshot, err = s.buildSnapshotFromBitmap(ctx, record.EntityType, record.EntityID)

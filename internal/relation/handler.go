@@ -60,7 +60,7 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 		return
 	}
 	if req.ToUserID == userID {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("cannot follow yourself"))
+		response.Error(c, errcode.ErrFollowYourself)
 		return
 	}
 	ok, err := h.svc.Follow(c.Request.Context(), userID, req.ToUserID)

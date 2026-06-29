@@ -33,21 +33,23 @@ func startTestRedis(t *testing.T) (*redis.Client, func()) {
 
 func newTestService(rdb *redis.Client) *RelationService {
 	return &RelationService{
-		redis:  rdb,
-		l1:     freecache.NewCache(1024 * 1024),
-		idGen:  &stubIDGen{next: 1000},
-		logger: zapL(),
+		redis:         rdb,
+		l1:            freecache.NewCache(1024 * 1024),
+		idGen:         &stubIDGen{next: 1000},
+		logger:        zapL(),
+		bigVThreshold: int64(bigVThreshold),
 	}
 }
 
 func newTestServiceWithDB(rdb *redis.Client, db *sqlx.DB) *RelationService {
 	return &RelationService{
-		db:     db,
-		redis:  rdb,
-		repo:   NewRelationRepository(db),
-		l1:     freecache.NewCache(1024 * 1024),
-		idGen:  &stubIDGen{next: 1000},
-		logger: zapL(),
+		db:            db,
+		redis:         rdb,
+		repo:          NewRelationRepository(db),
+		l1:            freecache.NewCache(1024 * 1024),
+		idGen:         &stubIDGen{next: 1000},
+		logger:        zapL(),
+		bigVThreshold: int64(bigVThreshold),
 	}
 }
 

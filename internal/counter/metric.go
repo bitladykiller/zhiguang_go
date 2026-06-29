@@ -1,5 +1,7 @@
 package counter
 
 func isUserMetric(metric string) bool {
-	return metric == "following" || metric == "follower" || metric == "posts"
+	return metric == indexToName[IdxFollowing] ||
+		metric == indexToName[IdxFollower] ||
+		metric == indexToName[IdxPosts]
 }

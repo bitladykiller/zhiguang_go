@@ -9,9 +9,9 @@ import (
 
 const (
 	defaultRebuildLockTTL       = 10 * time.Second
-	rebuildLockRetryInterval    = 50 * time.Millisecond
 	defaultRepairLeaderLockTTL  = 5 * time.Second
 	defaultLockOperationTimeout = time.Second
+	defaultRebuildRetryInterval = 50 * time.Millisecond
 )
 
 // rebuildLockOptions 返回 SDS 重建场景使用的分布式锁配置。
@@ -48,4 +48,8 @@ func counterRepairLockOptions() redislock.Options {
 		WatchdogInterval: defaultRepairLeaderLockTTL / 3,
 		OpTimeout:        defaultLockOperationTimeout,
 	}
+}
+
+func rebuildRetryInterval() time.Duration {
+	return defaultRebuildRetryInterval
 }

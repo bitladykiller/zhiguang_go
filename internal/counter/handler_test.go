@@ -89,6 +89,10 @@ func (s *stubHandlerCounter) GetLikers(ctx context.Context, entityType string, e
 	return s.getLikersFn(ctx, entityType, entityID, metric, cursor, limit)
 }
 
+func (s *stubHandlerCounter) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
+	return false, false, nil
+}
+
 // ============================================================================
 // 辅助函数
 // ============================================================================
@@ -284,8 +288,19 @@ func TestGetCounts_Success(t *testing.T) {
 		t.Fatalf("status=%d want=200", w.Code)
 	}
 	data := readSuccessData(t, w)
-	inner := data["data"].(map[string]any)
-	if inner["like"].(float64) != 10 || inner["fav"].(float64) != 5 {
+	inner, ok := data["data"].(map[string]any)
+	if !ok {
+		t.Fatal("data[\"data\"] is not map[string]any")
+	}
+	likeVal, ok := inner["like"].(float64)
+	if !ok {
+		t.Fatal("inner[\"like\"] is not float64")
+	}
+	favVal, ok := inner["fav"].(float64)
+	if !ok {
+		t.Fatal("inner[\"fav\"] is not float64")
+	}
+	if likeVal != 10 || favVal != 5 {
 		t.Fatalf("unexpected counts: %+v", inner)
 	}
 }
@@ -434,7 +449,10 @@ func TestGetLikers_Success(t *testing.T) {
 		t.Fatalf("status=%d want=200", w.Code)
 	}
 	data := readSuccessData(t, w)
-	items := data["items"].([]any)
+	items, ok := data["items"].([]any)
+	if !ok {
+		t.Fatal("data[\"items\"] is not []any")
+	}
 	if len(items) != 1 {
 		t.Fatalf("expected 1 liker, got %d", len(items))
 	}

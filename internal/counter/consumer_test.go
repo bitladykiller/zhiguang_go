@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 	"github.com/zhiguang/app/pkg/testutil"
 )
@@ -241,10 +242,14 @@ func TestNextBatchDeadline_WithBatch(t *testing.T) {
 // AggregationConsumer 核心逻辑测试（使用 mock reader）
 // ============================================================================
 
+	func newTestSvc(rdb *redis.Client) *CounterService {
+	return NewCounterService(rdb, nil, nil, nil, "", nil, nil, nil)
+}
+
 func TestNewAggregationConsumer_NilReader(t *testing.T) {
 	rdb := testutil.StartTestRedis(t)
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := newTestSvc(rdb)
 	c := NewAggregationConsumer(nil, svc, nil, nil)
 	if c != nil {
 		t.Fatal("expected nil consumer for nil reader")
@@ -261,7 +266,7 @@ func TestNewAggregationConsumer_NilService(t *testing.T) {
 func TestNewAggregationConsumer_DefaultConfig(t *testing.T) {
 	rdb := testutil.StartTestRedis(t)
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := newTestSvc(rdb)
 	_ = NewAggregationConsumer(nil, svc, nil, nil)
 }
 
@@ -292,7 +297,7 @@ func TestHandleMessage_ValidEvent(t *testing.T) {
 func TestHandleMessage_MalformedEvent(t *testing.T) {
 	rdb := testutil.StartTestRedis(t)
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := newTestSvc(rdb)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
 		service:   svc,
@@ -318,7 +323,7 @@ func TestHandleMessage_MalformedEvent(t *testing.T) {
 func TestHandleMessage_TriggersFlushOnBatchFull(t *testing.T) {
 	rdb := testutil.StartTestRedis(t)
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := newTestSvc(rdb)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -353,7 +358,7 @@ func TestHandleMessage_TriggersFlushOnBatchFull(t *testing.T) {
 func TestHandleMessage_FlushOnPartitionChange(t *testing.T) {
 	rdb := testutil.StartTestRedis(t)
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := newTestSvc(rdb)
 	commit := &stubCommitFn{}
 	batches := make(map[int]*counterBatch)
 	consumer := &AggregationConsumer{
@@ -397,7 +402,7 @@ func TestHandleMessage_FlushOnPartitionChange(t *testing.T) {
 func TestHandleMessage_FlushOnMalformedWithExistingBatch(t *testing.T) {
 	rdb := testutil.StartTestRedis(t)
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := newTestSvc(rdb)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -529,7 +534,7 @@ func TestParseCounterEvent_Empty(t *testing.T) {
 func TestSkipMalformedMessage(t *testing.T) {
 	rdb := testutil.StartTestRedis(t)
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := newTestSvc(rdb)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
 		service:   svc,

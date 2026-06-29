@@ -20,7 +20,7 @@ func TestTogglePublishFailureMarksDirty(t *testing.T) {
 	defer shutdown()
 
 	recorder := &stubCounterFailureRecorder{}
-	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")}, nil, recorder, "counter-events", nil, nil)
+	svc := NewCounterService(rdb, &stubCounterPublisher{err: errors.New("kafka down")}, nil, recorder, "counter-events", nil, nil, nil)
 	ctx := context.Background()
 	entityType := "knowpost"
 	entityID := "42"
@@ -60,7 +60,7 @@ func TestTogglePublishesSnowflakeMessageID(t *testing.T) {
 	defer shutdown()
 
 	publisher := &stubCapturingCounterPublisher{published: make(chan *CounterEvent, 1)}
-	svc := NewCounterService(rdb, publisher, nil, nil, "", stubMessageIDGenerator{next: 987654321}, nil)
+	svc := NewCounterService(rdb, publisher, nil, nil, "", stubMessageIDGenerator{next: 987654321}, nil, nil)
 
 	changed, err := svc.Like(context.Background(), 1001, "knowpost", "66")
 	if err != nil {
@@ -95,7 +95,7 @@ func TestApplyBatchWritesDeltaIntoSds(t *testing.T) {
 		t.Fatalf("seed sds: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil, nil)
 	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
 	batch := newCounterBatch(2)
 	if err := batch.add(mustCounterMessageAt(t, 3, 10, CounterEvent{
@@ -154,7 +154,7 @@ func TestApplyBatchSkipsAlreadyAppliedPrefix(t *testing.T) {
 		t.Fatalf("seed applied offset: %v", err)
 	}
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil, nil)
 	consumer := &AggregationConsumer{service: svc, groupID: "counter-group", topic: "counter-events"}
 	batch := newCounterBatch(4)
 	for offset := int64(9); offset <= 12; offset++ {
@@ -197,7 +197,7 @@ func TestRepairDirtyMemberOverwritesSnapshotFromBitmap(t *testing.T) {
 	entityType := "knowpost"
 	entityID := "77"
 
-	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, nil, "", nil, nil, nil)
 	if _, err := svc.Like(ctx, 1001, entityType, entityID); err != nil {
 		t.Fatalf("like first user: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestFlushBatchRetriesCommitWithoutReapplyingDelta(t *testing.T) {
 	}
 
 	recorder := &stubCounterFailureRecorder{}
-	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil, nil)
 	commitCalls := 0
 	consumer := &AggregationConsumer{
 		service:          svc,
@@ -318,7 +318,7 @@ func TestFlushBatchExhaustedRetriesStoresFailedMessages(t *testing.T) {
 	}
 
 	recorder := &stubCounterFailureRecorder{}
-	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil)
+	svc := NewCounterService(rdb, nil, nil, recorder, "counter-events", nil, nil, nil)
 
 	commitCalls := 0
 	consumer := &AggregationConsumer{
@@ -523,7 +523,7 @@ func TestGetCounts(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, &stubCounterPublisher{}, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, &stubCounterPublisher{}, nil, nil, "", nil, nil, nil)
 	ctx := context.Background()
 
 	_, err := svc.Like(ctx, 1001, "knowpost", "42")
@@ -555,7 +555,7 @@ func TestBatchIsLiked(t *testing.T) {
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
-	svc := NewCounterService(rdb, &stubCounterPublisher{}, nil, nil, "", nil, nil)
+	svc := NewCounterService(rdb, &stubCounterPublisher{}, nil, nil, "", nil, nil, nil)
 	ctx := context.Background()
 
 	svc.Like(ctx, 1001, "knowpost", "42")

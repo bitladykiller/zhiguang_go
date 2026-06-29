@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -16,7 +17,16 @@ import (
 // --- [写操作] --- //
 
 // CreateDraft 创建一篇新的知文草稿，并返回其雪花算法生成的 ID。
-func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64) (uint64, error) {
+// 如果 idempotencyKey 非空，则通过 Redis 实现幂等性：相同 creator + key 在 5 分钟内
+// 重复调用返回相同的 draft ID。
+func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64, idempotencyKey string) (uint64, error) {
+	if idempotencyKey != "" {
+		redisKey := fmt.Sprintf("idem:draft:%d:%s", creatorID, idempotencyKey)
+		if existingID, err := s.redis.Get(ctx, redisKey).Uint64(); err == nil && existingID > 0 {
+			return existingID, errcode.ErrConflict.WithMsg("重复请求，草稿已创建")
+		}
+	}
+
 	id := s.idGen.NextID()
 	now := time.Now()
 	post := &KnowPost{
@@ -32,6 +42,12 @@ func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64) (ui
 	if err := s.repo.InsertDraft(ctx, post); err != nil {
 		return 0, fmt.Errorf("create draft: insert: %w", err)
 	}
+
+	if idempotencyKey != "" {
+		redisKey := fmt.Sprintf("idem:draft:%d:%s", creatorID, idempotencyKey)
+		s.redis.Set(ctx, redisKey, id, 5*time.Minute)
+	}
+
 	return id, nil
 }
 
@@ -60,7 +76,12 @@ func (s *KnowPostService) ConfirmContent(ctx context.Context, creatorID, id uint
 		return errcode.ErrNotFound.WithMsg("draft not found or permission denied")
 	}
 
-	s.invalidateCache(ctx, id)
+s.invalidateCache(ctx, id)
+	s.invalidateFeedCaches(ctx, id, creatorID)
+
+	if s.auditLog != nil {
+		s.auditLog.LogAction(ctx, "delete_post", int64(creatorID), "knowpost", strconv.FormatUint(id, 10), "delete knowpost")
+	}
 
 	return nil
 }
@@ -121,6 +142,10 @@ func (s *KnowPostService) Publish(ctx context.Context, creatorID, id uint64) err
 	}
 	s.invalidateCache(ctx, id)
 	s.invalidateFeedCaches(ctx, id, creatorID)
+
+	if s.auditLog != nil {
+		s.auditLog.LogAction(ctx, "create_post", int64(creatorID), "knowpost", strconv.FormatUint(id, 10), "publish knowpost")
+	}
 
 	return nil
 }
@@ -188,12 +213,15 @@ func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) erro
 
 // runKnowPostTx 在数据库事务中执行业务变更和 outbox 事件写入（事务性发件箱模式）。
 func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventType string, mutate func(txRepo Repo) error, extraEvents ...outbox.OutboxEvent) error {
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]interface{}{
 		"entity": "knowpost",
 		"id":     id,
 		"op":     knowPostOutboxOp(eventType),
 		"type":   eventType,
 	})
+	if err != nil {
+		return fmt.Errorf("marshal outbox payload: %w", err)
+	}
 	baseEvent := outbox.OutboxEvent{
 		ID:            s.idGen.NextID(),
 		AggregateType: "knowpost",

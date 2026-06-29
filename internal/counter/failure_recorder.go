@@ -2,11 +2,18 @@ package counter
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"go.uber.org/zap"
 )
+
+var failureRecorderLogger *zap.Logger
+
+// SetFailureRecorderLogger 注入日志器，用于记录 rollback 失败等非主流程错误。
+func SetFailureRecorderLogger(l *zap.Logger) {
+	failureRecorderLogger = l
+}
 
 const (
 	counterFailureStagePublish  = "publish"
@@ -85,8 +92,9 @@ func (r *CounterFailedMessageRepository) CreateBatch(ctx context.Context, messag
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				// Rollback 失败时仅记录，不影响主流程
-				_ = fmt.Errorf("failure recorder rollback failed: %w", rbErr)
+				if failureRecorderLogger != nil {
+					failureRecorderLogger.Error("failure recorder rollback failed", zap.Error(rbErr))
+				}
 			}
 		}
 	}()

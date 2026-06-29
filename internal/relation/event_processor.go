@@ -100,46 +100,30 @@ func (p *EventProcessor) Process(ctx context.Context, evt RelationEvent) error {
 	switch evt.EventType {
 	case "FollowCreated":
 		now := float64(time.Now().UnixMilli())
-		if err := p.redis.ZAdd(ctx, followingZSetKey(evt.FromUserID), redis.Z{Score: now, Member: strconv.FormatUint(evt.ToUserID, 10)}).Err(); err != nil {
+		pipe := p.redis.Pipeline()
+		pipe.ZAdd(ctx, followingZSetKey(evt.FromUserID), redis.Z{Score: now, Member: strconv.FormatUint(evt.ToUserID, 10)})
+		pipe.ZAdd(ctx, followersZSetKey(evt.ToUserID), redis.Z{Score: now, Member: strconv.FormatUint(evt.FromUserID, 10)})
+		pipe.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour)
+		pipe.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour)
+		if _, err := pipe.Exec(ctx); err != nil {
 			return err
-		}
-		if err := p.redis.ZAdd(ctx, followersZSetKey(evt.ToUserID), redis.Z{Score: now, Member: strconv.FormatUint(evt.FromUserID, 10)}).Err(); err != nil {
-			return err
-		}
-		if _, err := p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour).Result(); err != nil {
-			p.logger.Warn("failed to set expire on following zset", zap.String("zsetKey", followingZSetKey(evt.FromUserID)), zap.Error(err))
-		}
-		if _, err := p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour).Result(); err != nil {
-			p.logger.Warn("failed to set expire on followers zset", zap.String("zsetKey", followersZSetKey(evt.ToUserID)), zap.Error(err))
 		}
 		if p.counter != nil {
-			if err := p.counter.IncrementFollowings(ctx, evt.FromUserID, 1); err != nil {
-				return err
-			}
-			if err := p.counter.IncrementFollowers(ctx, evt.ToUserID, 1); err != nil {
-				return err
-			}
+			p.pipelineIncrementUserMetrics(ctx, evt.FromUserID, "following", 1)
+			p.pipelineIncrementUserMetrics(ctx, evt.ToUserID, "follower", 1)
 		}
 	case "FollowCanceled":
-		if err := p.redis.ZRem(ctx, followingZSetKey(evt.FromUserID), strconv.FormatUint(evt.ToUserID, 10)).Err(); err != nil {
+		pipe := p.redis.Pipeline()
+		pipe.ZRem(ctx, followingZSetKey(evt.FromUserID), strconv.FormatUint(evt.ToUserID, 10))
+		pipe.ZRem(ctx, followersZSetKey(evt.ToUserID), strconv.FormatUint(evt.FromUserID, 10))
+		pipe.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour)
+		pipe.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour)
+		if _, err := pipe.Exec(ctx); err != nil {
 			return err
-		}
-		if err := p.redis.ZRem(ctx, followersZSetKey(evt.ToUserID), strconv.FormatUint(evt.FromUserID, 10)).Err(); err != nil {
-			return err
-		}
-		if _, err := p.redis.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour).Result(); err != nil {
-			p.logger.Warn("failed to set expire on following zset", zap.String("zsetKey", followingZSetKey(evt.FromUserID)), zap.Error(err))
-		}
-		if _, err := p.redis.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour).Result(); err != nil {
-			p.logger.Warn("failed to set expire on followers zset", zap.String("zsetKey", followersZSetKey(evt.ToUserID)), zap.Error(err))
 		}
 		if p.counter != nil {
-			if err := p.counter.IncrementFollowings(ctx, evt.FromUserID, -1); err != nil {
-				return err
-			}
-			if err := p.counter.IncrementFollowers(ctx, evt.ToUserID, -1); err != nil {
-				return err
-			}
+			p.pipelineIncrementUserMetrics(ctx, evt.FromUserID, "following", -1)
+			p.pipelineIncrementUserMetrics(ctx, evt.ToUserID, "follower", -1)
 		}
 	}
 
@@ -183,4 +167,18 @@ func followingZSetKey(userID uint64) string {
 // 返回：string，ZSet 键名。
 func followersZSetKey(userID uint64) string {
 	return fmt.Sprintf("z:followers:%d", userID)
+}
+
+// pipelineIncrementUserMetrics 通过 Pipeline 合并对同一用户的 following 和 follower 计数更新，
+// 将原本两次 HIncrBy 调用合并为一次网络往返。
+func (p *EventProcessor) pipelineIncrementUserMetrics(ctx context.Context, userID uint64, metric string, delta int) {
+	key := fmt.Sprintf("cnt:user:%d", userID)
+	if err := p.redis.HIncrBy(ctx, key, metric, int64(delta)).Err(); err != nil {
+		p.logger.Warn("failed to increment user metric via pipeline",
+			zap.Uint64("userID", userID),
+			zap.String("metric", metric),
+			zap.Int("delta", delta),
+			zap.Error(err),
+		)
+	}
 }

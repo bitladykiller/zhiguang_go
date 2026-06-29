@@ -112,22 +112,18 @@ func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorI
 //   cache.HotKeyDetector 使用本地 map 记录每个 key 在 6 秒窗口内的访问计数，
 //   每 6 秒批量 flush 到 Redis Hash 进行跨实例聚合。当某个 key 在 60 秒窗口内的
 //   全局访问计数超过配置阈值时，被认为是一个"热点 key"。
-//   TtlForPublic 方法根据热度和基础 TTL 计算出一个延长的 TTL 值。
+// recordHotKeyAndExtendTTL 记录热点并延长缓存 TTL。
 func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint64, pageKey string) {
 	hotKeyID := fmt.Sprintf("knowpost:%d", id)
 	s.hotKey.Record(hotKeyID)
 
+	_, _, _, _, _, _, ttlMedium, _ := s.detailCacheTTLValues()
 	baseTTL := ttlMedium
 	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 
-	// EXPIRE GT：只有当新 TTL 大于当前 TTL 时才更新，保证不缩短
-	if !extendTTL(ctx, s.redis, pageKey, target) {
-		s.logger.Debug("extendTTL skipped for pageKey", zap.String("pageKey", pageKey), zap.Int("targetTTL", target))
-	}
-
 	itemKey := fmt.Sprintf("feed:item:%d", id)
-	if !extendTTL(ctx, s.redis, itemKey, target) {
-		s.logger.Debug("extendTTL skipped for itemKey", zap.String("itemKey", itemKey), zap.Int("targetTTL", target))
+	if err := extendTTLDualScript.Run(ctx, s.redis, []string{pageKey, itemKey}, target).Err(); err != nil {
+		s.logger.Warn("extend dual ttl failed", zap.Uint64("id", id), zap.Error(err))
 	}
 }
 
@@ -151,6 +147,19 @@ if current > 0 and current < tonumber(ARGV[1]) then
     return redis.call('EXPIRE', KEYS[1], ARGV[1])
 end
 return 0
+`)
+
+// extendTTLDualScript 是双 key 版本的延长 TTL 脚本，同时延长 pageKey 和 itemKey。
+var extendTTLDualScript = redis.NewScript(`
+local current = redis.call('TTL', KEYS[1])
+if current > 0 and current < tonumber(ARGV[1]) then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+current = redis.call('TTL', KEYS[2])
+if current > 0 and current < tonumber(ARGV[1]) then
+    redis.call('EXPIRE', KEYS[2], ARGV[1])
+end
+return 1
 `)
 
 // extendTTL 使用 Redis Lua 脚本原子性地延长缓存 TTL。

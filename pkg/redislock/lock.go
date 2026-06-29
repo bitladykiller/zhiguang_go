@@ -215,6 +215,7 @@ func (l *Lock) renew() (bool, error) {
 }
 
 // parentCtxOrDefault 返回 parentCtx，若为 nil 则 fallback 到 Background。
+// Release/renew 使用此 context 时由调用方的 OpTimeout 保证超时控制。
 func (l *Lock) parentCtxOrDefault() context.Context {
 	if l.parentCtx != nil {
 		return l.parentCtx

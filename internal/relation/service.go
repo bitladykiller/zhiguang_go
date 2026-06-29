@@ -50,6 +50,13 @@ type RelationService struct {
 	logger          *zap.Logger
 	bigVThreshold   int64
 	tokenBucketCfg  *config.RelationTokenBucketConfig
+	cfg             *config.RelationConfig
+	auditLog        AuditLogger
+}
+
+// AuditLogger 定义审计日志接口。
+type AuditLogger interface {
+	LogAction(ctx context.Context, action string, userID int64, resourceType, resourceID, detail string)
 }
 
 // IDGenerator 定义关系域依赖的分布式唯一 ID 生成接口。
@@ -58,7 +65,7 @@ type IDGenerator interface {
 }
 
 // NewRelationService 创建一个带多级缓存的关系服务实例。
-func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDGenerator, logger *zap.Logger, cfg *config.RelationConfig) *RelationService {
+func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDGenerator, logger *zap.Logger, cfg *config.RelationConfig, auditLog AuditLogger) *RelationService {
 	if logger == nil {
 		logger = zap.L()
 	}
@@ -68,14 +75,22 @@ func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDG
 		tokenBucketCfg = &cfg.TokenBucket
 	}
 
+	bigVThresh := int64(bigVThreshold)
+	if cfg != nil && cfg.BigVThreshold > 0 {
+		bigVThresh = int64(cfg.BigVThreshold)
+	}
+
 	return &RelationService{
 		db:     db,
 		redis:  rdb,
-		repo:   NewRelationRepository(db), //nolint:staticcheck
+		repo:   NewRelationRepository(db),
 		l1:     freecache.NewCache(cacheSize),
 		idGen:  idGen,
 		logger: logger,
 		tokenBucketCfg: tokenBucketCfg,
+		bigVThreshold:  bigVThresh,
+		cfg:            cfg,
+		auditLog:       auditLog,
 	}
 }
 

@@ -167,10 +167,11 @@ func TestValidate_OK(t *testing.T) {
 		Server: ServerConfig{Port: 8080},
 		Database: DatabaseConfig{
 			Host: "127.0.0.1", Port: 3306, User: "u", Password: "p", Name: "db",
+			MaxOpenConns: 25, MaxIdleConns: 10,
 		},
 		Redis: RedisConfig{Host: "127.0.0.1", Port: 6379},
 		Auth: AuthConfig{
-			Jwt: JwtConfig{PrivateKeyPath: "/keys/private.pem", PublicKeyPath: "/keys/public.pem"},
+			Jwt: JwtConfig{PrivateKeyPath: "/keys/private.pem", PublicKeyPath: "/keys/public.pem", AccessTokenTTL: 3600, RefreshTokenTTL: 86400},
 		},
 		Kafka:         KafkaConfig{Brokers: []string{"127.0.0.1:9092"}},
 		Elasticsearch: ElasticsearchConfig{URIs: []string{"http://127.0.0.1:9200"}},

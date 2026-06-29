@@ -1,6 +1,7 @@
 package knowpost
 
 import (
+	"context"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -8,6 +9,39 @@ import (
 	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
+)
+
+// KnowPostWriteService 定义知文写操作对外暴露的业务方法。
+//
+// Handler 依赖此接口而非具体 *KnowPostService，使得 handler 可以独立于
+// service 实现进行单元测试。
+type KnowPostWriteService interface {
+	CreateDraft(ctx context.Context, creatorID uint64, idempotencyKey string) (uint64, error)
+	ConfirmContent(ctx context.Context, creatorID, id uint64, objectKey, etag, sha256 string, size uint64) error
+	UpdateMetadata(ctx context.Context, creatorID, id uint64, req *KnowPostPatchRequest) error
+	Publish(ctx context.Context, creatorID, id uint64) error
+	UpdateTop(ctx context.Context, creatorID, id uint64, isTop bool) error
+	UpdateVisibility(ctx context.Context, creatorID, id uint64, visible KnowPostVisibility) error
+	Delete(ctx context.Context, creatorID, id uint64) error
+}
+
+// KnowPostReadService 定义知文读操作对外暴露的业务方法。
+type KnowPostReadService interface {
+	GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error)
+}
+
+// KnowPostFeedServiceInterface 定义 Feed 流读操作对外暴露的业务方法。
+type KnowPostFeedServiceInterface interface {
+	GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error)
+	GetMyPublished(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
+	GetMineFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
+}
+
+// 编译期断言。
+var (
+	_ KnowPostWriteService          = (*KnowPostService)(nil)
+	_ KnowPostReadService           = (*KnowPostService)(nil)
+	_ KnowPostFeedServiceInterface = (*KnowPostFeedService)(nil)
 )
 
 // KnowPostHandler 暴露知文模块的 HTTP 接口，负责请求参数解析和响应组装。
@@ -28,7 +62,8 @@ func NewKnowPostHandler(svc KnowPostWriteService, readSvc KnowPostReadService, f
 //   - 写操作（需要 JWT 登录）：
 //     /draft（创建草稿）、/:id/content（确认内容）、/:id/publish（发布）等
 //   - 读操作（可选登录，使用全局 OptionalAuthMiddleware）：
-//     /:id（详情）、/feed/public（公共 feed）、/feed/mine（我的已发布）
+//     /:id（详情）、/feed/public（公共 feed）
+//     /feed/mine（我的已发布，需要登录）
 //
 // 写操作在处理器内通过 middleware.GetUserID 显式鉴权。
 // 读操作中 /feed/mine 也必须登录（因为 "我的" 需要知道是谁）。
@@ -70,7 +105,8 @@ func (h *KnowPostHandler) CreateDraft(c *gin.Context) {
 		response.Error(c, errcode.ErrUnauthorized)
 		return
 	}
-	id, err := h.svc.CreateDraft(c.Request.Context(), userID)
+	idempotencyKey := c.GetHeader("X-Idempotency-Key")
+	id, err := h.svc.CreateDraft(c.Request.Context(), userID, idempotencyKey)
 	if err != nil {
 		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))
@@ -107,6 +143,7 @@ func (h *KnowPostHandler) ConfirmContent(c *gin.Context) {
 		return
 	}
 	if err := h.svc.ConfirmContent(c.Request.Context(), userID, id, req.ObjectKey, req.Etag, req.Sha256, req.Size); err != nil {
+		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))
 		return
 	}
@@ -137,6 +174,7 @@ func (h *KnowPostHandler) UpdateMetadata(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UpdateMetadata(c.Request.Context(), userID, id, &req); err != nil {
+		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))
 		return
 	}
@@ -163,6 +201,7 @@ func (h *KnowPostHandler) Publish(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Publish(c.Request.Context(), userID, id); err != nil {
+		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))
 		return
 	}
@@ -192,6 +231,7 @@ func (h *KnowPostHandler) UpdateTop(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UpdateTop(c.Request.Context(), userID, id, req.IsTop); err != nil {
+		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))
 		return
 	}
@@ -221,6 +261,7 @@ func (h *KnowPostHandler) UpdateVisibility(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UpdateVisibility(c.Request.Context(), userID, id, req.Visible); err != nil {
+		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))
 		return
 	}
@@ -247,6 +288,7 @@ func (h *KnowPostHandler) Delete(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Delete(c.Request.Context(), userID, id); err != nil {
+		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))
 		return
 	}
@@ -271,6 +313,7 @@ func (h *KnowPostHandler) GetDetail(c *gin.Context) {
 	}
 	resp, err := h.readSvc.GetDetail(c.Request.Context(), id, userID)
 	if err != nil {
+		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))
 		return
 	}

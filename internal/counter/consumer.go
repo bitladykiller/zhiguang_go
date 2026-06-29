@@ -57,7 +57,8 @@ type AggregationConsumer struct {
 
 	partitionMask   uint8
 
-	flushCh chan *counterBatch
+	flushCh   chan *counterBatch
+	closeOnce sync.Once
 
 	mu      sync.Mutex
 	batches map[int]*counterBatch
@@ -145,6 +146,11 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 	for i := 0; i < defaultCounterFlushWorkers; i++ {
 		flushWg.Add(1)
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error("flush worker panic", zap.Any("recover", r))
+				}
+			}()
 			defer flushWg.Done()
 			for batch := range c.flushCh {
 				c.flushAndReset(flushCtx, batch)
@@ -158,7 +164,7 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 	}
 
 	c.consumeLoop(ctx)
-	close(c.flushCh)
+	c.closeOnce.Do(func() { close(c.flushCh) })
 	flushWg.Wait()
 	c.wg.Wait()
 }
@@ -360,7 +366,7 @@ func (c *AggregationConsumer) handleMessage(ctx context.Context, msg kafka.Messa
 		c.mu.Lock()
 		if batch := c.batches[msg.Partition]; batch != nil && batch.size() > 0 {
 			delete(c.batches, msg.Partition)
-			defer c.mu.Unlock()
+			c.mu.Unlock()
 			c.skipMalformedMessage(ctx, msg, err)
 			return batch
 		}
@@ -504,8 +510,8 @@ func (c *AggregationConsumer) repairDirtyMembers(ctx context.Context) error {
 			if !errors.Is(err, errLockNotAcquired) {
 				// 锁竞争跳过的成员已被 SPOP 移除，需加回
 				if err := c.service.redis.SAdd(ctx, DirtySetKey(), member).Err(); err != nil {
-				c.logger.Warn("repair re-add dirty member failed", zap.String("member", member), zap.Error(err))
-			}
+					c.logger.Warn("repair re-add dirty member failed", zap.String("member", member), zap.Error(err))
+				}
 			}
 			if firstErr == nil {
 				firstErr = err
@@ -550,6 +556,11 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	watchDone := make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.logger.Error("watchdog panic", zap.Any("recover", r))
+			}
+		}()
 		defer close(watchDone)
 		ticker := time.NewTicker(defaultExpireExtendInterval)
 		defer ticker.Stop()
@@ -558,22 +569,24 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 			case <-watchCtx.Done():
 				return
 			case <-ticker.C:
-				if err := c.service.redis.Expire(watchCtx, rebuildMarker, defaultRebuildMarkerTTL).Err(); err != nil {
-				c.logger.Warn("watchdog expire rebuild marker failed", zap.Error(err))
-			}
+				expireCtx, expireCancel := context.WithTimeout(watchCtx, time.Second)
+				if err := c.service.redis.Expire(expireCtx, rebuildMarker, defaultRebuildMarkerTTL).Err(); err != nil {
+					c.logger.Warn("watchdog expire rebuild marker failed", zap.Error(err))
+				}
+				expireCancel()
 			}
 		}
 	}()
 	if err := c.service.redis.Set(ctx, rebuildMarker, "1", defaultRebuildMarkerTTL).Err(); err != nil {
-	c.logger.Warn("set rebuild marker failed", zap.Error(err))
-}
+		c.logger.Warn("set rebuild marker failed", zap.Error(err))
+	}
 	defer func() {
 		watchCancel()
 		<-watchDone
 		lock.Release()
 		if err := c.service.redis.Del(ctx, rebuildMarker).Err(); err != nil {
-		c.logger.Warn("delete rebuild marker failed", zap.Error(err))
-	}
+			c.logger.Warn("delete rebuild marker failed", zap.Error(err))
+		}
 	}()
 
 	sdsRaw, err := c.service.buildSnapshotFromBitmap(ctx, entityType, entityID)

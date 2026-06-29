@@ -16,8 +16,9 @@ import (
 	"sync"
 
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
+	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/redislock"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -44,7 +45,7 @@ func (s *CounterService) rebuildSds(ctx context.Context, entityType, entityID st
 	}
 
 	lockKey := fmt.Sprintf("lock:sds-rebuild:%s:%s", entityType, entityID)
-	lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildLockRetryInterval, s.logger)
+	lock, err := redislock.AcquireWithRetry(ctx, s.redis, lockKey, s.rebuildLockOptions, rebuildRetryInterval(), s.logger)
 	if err != nil {
 		s.escalateBackoff(ctx, entityType, entityID)
 		return nil, fmt.Errorf("acquire rebuild lock: %w", err)
@@ -94,7 +95,7 @@ func (s *CounterService) bitCountShards(ctx context.Context, metric, entityType,
 	var total int64
 	var cursor uint64
 	for {
-		keys, next, err := s.redis.Scan(ctx, cursor, pattern, 100).Result()
+		keys, next, err := s.redis.Scan(ctx, cursor, pattern, int64(config.DefaultRebuildScanCount)).Result()
 		if err != nil {
 			return 0, fmt.Errorf("bit count shards: scan: %w", err)
 		}
@@ -130,7 +131,7 @@ func (s *CounterService) buildSnapshotFromBitmap(ctx context.Context, entityType
 	var mu sync.Mutex
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(5)
+	g.SetLimit(config.DefaultRebuildConcurrency)
 	for i := 0; i < SchemaLen; i++ {
 		idx := i
 		metric := indexToName[idx]

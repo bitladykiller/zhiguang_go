@@ -128,8 +128,8 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	if err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("发送验证码: 获取日计数: %w", err)
 	}
-	if dailyCount >= s.config.DailyLimit {
-		return nil, fmt.Errorf("超过每日上限")
+		if dailyCount >= s.config.DailyLimit {
+		return nil, fmt.Errorf("daily limit exceeded")
 	}
 
 	// 生成验证码

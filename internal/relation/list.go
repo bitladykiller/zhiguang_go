@@ -11,7 +11,8 @@ import (
 
 // getListWithOffset 读取关注/粉丝列表，使用 offset 分页（三级缓存）。
 func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, listType string, limit, offset int) ([]uint64, error) {
-	if s.isBigV(ctx, userID) {
+	isBigV := s.isBigV(ctx, userID)
+	if isBigV {
 		l1Key := s.l1KeyStr(listType, userID)
 		if data, err := s.l1.Get([]byte(l1Key)); err == nil {
 			ids := s.toLongList(string(data))
@@ -38,7 +39,7 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 		if !warmed {
 			return []uint64{}, nil
 		}
-		if s.isBigV(ctx, userID) {
+		if isBigV {
 			s.fillL1(ctx, listType, userID)
 		}
 	}
@@ -48,6 +49,12 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 		return s.toIDList(members), nil
 	}
 	if s.cacheEndReached(ctx, zsetKey, offset) {
+		return []uint64{}, nil
+	}
+
+	// 防止翻页过深导致 DB 负载线性增长
+	maxOffset := relationMaxOffset(s.cfg)
+	if offset > maxOffset {
 		return []uint64{}, nil
 	}
 
@@ -88,7 +95,7 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 
 	var maxVal string
 	if cursor > 0 {
-		maxVal = fmt.Sprintf("(%d", cursor)
+		maxVal = "(" + strconv.FormatInt(cursor, 10)
 	} else {
 		maxVal = "+inf"
 	}

@@ -1,6 +1,7 @@
 package knowpost
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -23,19 +24,17 @@ func parseJSON[T any](data []byte) (T, error) {
 }
 
 // detailLayoutVer 定义知文详情缓存的布局版本号。
-// 用于缓存键编码，递增版本号可使旧缓存整体失效。
 const detailLayoutVer = 1
 
 // CounterClient 为 counter.CounterServiceInterface 的别名。
-// knowpost 只依赖读/写计数接口，由 bootstrap 注入 *counter.CounterService。
 type CounterClient = counter.CounterServiceInterface
 
+// AuditLogger 定义审计日志接口。
+type AuditLogger interface {
+	LogAction(ctx context.Context, action string, userID int64, resourceType, resourceID, detail string)
+}
+
 // KnowPostService 负责 knowpost 的写路径、详情读取编排以及缓存协同。
-//
-// WHY：虽然文件按职责拆分为 cache.go、detail_service.go、write_service.go 等多个文件，
-// 但运行时依赖仍属于同一个 KnowPostService 结构体。
-// 这种拆分方式既能保持依赖关系集中在一处（service.go 的构造函数），
-// 又能让每个文件内的函数职责更清晰，更容易定位和单独测试。
 type KnowPostService struct {
 	db        *sqlx.DB
 	repo      Repo
@@ -47,6 +46,8 @@ type KnowPostService struct {
 	counter   CounterClient
 	feedCache FeedCacheInvalidator
 	logger    *zap.Logger
+	auditLog  AuditLogger
+	cfg       *config.KnowPostConfig
 }
 
 const (
@@ -78,6 +79,8 @@ func NewKnowPostService(
 	counter CounterClient,
 	feedCache FeedCacheInvalidator,
 	logger *zap.Logger,
+	auditLog AuditLogger,
+	cfg *config.KnowPostConfig,
 ) *KnowPostService {
 	if logger == nil {
 		logger = zap.L()
@@ -93,5 +96,7 @@ func NewKnowPostService(
 		counter:   counter,
 		feedCache: feedCache,
 		logger:    logger,
+		auditLog:  auditLog,
+		cfg:       cfg,
 	}
 }

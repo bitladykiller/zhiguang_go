@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/coocood/freecache"
 	"go.uber.org/zap"
@@ -72,7 +73,9 @@ func InitializeApp(configPath string) (*server.App, error) {
 
 	fanoutConsumer := initFanout(redisClient, relSvc, cfg, logger)
 
-	searchHandler, searchOutboxConsumer, relationOutboxConsumer := initSearch(context.Background(), db, redisClient, counterSvc, cfg, logger)
+	initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer initCancel()
+	searchHandler, searchOutboxConsumer, relationOutboxConsumer := initSearch(initCtx, db, redisClient, counterSvc, cfg, logger)
 
 	llmHandler := initLLM(cfg, logger)
 	storageHandler := initStorage(cfg, logger)
