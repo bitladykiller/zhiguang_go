@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/jmoiron/sqlx"
 	"go.uber.org/zap"
@@ -55,6 +56,10 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 	}
 
 	s.invalidateCaches(ctx, fromUserID, toUserID)
+
+	if s.auditLog != nil {
+		s.auditLog.LogAction(ctx, "follow", int64(fromUserID), "relation", strconv.FormatUint(id, 10), fmt.Sprintf("follow user %d", toUserID))
+	}
 	return true, nil
 }
 
@@ -100,5 +105,9 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 	}
 
 	s.invalidateCaches(ctx, fromUserID, toUserID)
+
+	if s.auditLog != nil {
+		s.auditLog.LogAction(ctx, "unfollow", int64(fromUserID), "relation", strconv.FormatUint(outboxID, 10), fmt.Sprintf("unfollow user %d", toUserID))
+	}
 	return true, nil
 }

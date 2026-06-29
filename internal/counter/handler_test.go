@@ -89,6 +89,10 @@ func (s *stubHandlerCounter) GetLikers(ctx context.Context, entityType string, e
 	return s.getLikersFn(ctx, entityType, entityID, metric, cursor, limit)
 }
 
+func (s *stubHandlerCounter) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
+	return false, false, nil
+}
+
 // ============================================================================
 // 辅助函数
 // ============================================================================

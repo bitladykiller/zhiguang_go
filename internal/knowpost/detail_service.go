@@ -14,16 +14,13 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	l1DetailCacheTTL    = 60
-	nullCacheTTLBase    = 30
-	nullCacheJitter     = 31
-	l2DetailTTLBase     = 60
-	l2DetailJitter      = 31
-	ttlLow              = 30
-	ttlMedium           = 60
-	ttlHigh             = 300
-)
+func (s *KnowPostService) detailCacheTTLValues() (l1TTL, nullBase, nullJitter, l2Base, l2Jitter, ttlLow, ttlMedium, ttlHigh int) {
+	if s.cfg != nil {
+		dc := s.cfg.DetailCache
+		return dc.L1TTLSeconds, dc.NullTTLBase, dc.NullJitter, dc.L2TTLBase, dc.L2Jitter, dc.TTLLow, dc.TTLMedium, dc.TTLHigh
+	}
+	return 60, 30, 31, 60, 31, 30, 60, 300
+}
 
 // --- [详情读取链路] --- //
 
@@ -91,6 +88,8 @@ func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) (string
 func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	pageKey, _ := s.detailCacheKey(ctx, id)
 
+	l1TTL, _, _, _, _, _, _, _ := s.detailCacheTTLValues()
+
 	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {
 		if s.hotKey != nil {
 			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
@@ -106,7 +105,7 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 		if cached == "NULL" {
 			return nil, errcode.ErrNotFound.WithMsg("content not found")
 		}
-		s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
+		s.l1Cache.Set([]byte(pageKey), []byte(cached), l1TTL)
 		if s.hotKey != nil {
 			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 		}
@@ -183,6 +182,7 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 	lockKey := "lock:" + pageKey
 	return cacheReadThrough(ctx, s.redis, lockKey,
 		func(ctx context.Context) (*KnowPostDetailResponse, bool, error) {
+			l1TTL, _, _, _, _, _, _, _ := s.detailCacheTTLValues()
 			cached, _ := s.redis.Get(ctx, pageKey).Result()
 			if cached == "NULL" {
 				return nil, false, errcode.ErrNotFound.WithMsg("content not found")
@@ -190,22 +190,23 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			if cached != "" {
 				resp, parseErr := s.parseDetail([]byte(cached))
 				if parseErr == nil {
-					s.l1Cache.Set([]byte(pageKey), []byte(cached), l1DetailCacheTTL)
+					s.l1Cache.Set([]byte(pageKey), []byte(cached), l1TTL)
 					return s.enrichDetail(ctx, resp, currentUserID, true), true, nil
 				}
 			}
 			return nil, false, nil
 		},
 		func(ctx context.Context) (*KnowPostDetailResponse, error) {
+			l1TTL, nullBase, nullJitter, l2Base, l2Jitter, _, _, _ := s.detailCacheTTLValues()
 			if s.repo == nil {
-				ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
+				ttl := time.Duration(nullBase+rand.Intn(nullJitter)) * time.Second
 				s.redis.Set(ctx, pageKey, "NULL", ttl)
 				return nil, errcode.ErrNotFound.WithMsg("content not found")
 			}
 			resp, err := s.queryDetailFromDB(ctx, id, currentUserID)
 			if err != nil {
 				if errors.Is(err, errcode.ErrNotFound) {
-					ttl := time.Duration(nullCacheTTLBase+rand.Intn(nullCacheJitter)) * time.Second
+					ttl := time.Duration(nullBase+rand.Intn(nullJitter)) * time.Second
 					s.redis.Set(ctx, pageKey, "NULL", ttl)
 				}
 				return nil, err
@@ -227,14 +228,15 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 				return s.enrichDetail(ctx, resp, currentUserID, false), nil
 			}
 			idStr := strconv.FormatUint(id, 10)
-			baseTTL := l2DetailTTLBase + rand.Intn(l2DetailJitter)
+			baseTTL := l2Base + rand.Intn(l2Jitter)
 			hotKeyID := fmt.Sprintf("knowpost:%s", idStr)
 			targetTTL := baseTTL
 			if s.hotKey != nil {
 				targetTTL = s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 			}
 			s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
-			s.l1Cache.Set([]byte(pageKey), jsonBytes, targetTTL)
+			l1CacheTtl := l1TTL
+			s.l1Cache.Set([]byte(pageKey), jsonBytes, l1CacheTtl)
 			if s.hotKey != nil {
 				s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 			}
@@ -285,16 +287,11 @@ func (s *KnowPostService) enrichDetail(ctx context.Context, base *KnowPostDetail
 	}
 
 	if currentUserID != nil {
-		liked, err := s.counter.IsLiked(ctx, *currentUserID, "knowpost", base.ID)
+		liked, faved, err := s.counter.IsLikedAndFaved(ctx, *currentUserID, "knowpost", base.ID)
 		if err != nil {
-			s.logger.Warn("failed to check IsLiked in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
+			s.logger.Warn("failed to check IsLiked/IsFaved in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
 		} else {
 			base.Liked = &liked
-		}
-		faved, err := s.counter.IsFaved(ctx, *currentUserID, "knowpost", base.ID)
-		if err != nil {
-			s.logger.Warn("failed to check IsFaved in enrichDetail", zap.String("knowpostID", base.ID), zap.Error(err))
-		} else {
 			base.Faved = &faved
 		}
 	}

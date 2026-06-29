@@ -124,6 +124,24 @@ func (s *CounterService) IsFaved(ctx context.Context, userID uint64, entityType,
 	return val == 1, nil
 }
 
+// IsLikedAndFaved 通过 Pipeline 合并两组 GetBit 调用，减少一次网络往返。
+func (s *CounterService) IsLikedAndFaved(ctx context.Context, userID uint64, entityType, entityID string) (liked bool, faved bool, err error) {
+	chunk := ChunkOf(userID)
+	offset := int64(BitOf(userID))
+	likeKey := BitmapKey("like", entityType, entityID, chunk)
+	favKey := BitmapKey("fav", entityType, entityID, chunk)
+
+	pipe := s.redis.Pipeline()
+	likeCmd := pipe.GetBit(ctx, likeKey, offset)
+	favCmd := pipe.GetBit(ctx, favKey, offset)
+	if _, err = pipe.Exec(ctx); err != nil {
+		return false, false, fmt.Errorf("is liked and faved: pipeline: %w", err)
+	}
+	likeVal, _ := likeCmd.Result()
+	favVal, _ := favCmd.Result()
+	return likeVal == 1, favVal == 1, nil
+}
+
 // GetCountsBatch 使用 Redis Pipeline 批量获取多个实体的 Hash 计数。
 func (s *CounterService) GetCountsBatch(ctx context.Context, entityType string, entityIDs, metrics []string) (map[string]map[string]int32, error) {
 	if len(entityIDs) == 0 {

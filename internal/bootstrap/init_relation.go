@@ -26,7 +26,7 @@ func initRelation(
 	logger *zap.Logger,
 	relCfg *config.RelationConfig,
 ) (*relation.RelationHandler, *relation.RelationService) {
-	relSvc := relation.NewRelationService(db, redisClient, 10*1024*1024, idGen, logger, relCfg)
+	relSvc := relation.NewRelationService(db, redisClient, 10*1024*1024, idGen, logger, relCfg, nil)
 	relHandler := relation.NewRelationHandler(relSvc)
 	return relHandler, relSvc
 }

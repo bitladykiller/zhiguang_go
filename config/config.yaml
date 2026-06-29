@@ -143,3 +143,54 @@ llm:
     api_key: "your_api_key"
     embedding_model: text-embedding-v4
     dimensions: 1536
+
+relation:
+  big_v_threshold: 500
+  cache_ttl: 7200
+  zset_warm_limit: 2000
+  token_bucket:
+    capacity: 10
+    rate: 1
+    pexpire_ms: 60000
+  cache_lock:
+    ttl_ms: 5000
+    watchdog_ms: 15000
+    op_timeout_ms: 1000
+    retry_interval_ms: 50
+  invalidate_lock:
+    wait_limit_ms: 2000
+  l1_cache:
+    ttl_seconds: 600
+    fill_limit: 500
+  fallback:
+    exhausted_ttl_minutes: 10
+
+knowpost:
+  detail_cache:
+    l1_ttl_seconds: 60
+    null_ttl_base: 30
+    null_jitter: 31
+    l2_ttl_base: 60
+    l2_jitter: 31
+    ttl_low: 30
+    ttl_medium: 60
+    ttl_high: 300
+  feed_cache:
+    safe_size: 50
+    l1_ttl_seconds: 15
+    l2_id_list_ttl_base: 60
+    l2_id_list_jitter: 31
+    l2_has_more_ttl_base: 10
+    l2_has_more_jitter: 11
+    l2_item_ttl_base: 60
+    l2_item_jitter: 31
+    l2_mine_ttl_base: 30
+    l2_mine_jitter: 21
+    l1_mine_ttl_seconds: 30
+    extend_ttl_base: 60
+    ttl_low: 30
+    ttl_medium: 60
+    ttl_high: 300
+
+bootstrap:
+  relation_outbox_interval_ms: 1000

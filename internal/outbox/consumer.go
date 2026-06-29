@@ -37,6 +37,17 @@ type RowHandler interface {
 	HandleRow(ctx context.Context, row Row) error
 }
 
+// RowHandlerFunc 是一个函数适配器，允许普通函数作为 RowHandler 使用。
+type RowHandlerFunc func(ctx context.Context, row Row) error
+
+// HandleRow 实现 RowHandler 接口。
+func (f RowHandlerFunc) HandleRow(ctx context.Context, row Row) error {
+	if f == nil {
+		return nil
+	}
+	return f(ctx, row)
+}
+
 // FailedMessageRecorder 抽象死信记录能力，用于持久化处理失败的消息供排障和补偿使用。
 type FailedMessageRecorder interface {
 	Create(ctx context.Context, topic string, messageKey string, payload []byte, cause error) error

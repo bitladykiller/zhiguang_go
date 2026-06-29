@@ -469,6 +469,9 @@ func (s *stubCounterFailing) Unlike(_ context.Context, _ uint64, _, _ string) (b
 func (s *stubCounterFailing) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
+func (s *stubCounterFailing) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
+	return false, false, nil
+}
 
 func TestEnrichItems_CounterFails(t *testing.T) {
 	userID := uint64(1)
@@ -514,6 +517,9 @@ func (s *stubCounterReturnsNil) Unlike(_ context.Context, _ uint64, _, _ string)
 }
 func (s *stubCounterReturnsNil) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
+}
+func (s *stubCounterReturnsNil) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
+	return false, false, nil
 }
 
 func TestEnrichItems_CounterReturnsNil(t *testing.T) {

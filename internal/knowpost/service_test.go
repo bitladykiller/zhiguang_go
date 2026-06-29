@@ -184,6 +184,9 @@ func (s *stubCounter) Unlike(_ context.Context, _ uint64, _, _ string) (bool, er
 func (s *stubCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
+func (s *stubCounter) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
+	return s.liked, s.faved, nil
+}
 
 func TestEnrichDetail_NilCounter(t *testing.T) {
 	svc := &KnowPostService{}

@@ -37,21 +37,36 @@ type Config struct {
 	Counter       CounterConfig       `yaml:"counter"`
 	Cache         CacheConfig         `yaml:"cache"`
 	LLM           LLMConfig           `yaml:"llm"`
-	Relation   RelationConfig    `yaml:"relation"`
-	Prometheus PrometheusConfig `yaml:"prometheus"`
+	Relation      RelationConfig      `yaml:"relation"`
+	Prometheus    PrometheusConfig    `yaml:"prometheus"`
+	KnowPost      KnowPostConfig      `yaml:"knowpost"`
+	Bootstrap     BootstrapConfig     `yaml:"bootstrap"`
 }
 
 const (
 	DefaultServerPort              = 8080
 	DefaultHTTPRequestTimeoutMs    = 30000
 	DefaultCounterPublishTimeoutMs = 3000
+	DefaultBackoffKeyTTLMinutes    = 120
+	DefaultRebuildScanCount        = 100
+	DefaultRebuildConcurrency      = 5
+	DefaultLikersCacheMaxSize      = 500
+	DefaultLikersCacheTTLMinutes   = 5
+	DefaultTokenBucketPExpireMs    = 60000
+	DefaultRelationL1CacheSizeMB   = 10
+	DefaultRelationL1CacheTTL      = 600
+	DefaultFillL1Limit             = 500
+	DefaultFallbackExhaustedTTLMin = 10
+	DefaultRebuildRateWindowSec    = 60
+	DefaultRebuildRatePermits      = 5
+	DefaultRebuildRetryInterval    = 50
 )
 
 // ServerConfig 控制 HTTP 服务监听配置。
 type ServerConfig struct {
-	Port                 int             `yaml:"port"` // default: 8080
-	Mode                 string          `yaml:"mode"` // "debug", "release", or "test"
-	RequestTimeoutMs     int             `yaml:"request_timeout_ms"` // default: 30000
+	Port                 int             `yaml:"port"`                 // default: 8080
+	Mode                 string          `yaml:"mode"`                 // "debug", "release", or "test"
+	RequestTimeoutMs     int             `yaml:"request_timeout_ms"`   // default: 30000
 	CorsAllowedOrigins   []string        `yaml:"cors_allowed_origins"` // CORS 允许的来源，空时默认 ["*"]
 	RateLimit            RateLimitConfig `yaml:"rate_limit"`
 }
@@ -71,38 +86,21 @@ type DatabaseConfig struct {
 	User            string `yaml:"user"`
 	Password        string `yaml:"password"`
 	Name            string `yaml:"name"`
-	Charset         string `yaml:"charset"`           // default: utf8mb4
-	MaxOpenConns    int    `yaml:"max_open_conns"`    // max open connections
-	MaxIdleConns    int    `yaml:"max_idle_conns"`    // max idle connections
-	ConnMaxLifetime int    `yaml:"conn_max_lifetime"` // max connection lifetime in seconds
-	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"` // max idle connection time in seconds
-	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`   // 连接超时（毫秒）
-	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`   // 读超时（毫秒）
-	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`  // 写超时（毫秒）
+	Charset         string `yaml:"charset"`            // default: utf8mb4
+	MaxOpenConns    int    `yaml:"max_open_conns"`     // 最大打开连接数
+	MaxIdleConns    int    `yaml:"max_idle_conns"`     // 最大空闲连接数
+	ConnMaxLifetime int    `yaml:"conn_max_lifetime"`  // 连接最大生命周期（秒）
+	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"` // 空闲连接最大生命周期（秒）
+	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`    // 连接超时（毫秒）
+	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`    // 读超时（毫秒）
+	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`    // 写超时（毫秒）
 }
 
 // DSN 根据配置字段拼装 MySQL 的数据源连接串。
-//
-// 功能：
-//
-//	将 DatabaseConfig 中的 Host、Port、User、Password、Name、Charset 等字段
-//	拼装为 MySQL DSN 格式的字符串。
-//
-// 返回值：
-//   - string: 格式为 "user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
-//
-// 注意：
-//   - 密码中包含特殊字符（如 @、: 等）可能造成连接串解析错误，
-//     但当前实现不做 URL 编码处理。
-//   - parseTime=True 告诉 MySQL 驱动程序将 DATE/DATETIME 类型自动解析为
-//     Go 的 time.Time 类型而非字符串。
-//   - loc=Local 使用本地时区解析时间。
-//   - 超时参数（dial_timeout_ms、read_timeout_ms、write_timeout_ms）会添加到 DSN 参数中。
 func (c *DatabaseConfig) DSN() string {
 	dsn := c.User + ":" + url.QueryEscape(c.Password) + "@tcp(" + c.Host + ":" +
 		strconv.Itoa(c.Port) + ")/" + c.Name + "?charset=" + c.Charset + "&parseTime=True&loc=Local"
 
-	// 添加超时参数
 	if c.DialTimeoutMs > 0 {
 		dsn += "&timeout=" + strconv.Itoa(c.DialTimeoutMs) + "ms"
 	}
@@ -133,30 +131,12 @@ type RedisConfig struct {
 }
 
 // IDGeneratorConfig 配置本地雪花 ID 生成器。
-//
-// 当前约定把 snowflake 的 10 位 node id 拆成：
-//   - 5 位 machine_id
-//   - 5 位 worker_id
-//
-// 多实例部署时，必须保证不同实例的 machine_id + worker_id 组合唯一。
 type IDGeneratorConfig struct {
 	MachineID int `yaml:"machine_id"`
 	WorkerID  int `yaml:"worker_id"`
 }
 
 // Addr 返回 host:port 形式的 Redis 地址。
-//
-// 功能：
-//
-//	将 Host 和 Port 组合为标准 Redis 连接地址格式。
-//
-// 返回值：
-//   - string: 格式为 "host:port"
-//
-// 注意：
-//
-//	如果 Host 是域名（如 "redis.example.com"），直接拼接；
-//	如果 Host 是空字符串，返回 ":port"（go-redis 会尝试连接本地）。
 func (c *RedisConfig) Addr() string {
 	return c.Host + ":" + strconv.Itoa(c.Port)
 }
@@ -178,7 +158,7 @@ type KafkaTopicsConfig struct {
 
 // ElasticsearchConfig 配置 Elasticsearch 集群连接信息。
 type ElasticsearchConfig struct {
-	Enabled    *bool    `yaml:"enabled"`    // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled    *bool    `yaml:"enabled"`     // 显式功能开关，nil 表示跟随配置完整性判断
 	URIs       []string `yaml:"uris"`
 	IndexName  string   `yaml:"index_name"`  // primary search index
 	MaxRetries int      `yaml:"max_retries"` // 最大重试次数
@@ -328,8 +308,8 @@ type L2CacheConfig struct {
 
 // CacheItemConfig 定义单个缓存实例的 TTL 和最大容量。
 type CacheItemConfig struct {
-	TTLSeconds int `yaml:"ttl_seconds"`
-	MaxSize    int `yaml:"max_size"`
+	TTLSeconds        int `yaml:"ttl_seconds"`
+	MaxSize           int `yaml:"max_size"`
 	FreeCacheDefaultMB int `yaml:"free_cache_default_mb"`
 }
 
@@ -341,44 +321,30 @@ type CacheItemConfig struct {
 // 每 BucketSizeSeconds 秒 flush 到 Redis Hash 完成跨实例聚合。
 // Redis Hash 的 field 是 6 秒窗口编号，value 是窗口内访问次数。
 // 判断 hotkey 时，HGETALL 该哈希并累加最近 BucketCount 个窗口的值。
-//
-// 建议配置（6s 窗口 × 10 = 60s 滑动窗口）：
-//
-//	BucketSizeSeconds: 6         # 每个窗口大小
-//	BucketCount: 10               # 窗口数量（总窗口 = 6s × 10 = 60s）
-//	FlushIntervalSeconds: 6       # flush 间隔，与 BucketSizeSeconds 一致
-//	StatTTLSeconds: 120           # Redis Hash 的 TTL（略大于窗口总时长）
-//	HotMarkTTLSeconds: 60         # hotkey:active 标记的 TTL
-//
-// 阈值说明（基于 60s 窗口的全局总访问次数）：
-//
-//	LevelLow(50):   0.83 QPS 以上 → TTL +20s
-//	LevelMedium(200):  3.3 QPS 以上 → TTL +60s
-//	LevelHigh(500):   8.3 QPS 以上 → TTL +120s
 type HotKeyConfig struct {
-	BucketSizeSeconds    int `yaml:"bucket_size_seconds"`    // 每个时间窗口的秒数（建议 6）
-	BucketCount          int `yaml:"bucket_count"`           // 窗口数量（建议 10，总窗口 = 6×10=60s）
-	FlushIntervalSeconds int `yaml:"flush_interval_seconds"` // flush 到 Redis 的间隔（建议 6）
-	StatTTLSeconds       int `yaml:"stat_ttl_seconds"`       // Redis Hash 的 TTL（建议 120）
-	LevelLow             int `yaml:"level_low"`              // LOW 热度阈值
-	LevelMedium          int `yaml:"level_medium"`           // MEDIUM 热度阈值
-	LevelHigh            int `yaml:"level_high"`             // HIGH 热度阈值
-	ExtendLowSeconds     int `yaml:"extend_low_seconds"`     // LOW 等级 TTL 延长量（秒）
-	ExtendMediumSeconds  int `yaml:"extend_medium_seconds"`  // MEDIUM 等级 TTL 延长量（秒）
-	ExtendHighSeconds    int `yaml:"extend_high_seconds"`    // HIGH 等级 TTL 延长量（秒）
-	HotMarkTTLSeconds    int `yaml:"hot_mark_ttl_seconds"`   // hotkey:active 标记的 TTL（建议 60）
+	BucketSizeSeconds    int `yaml:"bucket_size_seconds"`     // 每个时间窗口的秒数（建议 6）
+	BucketCount          int `yaml:"bucket_count"`            // 窗口数量（建议 10，总窗口 = 6×10=60s）
+	FlushIntervalSeconds int `yaml:"flush_interval_seconds"`  // flush 到 Redis 的间隔（建议 6）
+	StatTTLSeconds       int `yaml:"stat_ttl_seconds"`        // Redis Hash 的 TTL（建议 120）
+	LevelLow             int `yaml:"level_low"`               // LOW 热度阈值
+	LevelMedium          int `yaml:"level_medium"`            // MEDIUM 热度阈值
+	LevelHigh            int `yaml:"level_high"`              // HIGH 热度阈值
+	ExtendLowSeconds     int `yaml:"extend_low_seconds"`      // LOW 等级 TTL 延长量（秒）
+	ExtendMediumSeconds  int `yaml:"extend_medium_seconds"`   // MEDIUM 等级 TTL 延长量（秒）
+	ExtendHighSeconds    int `yaml:"extend_high_seconds"`     // HIGH 等级 TTL 延长量（秒）
+	HotMarkTTLSeconds    int `yaml:"hot_mark_ttl_seconds"`    // hotkey:active 标记的 TTL（建议 60）
 	MaxLocalKeys         int `yaml:"max_local_keys"`          // 本地 map 最大键数限制，0 表示使用默认值 100000
 }
 
 // LLMConfig 配置 AI 模型连接信息。
 type LLMConfig struct {
-	Enabled       *bool          `yaml:"enabled"`    // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled       *bool          `yaml:"enabled"`     // 显式功能开关，nil 表示跟随配置完整性判断
 	DeepSeek      DeepSeekConfig `yaml:"deepseek"`
 	OpenAI        OpenAIConfig   `yaml:"openai"`
-	TimeoutMs     int            `yaml:"timeout_ms"`     // HTTP 客户端超时（毫秒），默认 30000
-	MaxContentLen int            `yaml:"max_content_len"` // 内容截断长度，默认 2000
-	MaxTokens     int            `yaml:"max_tokens"`      // 生成最大 token 数，默认 100
-	SystemPrompt  string         `yaml:"system_prompt"`   // 系统提示词
+	TimeoutMs     int            `yaml:"timeout_ms"`      // HTTP 客户端超时（毫秒），默认 30000
+	MaxContentLen int            `yaml:"max_content_len"`  // 内容截断长度，默认 2000
+	MaxTokens     int            `yaml:"max_tokens"`       // 生成最大 token 数，默认 100
+	SystemPrompt  string         `yaml:"system_prompt"`    // 系统提示词
 }
 
 // DeepSeekConfig 配置 DeepSeek 对话模型 API。
@@ -399,15 +365,45 @@ type OpenAIConfig struct {
 
 // RelationConfig 配置关系服务。
 type RelationConfig struct {
-	BigVThreshold int                     `yaml:"big_v_threshold"`
-	TokenBucket   RelationTokenBucketConfig `yaml:"token_bucket"`
-	CacheTTL      int                     `yaml:"cache_ttl"`
+	BigVThreshold int                              `yaml:"big_v_threshold"`
+	TokenBucket   RelationTokenBucketConfig        `yaml:"token_bucket"`
+	CacheTTL      int                              `yaml:"cache_ttl"`
+	ZSetWarmLimit int                              `yaml:"zset_warm_limit"`
+	CacheLock     RelationCacheLockConfig           `yaml:"cache_lock"`
+	InvalidateLock RelationInvalidateLockConfig    `yaml:"invalidate_lock"`
+	L1Cache       RelationL1CacheConfig            `yaml:"l1_cache"`
+	Fallback      RelationFallbackConfig           `yaml:"fallback"`
 }
 
 // RelationTokenBucketConfig 配置令牌桶限流。
 type RelationTokenBucketConfig struct {
-	Capacity int `yaml:"capacity"`
-	Rate     int `yaml:"rate"`
+	Capacity   int `yaml:"capacity"`
+	Rate       int `yaml:"rate"`
+	PExpireMs  int `yaml:"pexpire_ms"`
+}
+
+// RelationCacheLockConfig 配置关系列表缓存锁参数。
+type RelationCacheLockConfig struct {
+	TTLMs           int `yaml:"ttl_ms"`
+	WatchdogMs      int `yaml:"watchdog_ms"`
+	OpTimeoutMs     int `yaml:"op_timeout_ms"`
+	RetryIntervalMs int `yaml:"retry_interval_ms"`
+}
+
+// RelationInvalidateLockConfig 配置缓存失效锁参数。
+type RelationInvalidateLockConfig struct {
+	WaitLimitMs int `yaml:"wait_limit_ms"`
+}
+
+// RelationL1CacheConfig 配置关系 L1 缓存参数。
+type RelationL1CacheConfig struct {
+	TTLSeconds int `yaml:"ttl_seconds"`
+	FillLimit  int `yaml:"fill_limit"`
+}
+
+// RelationFallbackConfig 配置关系降级参数。
+type RelationFallbackConfig struct {
+	ExhaustedTTLMinutes int `yaml:"exhausted_ttl_minutes"`
 }
 
 // RateLimitConfig 配置每个 IP 的滑动窗口限流参数。
@@ -422,24 +418,49 @@ type PrometheusConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+// KnowPostConfig 配置知文模块。
+type KnowPostConfig struct {
+	DetailCache KnowPostDetailCacheConfig `yaml:"detail_cache"`
+	FeedCache   KnowPostFeedCacheConfig   `yaml:"feed_cache"`
+}
+
+// KnowPostDetailCacheConfig 配置知文详情缓存。
+type KnowPostDetailCacheConfig struct {
+	L1TTLSeconds int `yaml:"l1_ttl_seconds"`
+	NullTTLBase  int `yaml:"null_ttl_base"`
+	NullJitter   int `yaml:"null_jitter"`
+	L2TTLBase    int `yaml:"l2_ttl_base"`
+	L2Jitter     int `yaml:"l2_jitter"`
+	TTLLow       int `yaml:"ttl_low"`
+	TTLMedium    int `yaml:"ttl_medium"`
+	TTLHigh      int `yaml:"ttl_high"`
+}
+
+// KnowPostFeedCacheConfig 配置知文 Feed 缓存。
+type KnowPostFeedCacheConfig struct {
+	SafeSize         int `yaml:"safe_size"`
+	L1TTLSeconds     int `yaml:"l1_ttl_seconds"`
+	L2IDListTTLBase  int `yaml:"l2_id_list_ttl_base"`
+	L2IDListJitter   int `yaml:"l2_id_list_jitter"`
+	L2HasMoreTTLBase int `yaml:"l2_has_more_ttl_base"`
+	L2HasMoreJitter  int `yaml:"l2_has_more_jitter"`
+	L2ItemTTLBase    int `yaml:"l2_item_ttl_base"`
+	L2ItemJitter     int `yaml:"l2_item_jitter"`
+	L2MineTTLBase    int `yaml:"l2_mine_ttl_base"`
+	L2MineJitter     int `yaml:"l2_mine_jitter"`
+	L1MineTTLSeconds int `yaml:"l1_mine_ttl_seconds"`
+	ExtendTTLBase    int `yaml:"extend_ttl_base"`
+	TTLLow           int `yaml:"ttl_low"`
+	TTLMedium        int `yaml:"ttl_medium"`
+	TTLHigh          int `yaml:"ttl_high"`
+}
+
+// BootstrapConfig 配置 bootstrap 模块的 runner 间隔时间。
+type BootstrapConfig struct {
+	RelationOutboxIntervalMs int `yaml:"relation_outbox_interval_ms"`
+}
+
 // Validate 校验配置中的关键字段是否合法。
-//
-// 验证规则：
-//   - Server.Port 必须在 1~65535 范围内
-//   - Database.DSN 不能为空（DSN 方法内部从多个字段拼接，但此处校验 DSN() 返回值）
-//   - Redis.Addr 不能为空
-//   - Jwt.PrivateKeyPath 和 Jwt.PublicKeyPath 不能为空
-//
-// 注意：
-//   - DSN() 会拼接 User、Password、Host、Port、Name 等字段生成连接串，
-//     但 Validate() 直接用 Database.DSN 字段（若有独立 DSN 字段）。
-//     当前 DatabaseConfig 没有独立的 DSN 字段，而是通过 DSN() 方法拼装，
-//     因此此处校验 DSN() 返回值是否为 ""。
-//
-// 返回值：
-//   - error: 如果有任何字段不合法，返回包含所有错误信息的 error
-//   - nil: 所有字段合法
-// ApplyDefaults 为未显式配置的字段填充默认值（在 Validate 之前调用）。
 func (c *Config) ApplyDefaults() {
 	if c.Server.Port <= 0 {
 		c.Server.Port = DefaultServerPort
@@ -449,6 +470,116 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Auth.Password.MinLength <= 0 {
 		c.Auth.Password.MinLength = 8
+	}
+
+	// KnowPost defaults
+	if c.KnowPost.DetailCache.L1TTLSeconds <= 0 {
+		c.KnowPost.DetailCache.L1TTLSeconds = 60
+	}
+	if c.KnowPost.DetailCache.NullTTLBase <= 0 {
+		c.KnowPost.DetailCache.NullTTLBase = 30
+	}
+	if c.KnowPost.DetailCache.NullJitter <= 0 {
+		c.KnowPost.DetailCache.NullJitter = 31
+	}
+	if c.KnowPost.DetailCache.L2TTLBase <= 0 {
+		c.KnowPost.DetailCache.L2TTLBase = 60
+	}
+	if c.KnowPost.DetailCache.L2Jitter <= 0 {
+		c.KnowPost.DetailCache.L2Jitter = 31
+	}
+	if c.KnowPost.DetailCache.TTLLow <= 0 {
+		c.KnowPost.DetailCache.TTLLow = 30
+	}
+	if c.KnowPost.DetailCache.TTLMedium <= 0 {
+		c.KnowPost.DetailCache.TTLMedium = 60
+	}
+	if c.KnowPost.DetailCache.TTLHigh <= 0 {
+		c.KnowPost.DetailCache.TTLHigh = 300
+	}
+
+	// Feed defaults
+	if c.KnowPost.FeedCache.SafeSize <= 0 {
+		c.KnowPost.FeedCache.SafeSize = 50
+	}
+	if c.KnowPost.FeedCache.L1TTLSeconds <= 0 {
+		c.KnowPost.FeedCache.L1TTLSeconds = 15
+	}
+	if c.KnowPost.FeedCache.L2IDListTTLBase <= 0 {
+		c.KnowPost.FeedCache.L2IDListTTLBase = 60
+	}
+	if c.KnowPost.FeedCache.L2IDListJitter <= 0 {
+		c.KnowPost.FeedCache.L2IDListJitter = 31
+	}
+	if c.KnowPost.FeedCache.L2HasMoreTTLBase <= 0 {
+		c.KnowPost.FeedCache.L2HasMoreTTLBase = 10
+	}
+	if c.KnowPost.FeedCache.L2HasMoreJitter <= 0 {
+		c.KnowPost.FeedCache.L2HasMoreJitter = 11
+	}
+	if c.KnowPost.FeedCache.L2ItemTTLBase <= 0 {
+		c.KnowPost.FeedCache.L2ItemTTLBase = 60
+	}
+	if c.KnowPost.FeedCache.L2ItemJitter <= 0 {
+		c.KnowPost.FeedCache.L2ItemJitter = 31
+	}
+	if c.KnowPost.FeedCache.L2MineTTLBase <= 0 {
+		c.KnowPost.FeedCache.L2MineTTLBase = 30
+	}
+	if c.KnowPost.FeedCache.L2MineJitter <= 0 {
+		c.KnowPost.FeedCache.L2MineJitter = 21
+	}
+	if c.KnowPost.FeedCache.L1MineTTLSeconds <= 0 {
+		c.KnowPost.FeedCache.L1MineTTLSeconds = 30
+	}
+	if c.KnowPost.FeedCache.ExtendTTLBase <= 0 {
+		c.KnowPost.FeedCache.ExtendTTLBase = 60
+	}
+	if c.KnowPost.FeedCache.TTLLow <= 0 {
+		c.KnowPost.FeedCache.TTLLow = 30
+	}
+	if c.KnowPost.FeedCache.TTLMedium <= 0 {
+		c.KnowPost.FeedCache.TTLMedium = 60
+	}
+	if c.KnowPost.FeedCache.TTLHigh <= 0 {
+		c.KnowPost.FeedCache.TTLHigh = 300
+	}
+
+	// Relation defaults
+	if c.Relation.BigVThreshold <= 0 {
+		c.Relation.BigVThreshold = 500
+	}
+	if c.Relation.ZSetWarmLimit <= 0 {
+		c.Relation.ZSetWarmLimit = 2000
+	}
+	if c.Relation.CacheLock.TTLMs <= 0 {
+		c.Relation.CacheLock.TTLMs = 5000
+	}
+	if c.Relation.CacheLock.OpTimeoutMs <= 0 {
+		c.Relation.CacheLock.OpTimeoutMs = 1000
+	}
+	if c.Relation.CacheLock.RetryIntervalMs <= 0 {
+		c.Relation.CacheLock.RetryIntervalMs = 50
+	}
+	if c.Relation.InvalidateLock.WaitLimitMs <= 0 {
+		c.Relation.InvalidateLock.WaitLimitMs = 2000
+	}
+	if c.Relation.L1Cache.TTLSeconds <= 0 {
+		c.Relation.L1Cache.TTLSeconds = 600
+	}
+	if c.Relation.L1Cache.FillLimit <= 0 {
+		c.Relation.L1Cache.FillLimit = 500
+	}
+	if c.Relation.Fallback.ExhaustedTTLMinutes <= 0 {
+		c.Relation.Fallback.ExhaustedTTLMinutes = 10
+	}
+	if c.Relation.TokenBucket.PExpireMs <= 0 {
+		c.Relation.TokenBucket.PExpireMs = 60000
+	}
+
+	// Bootstrap defaults
+	if c.Bootstrap.RelationOutboxIntervalMs <= 0 {
+		c.Bootstrap.RelationOutboxIntervalMs = 1000
 	}
 }
 
@@ -482,11 +613,6 @@ func (c *Config) Validate() error {
 		errs = append(errs, "canal: username and password are required when enabled")
 	}
 
-	// 7. Redis — 如果 RequirePass 为 true，密码不能为空
-	// 8. Kafka — Broker 列表不能为空，至少配置一个 topic
-	// 9. HotKey — BucketCount 必须 > 0
-	// 10. Elasticsearch — Addresses 不能为空
-	// 11. OSS — 若配置了任一字段，则所有必填字段不能为空
 	if c.Redis.RequirePass && c.Redis.Password == "" {
 		errs = append(errs, "redis: require_pass is true but password is empty")
 	}
@@ -521,33 +647,6 @@ func (c *Config) Validate() error {
 }
 
 // LoadConfig 从指定路径读取 YAML 配置文件并解析为 Config 结构体。
-//
-// 功能：
-//
-//	Step 1: 使用 os.ReadFile 读取 YAML 文件的完整内容。
-//	Step 2: 使用 yaml.Unmarshal 将 YAML 字节数据反序列化为 Config 结构体。
-//	Step 3: 返回解析后的 Config 指针。
-//
-// 参数：
-//   - path: YAML 配置文件的路径（如 "config/config-local.yaml"）
-//
-// 返回值：
-//   - *Config: 解析后的配置结构体
-//   - error: 文件读取失败或 YAML 格式非法时返回
-//
-// 函数调用说明：
-//   - os.ReadFile(path):
-//     Go 标准库函数，读取文件的完整内容为 []byte。
-//     在 Go 1.16 中引入，替代了旧的 ioutil.ReadFile。
-//   - yaml.Unmarshal(data, cfg):
-//     gopkg.in/yaml.v3 包的 YAML 反序列化函数。
-//     根据结构体上的 yaml tag 将 YAML 字段映射到结构体字段。
-//
-// 注意：
-//
-//	此函数不会校验配置中的字段值是否合理（如端口是否在有效范围、超时值是否为正等），
-//	调用方应在构造连接时自行检查或使用默认值。
-//	也不会设置默认值（如 charset 默认 utf8mb4），需要调用方自行处理。
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -561,5 +660,3 @@ func LoadConfig(path string) (*Config, error) {
 
 	return cfg, nil
 }
-
-// Validate 校验配置中的关键字段是否合法。

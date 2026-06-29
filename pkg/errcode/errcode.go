@@ -24,6 +24,11 @@ const (
 	ErrCodeVerificationMismatch        ErrorCode = 40002
 	ErrCodeVerificationTooManyAttempts ErrorCode = 42901
 	ErrCodeServiceUnavailable          ErrorCode = 503
+	ErrCodeFollowYourself              ErrorCode = 40003
+	ErrCodeDailyLimitExceeded          ErrorCode = 42902
+	ErrCodePasswordResetFailed         ErrorCode = 40004
+	ErrCodeLogoutFailed                ErrorCode = 40005
+	ErrCodeRelationTooManyRequests     ErrorCode = 42903
 )
 
 // codeMessages 存储错误码对应的中文消息。
@@ -45,6 +50,11 @@ var codeMessages = map[ErrorCode]string{
 	ErrCodeVerificationMismatch:        "验证码不匹配",
 	ErrCodeVerificationTooManyAttempts: "验证尝试次数过多",
 	ErrCodeServiceUnavailable:          "服务暂不可用",
+	ErrCodeFollowYourself:              "不能关注自己",
+	ErrCodeDailyLimitExceeded:          "超过每日上限",
+	ErrCodePasswordResetFailed:         "密码重置失败",
+	ErrCodeLogoutFailed:                "登出失败",
+	ErrCodeRelationTooManyRequests:     "操作过于频繁",
 }
 
 // AppError 是统一的业务错误类型，包含错误码和消息。
@@ -87,6 +97,12 @@ var (
 	ErrVerificationNotFound        = &AppError{Code: ErrCodeVerificationNotFound, Message: "verification code not found"}
 	ErrVerificationMismatch        = &AppError{Code: ErrCodeVerificationMismatch, Message: "verification code mismatch"}
 	ErrVerificationTooManyAttempts = &AppError{Code: ErrCodeVerificationTooManyAttempts, Message: "too many verification attempts"}
+
+	ErrFollowYourself          = &AppError{Code: ErrCodeFollowYourself, Message: "cannot follow yourself"}
+	ErrDailyLimitExceeded      = &AppError{Code: ErrCodeDailyLimitExceeded, Message: "daily limit exceeded"}
+	ErrPasswordResetFailed     = &AppError{Code: ErrCodePasswordResetFailed, Message: "password reset failed"}
+	ErrLogoutFailed            = &AppError{Code: ErrCodeLogoutFailed, Message: "logout failed"}
+	ErrRelationTooManyRequests = &AppError{Code: ErrCodeRelationTooManyRequests, Message: "too many relation requests"}
 )
 
 // HTTPStatusFromCode 根据错误码获取对应的 HTTP 状态码。

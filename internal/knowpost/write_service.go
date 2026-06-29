@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -60,7 +61,12 @@ func (s *KnowPostService) ConfirmContent(ctx context.Context, creatorID, id uint
 		return errcode.ErrNotFound.WithMsg("draft not found or permission denied")
 	}
 
-	s.invalidateCache(ctx, id)
+s.invalidateCache(ctx, id)
+	s.invalidateFeedCaches(ctx, id, creatorID)
+
+	if s.auditLog != nil {
+		s.auditLog.LogAction(ctx, "delete_post", int64(creatorID), "knowpost", strconv.FormatUint(id, 10), "delete knowpost")
+	}
 
 	return nil
 }
@@ -121,6 +127,10 @@ func (s *KnowPostService) Publish(ctx context.Context, creatorID, id uint64) err
 	}
 	s.invalidateCache(ctx, id)
 	s.invalidateFeedCaches(ctx, id, creatorID)
+
+	if s.auditLog != nil {
+		s.auditLog.LogAction(ctx, "create_post", int64(creatorID), "knowpost", strconv.FormatUint(id, 10), "publish knowpost")
+	}
 
 	return nil
 }

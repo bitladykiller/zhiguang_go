@@ -12,6 +12,22 @@ import (
 	"github.com/zhiguang/app/pkg/response"
 )
 
+// CounterServiceInterface 定义计数器模块对外暴露的业务方法。
+type CounterServiceInterface interface {
+	Like(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+	Unlike(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+	Fav(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+	Unfav(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+	GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
+	GetCountsBatch(ctx context.Context, entityType string, entityIDs, metrics []string) (map[string]map[string]int32, error)
+	IsLiked(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+	IsFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
+	BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
+	BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
+	GetLikers(ctx context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error)
+	IsLikedAndFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, bool, error)
+}
+
 // CounterHandler 暴露计数器模块的 HTTP 接口。
 type CounterHandler struct {
 	svc CounterServiceInterface

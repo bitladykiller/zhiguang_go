@@ -126,6 +126,9 @@ func (s *stubSearchCounter) GetCountsBatch(_ context.Context, _ string, _, _ []s
 func (s *stubSearchCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
+func (s *stubSearchCounter) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
+	return false, false, s.err
+}
 
 // ---------------------------------------------------------------------------
 // parseCSV

@@ -5,17 +5,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
 )
 
 // ============================================================================
 // 退避
 // ============================================================================
-
-const (
-	backoffBaseMs = 500
-	backoffMaxMs  = 30000
-)
 
 func (s *CounterService) backoffKey(entityType, entityID string) string {
 	return fmt.Sprintf("backoff:sds-rebuild:until:%s:%s", entityType, entityID)
@@ -82,15 +78,16 @@ func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entity
 		attemptCount = 62
 	}
 
-	ms := int64(backoffBaseMs) << attemptCount
-	if ms > backoffMaxMs {
-		ms = backoffMaxMs
+	ms := int64(s.backoffCfg.BaseMs) << attemptCount
+	if ms > int64(s.backoffCfg.MaxMs) {
+		ms = int64(s.backoffCfg.MaxMs)
 	}
 	until := time.Now().UnixMilli() + ms
+	backoffKeyTTL := time.Duration(config.DefaultBackoffKeyTTLMinutes) * time.Minute
 
 	pipe := s.redis.Pipeline()
-	pipe.Set(ctx, s.backoffKey(entityType, entityID), until, 2*time.Hour)
-	pipe.Set(ctx, expKey, attemptCount+1, 2*time.Hour)
+	pipe.Set(ctx, s.backoffKey(entityType, entityID), until, backoffKeyTTL)
+	pipe.Set(ctx, expKey, attemptCount+1, backoffKeyTTL)
 	pipe.Del(ctx, s.rateLimiterKey(entityType, entityID))
 	if _, err := pipe.Exec(ctx); err != nil {
 		s.logger.Warn("escalateBackoff pipeline exec failed", zap.Error(err))
