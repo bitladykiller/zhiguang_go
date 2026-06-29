@@ -198,12 +198,15 @@ func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) erro
 
 // runKnowPostTx 在数据库事务中执行业务变更和 outbox 事件写入（事务性发件箱模式）。
 func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventType string, mutate func(txRepo Repo) error, extraEvents ...outbox.OutboxEvent) error {
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]interface{}{
 		"entity": "knowpost",
 		"id":     id,
 		"op":     knowPostOutboxOp(eventType),
 		"type":   eventType,
 	})
+	if err != nil {
+		return fmt.Errorf("marshal outbox payload: %w", err)
+	}
 	baseEvent := outbox.OutboxEvent{
 		ID:            s.idGen.NextID(),
 		AggregateType: "knowpost",

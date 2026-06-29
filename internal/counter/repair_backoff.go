@@ -2,9 +2,11 @@ package counter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
 )
@@ -73,7 +75,10 @@ func (s *CounterService) inBackoff(ctx context.Context, entityType, entityID str
 //     Set 的过期时间为 0 表示永不过期，由 resetBackoff 或下次 escalate 时覆盖。
 func (s *CounterService) escalateBackoff(ctx context.Context, entityType, entityID string) {
 	expKey := s.backoffExpKey(entityType, entityID)
-	attemptCount, _ := s.redis.Get(ctx, expKey).Int()
+	attemptCount, err := s.redis.Get(ctx, expKey).Int()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		s.logger.Warn("escalateBackoff: get attempt count failed", zap.Error(err))
+	}
 	if attemptCount > 62 {
 		attemptCount = 62
 	}

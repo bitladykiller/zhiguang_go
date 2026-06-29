@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
@@ -44,10 +43,9 @@ func (s *KnowPostDescriptionService) SuggestDescription(ctx context.Context, tit
 	if s.cfg != nil && s.cfg.MaxContentLen > 0 {
 		maxLen = s.cfg.MaxContentLen
 	}
-	if utf8.RuneCountInString(content) > maxLen {
-		content = string([]rune(content)[:maxLen])
-	} else if len(content) > maxLen {
-		content = content[:maxLen]
+	// 按 rune 截断，避免截断多字节 UTF-8 字符产生无效的字节序列
+	if runes := []rune(content); len(runes) > maxLen {
+		content = string(runes[:maxLen])
 	}
 
 	maxTokens := 100

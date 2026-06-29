@@ -336,7 +336,15 @@ func (d *HotKeyDetector) getLevel(ctx context.Context, key string) HotKeyLevel {
 	}
 
 	exists, err := d.redis.Exists(ctx, hotkeyActivePrefix+key).Result()
-	if err == nil && exists > 0 {
+	if err != nil {
+		d.logger.Warn("hotkey: redis Exists failed", zap.String("key", key), zap.Error(err))
+		return LevelCold
+	}
+	if exists > 0 {
+		// 在 Redis 写回本地缓存，避免下次再查 Redis
+		d.levelMu.Lock()
+		d.levels[key] = LevelMedium
+		d.levelMu.Unlock()
 		return LevelMedium
 	}
 

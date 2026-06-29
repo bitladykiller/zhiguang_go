@@ -212,7 +212,9 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 		}
 
 		if message.Id == -1 || len(message.Entries) == 0 {
-			contextutil.Sleep(ctx, pollDelay)
+			if !contextutil.Sleep(ctx, pollDelay) {
+				return ctx.Err()
+			}
 			continue
 		}
 

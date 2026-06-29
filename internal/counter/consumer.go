@@ -558,9 +558,11 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 			case <-watchCtx.Done():
 				return
 			case <-ticker.C:
-				if err := c.service.redis.Expire(watchCtx, rebuildMarker, defaultRebuildMarkerTTL).Err(); err != nil {
+				expireCtx, expireCancel := context.WithTimeout(watchCtx, time.Second)
+				if err := c.service.redis.Expire(expireCtx, rebuildMarker, defaultRebuildMarkerTTL).Err(); err != nil {
 					c.logger.Warn("watchdog expire rebuild marker failed", zap.Error(err))
 				}
+				expireCancel()
 			}
 		}
 	}()
