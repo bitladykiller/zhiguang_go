@@ -480,6 +480,9 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 
 	// 批量读取条目碎片
 	itemKeysPtr := itemKeysPool.Get().(*[]string)
+	defer func() {
+		itemKeysPool.Put(itemKeysPtr)
+	}()
 	itemKeys := *itemKeysPtr
 	itemKeys = itemKeys[:0]
 	for _, idStr := range idStrs {
@@ -488,8 +491,6 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 	itemJsons, err := s.redis.MGet(ctx, itemKeys...).Result()
 	if err != nil {
 		s.logger.Warn("failed to MGet feed item cache entries", zap.Strings("itemKeys", itemKeys), zap.Error(err))
-		itemKeysPtr = &itemKeys
-		itemKeysPool.Put(itemKeysPtr)
 		return nil
 	}
 
@@ -497,27 +498,18 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 	items := make([]FeedItemResponse, 0, len(idStrs))
 	for _, itemJson := range itemJsons {
 		if itemJson == nil {
-			itemKeysPtr = &itemKeys
-			itemKeysPool.Put(itemKeysPtr)
 			return nil // 任意碎片缺失则视为缓存未命中
 		}
 		itemStr, ok := itemJson.(string)
 		if !ok {
-			itemKeysPtr = &itemKeys
-			itemKeysPool.Put(itemKeysPtr)
 			return nil
 		}
 		var item FeedItemResponse
 		if err := json.Unmarshal([]byte(itemStr), &item); err != nil {
-			itemKeysPtr = &itemKeys
-			itemKeysPool.Put(itemKeysPtr)
 			return nil
 		}
 		items = append(items, item)
 	}
-	itemKeysPtr = &itemKeys
-	itemKeysPool.Put(itemKeysPtr)
-
 	// 读取 hasMore 软缓存
 	hasMore := false
 	hasMoreStr, err := s.redis.Get(ctx, hasMoreKey).Result()

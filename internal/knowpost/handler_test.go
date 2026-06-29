@@ -18,7 +18,7 @@ import (
 // ============================================================================
 
 type stubWriteSvc struct {
-	createDraftFn    func(ctx context.Context, creatorID uint64) (uint64, error)
+	createDraftFn    func(ctx context.Context, creatorID uint64, idempotencyKey string) (uint64, error)
 	confirmContentFn func(ctx context.Context, creatorID, id uint64, objectKey, etag, sha256 string, size uint64) error
 	updateMetadataFn func(ctx context.Context, creatorID, id uint64, req *KnowPostPatchRequest) error
 	publishFn        func(ctx context.Context, creatorID, id uint64) error
@@ -27,11 +27,11 @@ type stubWriteSvc struct {
 	deleteFn         func(ctx context.Context, creatorID, id uint64) error
 }
 
-func (s *stubWriteSvc) CreateDraft(ctx context.Context, creatorID uint64) (uint64, error) {
+func (s *stubWriteSvc) CreateDraft(ctx context.Context, creatorID uint64, idempotencyKey string) (uint64, error) {
 	if s.createDraftFn == nil {
 		return 0, nil
 	}
-	return s.createDraftFn(ctx, creatorID)
+	return s.createDraftFn(ctx, creatorID, idempotencyKey)
 }
 func (s *stubWriteSvc) ConfirmContent(ctx context.Context, creatorID, id uint64, objectKey, etag, sha256 string, size uint64) error {
 	if s.confirmContentFn == nil {
@@ -142,7 +142,7 @@ func performJSON(r *gin.Engine, method, path string, body any) *httptest.Respons
 
 func TestCreateDraft_Success(t *testing.T) {
 	writeSvc := &stubWriteSvc{
-		createDraftFn: func(_ context.Context, creatorID uint64) (uint64, error) {
+		createDraftFn: func(_ context.Context, creatorID uint64, _ string) (uint64, error) {
 			if creatorID != 42 {
 				t.Errorf("creatorID = %d, want 42", creatorID)
 			}
@@ -185,7 +185,7 @@ func TestCreateDraft_Unauthorized(t *testing.T) {
 
 func TestCreateDraft_ServiceError(t *testing.T) {
 	writeSvc := &stubWriteSvc{
-		createDraftFn: func(_ context.Context, _ uint64) (uint64, error) {
+		createDraftFn: func(_ context.Context, _ uint64, _ string) (uint64, error) {
 			return 0, errors.New("db error")
 		},
 	}

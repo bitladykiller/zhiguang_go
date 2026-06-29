@@ -24,7 +24,7 @@ func (s *KnowPostService) detailCacheTTLValues() (l1TTL, nullBase, nullJitter, l
 
 // --- [详情读取链路] --- //
 
-// detailCacheKey 构造知文详情页的缓存键，并返回当前版本号。
+// detailCacheKey 构造知文详情页的缓存键。
 //
 // 功能：缓存键格式为 "knowpost:detail:{id}:v{detailLayoutVer}:ver{postVersion}"。
 //   - detailLayoutVer 是全局布局版本号，用于整体爆破缓存。
@@ -38,13 +38,12 @@ func (s *KnowPostService) detailCacheTTLValues() (l1TTL, nullBase, nullJitter, l
 //
 // 返回值：
 //   - string: 缓存键字符串。
-//   - int64: 当前版本号（读取时使用）。
-func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) (string, int64) {
+func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) string {
 	version, err := s.redis.Get(ctx, fmt.Sprintf("knowpost:ver:%d", id)).Int64()
 	if err != nil {
 		version = detailLayoutVer
 	}
-	return fmt.Sprintf("knowpost:detail:%d:v%d:ver%d", id, detailLayoutVer, version), version
+	return fmt.Sprintf("knowpost:detail:%d:v%d:ver%d", id, detailLayoutVer, version)
 }
 
 // GetDetail 返回知文详情，并补充当前用户维度的点赞/收藏状态。
@@ -86,7 +85,7 @@ func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) (string
 //   - error: 错误对象。可能的值包括 errcode.ErrNotFound（内容不存在/已删除）、
 //     errcode.ErrForbidden（无权限查看）。
 func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
-	pageKey, _ := s.detailCacheKey(ctx, id)
+	pageKey := s.detailCacheKey(ctx, id)
 
 	l1TTL, _, _, _, _, _, _, _ := s.detailCacheTTLValues()
 

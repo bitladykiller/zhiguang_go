@@ -17,7 +17,16 @@ import (
 // --- [写操作] --- //
 
 // CreateDraft 创建一篇新的知文草稿，并返回其雪花算法生成的 ID。
-func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64) (uint64, error) {
+// 如果 idempotencyKey 非空，则通过 Redis 实现幂等性：相同 creator + key 在 5 分钟内
+// 重复调用返回相同的 draft ID。
+func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64, idempotencyKey string) (uint64, error) {
+	if idempotencyKey != "" {
+		redisKey := fmt.Sprintf("idem:draft:%d:%s", creatorID, idempotencyKey)
+		if existingID, err := s.redis.Get(ctx, redisKey).Uint64(); err == nil && existingID > 0 {
+			return existingID, errcode.ErrConflict.WithMsg("重复请求，草稿已创建")
+		}
+	}
+
 	id := s.idGen.NextID()
 	now := time.Now()
 	post := &KnowPost{
@@ -33,6 +42,12 @@ func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64) (ui
 	if err := s.repo.InsertDraft(ctx, post); err != nil {
 		return 0, fmt.Errorf("create draft: insert: %w", err)
 	}
+
+	if idempotencyKey != "" {
+		redisKey := fmt.Sprintf("idem:draft:%d:%s", creatorID, idempotencyKey)
+		s.redis.Set(ctx, redisKey, id, 5*time.Minute)
+	}
+
 	return id, nil
 }
 
