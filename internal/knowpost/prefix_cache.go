@@ -4,6 +4,8 @@ package knowpost
 import (
 	"sync"
 
+	"go.uber.org/zap"
+
 	"github.com/coocood/freecache"
 )
 
@@ -12,6 +14,13 @@ var bufPool = sync.Pool{
 		buf := make([]byte, 256)
 		return &buf
 	},
+}
+
+var prefixCacheLogger *zap.Logger
+
+// SetPrefixCacheLogger 注入日志器，用于记录 Pool 类型断言异常。
+func SetPrefixCacheLogger(l *zap.Logger) {
+	prefixCacheLogger = l
 }
 
 // PrefixCache 在 freecache 的 key 上自动添加前缀，实现单一缓存池的多用途隔离。
@@ -52,7 +61,16 @@ func (p *PrefixCache) prefixed(key []byte) []byte {
 	klen := len(key)
 	total := plen + klen
 
-	bufPtr := bufPool.Get().(*[]byte)
+	bufPtr, ok := bufPool.Get().(*[]byte)
+	if !ok {
+		if prefixCacheLogger != nil {
+			prefixCacheLogger.Error("prefix_cache: bufPool.Get() type assertion failed")
+		}
+		result := make([]byte, plen+klen)
+		copy(result, p.Prefix)
+		copy(result[plen:], key)
+		return result
+	}
 	buf := *bufPtr
 	if cap(buf) < total {
 		buf = make([]byte, total)

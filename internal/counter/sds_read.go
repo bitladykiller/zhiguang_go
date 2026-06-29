@@ -6,7 +6,15 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
+
+var sdsReadLogger *zap.Logger
+
+// SetSdsReadLogger 注入日志器，用于记录 Pipeline 单命令错误。
+func SetSdsReadLogger(l *zap.Logger) {
+	sdsReadLogger = l
+}
 
 // readInt32BE 从字节数组中按大端序读取 int32 值。
 func readInt32BE(b []byte, offset int) int32 {
@@ -137,8 +145,18 @@ func (s *CounterService) IsLikedAndFaved(ctx context.Context, userID uint64, ent
 	if _, err = pipe.Exec(ctx); err != nil {
 		return false, false, fmt.Errorf("is liked and faved: pipeline: %w", err)
 	}
-	likeVal, _ := likeCmd.Result()
-	favVal, _ := favCmd.Result()
+	likeVal, likeErr := likeCmd.Result()
+	favVal, favErr := favCmd.Result()
+	if likeErr != nil {
+		if sdsReadLogger != nil {
+			sdsReadLogger.Error("is liked and faved: likeCmd.Result", zap.Error(likeErr))
+		}
+	}
+	if favErr != nil {
+		if sdsReadLogger != nil {
+			sdsReadLogger.Error("is liked and faved: favCmd.Result", zap.Error(favErr))
+		}
+	}
 	return likeVal == 1, favVal == 1, nil
 }
 

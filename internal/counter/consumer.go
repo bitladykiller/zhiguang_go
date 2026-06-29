@@ -57,7 +57,8 @@ type AggregationConsumer struct {
 
 	partitionMask   uint8
 
-	flushCh chan *counterBatch
+	flushCh   chan *counterBatch
+	closeOnce sync.Once
 
 	mu      sync.Mutex
 	batches map[int]*counterBatch
@@ -158,7 +159,7 @@ func (c *AggregationConsumer) Start(ctx context.Context) {
 	}
 
 	c.consumeLoop(ctx)
-	close(c.flushCh)
+	c.closeOnce.Do(func() { close(c.flushCh) })
 	flushWg.Wait()
 	c.wg.Wait()
 }
