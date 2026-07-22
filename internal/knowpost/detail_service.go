@@ -52,7 +52,11 @@ func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) string 
 // 先从 L1（freecache 进程内缓存）查找，未命中则查 L2（Redis 分布式缓存），
 // 再未命中则进入 Redis 分布式锁保护区域回源到 L3（MySQL）。
 //
-// 三级缓存路径详解：
+// 穿透防护（Bloom + 空值缓存叠加）：
+//  0. Redis Bloom（可选，默认开启）：
+//     - MightContain=false → 一定不存在，直接 404，不打 L1/L2/DB。
+//     - MightContain=true  → 可能存在，继续三级缓存。
+//     - Redis 故障时 fail-open，退回仅空值缓存路径。
 //  1. L1（freecache）：
 //     - 约 50ns 可返回，不经过网络，性能极高。
 //     - TTL 由上游写缓存时决定（通常是 60s + jitter）。
@@ -61,7 +65,7 @@ func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) string 
 //  2. L2（Redis）：
 //     - 约 1ms 响应，跨服务实例共享。
 //     - 如果缓存值为 "NULL" 特殊标记，说明该 ID 对应的资源不存在，
-//     直接返回 404 以避免缓存穿透（布隆过滤器的替代方案）。
+//     直接返回 404（空值缓存兜底，吸收 Bloom 误判与软删残留）。
 //     - 如果缓存命中，还会将其写入 L1 以供后续进程内命中。
 //  3. L3（MySQL 回源 + Redis 看门狗分布式锁）：
 //     - 通过 Redis SET NX PX 抢锁，并在持锁期间启动本地看门狗续约，
@@ -85,6 +89,14 @@ func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) string 
 //   - error: 错误对象。可能的值包括 errcode.ErrNotFound（内容不存在/已删除）、
 //     errcode.ErrForbidden（无权限查看）。
 func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
+	// 0) Bloom 前置：一定不存在则直接 404，避免恶意扫号打穿缓存与 DB。
+	// 与空值缓存叠加：Bloom 拦「从未出现过的 ID」；NULL 拦「查过确认不存在/已删」。
+	if s.bloom != nil {
+		if ok, _ := s.bloom.MightContainUint64(ctx, id); !ok {
+			return nil, errcode.ErrNotFound.WithMsg("content not found")
+		}
+	}
+
 	pageKey := s.detailCacheKey(ctx, id)
 
 	l1TTL, _, _, _, _, _, _, _ := s.detailCacheTTLValues()
@@ -211,9 +223,14 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 				return nil, err
 			}
 
-		idStr := strconv.FormatUint(id, 10)
+			// 回源确认存在：写入 Bloom，渐进补齐历史数据（无需全量预热任务）。
+			if s.bloom != nil {
+				s.bloom.AddUint64(ctx, id)
+			}
 
-		if s.counter != nil {
+			idStr := strconv.FormatUint(id, 10)
+
+			if s.counter != nil {
 				counts, err := s.counter.GetCounts(ctx, "knowpost", idStr, []string{"like", "fav"})
 				if err != nil {
 					s.logger.Warn("failed to get detail counts", zap.Uint64("knowpostID", id), zap.Error(err))

@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/counter"
+	"github.com/zhiguang/app/pkg/config"
 )
 
 func strPtr(s string) *string { return &s }
@@ -301,9 +302,55 @@ func TestRecordItemHotKey_NilLogger(t *testing.T) {
 // ============================================================================
 
 func TestNewKnowPostFeedService(t *testing.T) {
-	svc := &KnowPostFeedService{}
+	svc := NewKnowPostFeedService(nil, nil, nil, nil, nil, nil, zap.NewNop(), nil)
 	if svc == nil {
-		t.Fatal("KnowPostFeedService zero value should not be nil")
+		t.Fatal("NewKnowPostFeedService returned nil")
+	}
+	p := svc.feedCacheTTLValues()
+	if p.safeSize != 50 || p.l1PublicTTL != 15 || p.extendBase != 60 {
+		t.Fatalf("nil cfg defaults: safeSize=%d l1PublicTTL=%d extendBase=%d", p.safeSize, p.l1PublicTTL, p.extendBase)
+	}
+}
+
+func TestFeedCacheTTLValues_FromConfig(t *testing.T) {
+	svc := &KnowPostFeedService{
+		cfg: &config.KnowPostFeedCacheConfig{
+			SafeSize:         20,
+			L1TTLSeconds:     7,
+			L2IDListTTLBase:  40,
+			L2IDListJitter:   5,
+			L2HasMoreTTLBase: 3,
+			L2HasMoreJitter:  2,
+			L2ItemTTLBase:    40,
+			L2ItemJitter:     5,
+			L2MineTTLBase:    12,
+			L2MineJitter:     3,
+			L1MineTTLSeconds: 9,
+			ExtendTTLBase:    90,
+			TTLLow:           10,
+			TTLMedium:        20,
+			TTLHigh:          100,
+		},
+	}
+	p := svc.feedCacheTTLValues()
+	if p.safeSize != 20 || p.l1PublicTTL != 7 || p.idListBase != 40 || p.hasMoreBase != 3 ||
+		p.itemBase != 40 || p.mineL2Base != 12 || p.l1MineTTL != 9 || p.extendBase != 90 {
+		t.Fatalf("unexpected feedCacheParams from cfg: %+v", p)
+	}
+}
+
+func TestJitterN(t *testing.T) {
+	if got := jitterN(0); got != 0 {
+		t.Fatalf("jitterN(0)=%d", got)
+	}
+	if got := jitterN(-1); got != 0 {
+		t.Fatalf("jitterN(-1)=%d", got)
+	}
+	for i := 0; i < 20; i++ {
+		got := jitterN(5)
+		if got < 0 || got >= 5 {
+			t.Fatalf("jitterN(5)=%d out of range", got)
+		}
 	}
 }
 

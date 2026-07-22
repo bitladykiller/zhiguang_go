@@ -7,7 +7,10 @@ server:
     window_ms: 60000
     ban_duration_ms: 600000
   cors_allowed_origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
     - "http://localhost:3000"
+    - "http://127.0.0.1:3000"
 
 database:
   host: localhost
@@ -87,7 +90,7 @@ canal:
   destination: example
   username: canal
   password: "CHANGE_ME"
-  filter: zhiguang\\.outbox
+  filter: 'zhiguang\.outbox'
   batch_size: 1000
   interval_ms: 1000
 
@@ -175,6 +178,11 @@ knowpost:
     ttl_low: 30
     ttl_medium: 60
     ttl_high: 300
+    # Bloom 与空值缓存叠加：前置拦截一定不存在的 ID
+    bloom_enabled: true
+    bloom_expected_items: 1000000
+    bloom_false_positive_rate: 0.01
+    bloom_key: "bloom:knowpost:ids"
   feed_cache:
     safe_size: 50
     l1_ttl_seconds: 15

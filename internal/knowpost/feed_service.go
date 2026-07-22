@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/zhiguang/app/internal/cache"
+	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
@@ -24,25 +25,7 @@ const feedLayoutVer = 1
 const (
 	publicFeedVersionKey = "feed:public:version"
 	mineFeedVersionKey   = "feed:mine:version:%d"
-)
-
-const (
-	defaultSafeSize  = 50
-	secondsPerHour   = 3600
-	l1FeedCacheTTL   = 15
-	l2IDListTTLBase  = 60
-	l2IDListJitter   = 31
-	l2HasMoreTTLBase = 10
-	l2HasMoreJitter  = 11
-	l2ItemTTLBase    = 60
-	l2ItemJitter     = 31
-	l2MineTTLBase    = 30
-	l2MineJitter     = 21
-	l1MineCacheTTL   = 30
-	extendTTLBase    = 60
-	ttlLowFeed       = 30
-	ttlMediumFeed    = 60
-	ttlHighFeed      = 300
+	secondsPerHour       = 3600
 )
 
 // KnowPostFeedService 实现基于碎片缓存架构的 Feed 列表流读取。
@@ -66,6 +49,9 @@ const (
 // WHY 按小时分槽保存 IDs：
 // 可以控制热门时间窗口失效时的影响范围——只影响该小时的槽，
 // 其他小时的缓存不受影响。
+//
+// TTL / 分页上限统一从 cfg.KnowPost.FeedCache 读取（见 feedCacheTTLValues），
+// ApplyDefaults 保证缺省值与历史硬编码常量一致。
 type KnowPostFeedService struct {
 	repo     Repo
 	redis    *redis.Client
@@ -75,11 +61,74 @@ type KnowPostFeedService struct {
 	counter  CounterClient
 	sf       singleflight.Group
 	logger   *zap.Logger
+	cfg      *config.KnowPostFeedCacheConfig
 }
 
 // FeedCacheInvalidator 暴露知文写操作所需的 feed 缓存失效能力。
 type FeedCacheInvalidator interface {
 	InvalidateAfterPostMutation(ctx context.Context, postID, creatorID uint64)
+}
+
+// feedCacheParams 是 Feed 缓存运行时参数快照，来自 cfg 或默认值。
+type feedCacheParams struct {
+	safeSize     int
+	l1PublicTTL  int
+	idListBase   int
+	idListJitter int
+	hasMoreBase  int
+	hasMoreJitter int
+	itemBase     int
+	itemJitter   int
+	mineL2Base   int
+	mineL2Jitter int
+	l1MineTTL    int
+	extendBase   int
+	ttlLow       int
+	ttlMedium    int
+	ttlHigh      int
+}
+
+// feedCacheTTLValues 返回 Feed 缓存相关 TTL / 分页参数。
+//
+// 优先使用 cfg（由 bootstrap 注入 &cfg.KnowPost.FeedCache），
+// cfg 为 nil 时回退到与 ApplyDefaults 一致的历史默认值，保证单测零配置可跑。
+func (s *KnowPostFeedService) feedCacheTTLValues() feedCacheParams {
+	if s != nil && s.cfg != nil {
+		fc := s.cfg
+		return feedCacheParams{
+			safeSize:      fc.SafeSize,
+			l1PublicTTL:   fc.L1TTLSeconds,
+			idListBase:    fc.L2IDListTTLBase,
+			idListJitter:  fc.L2IDListJitter,
+			hasMoreBase:   fc.L2HasMoreTTLBase,
+			hasMoreJitter: fc.L2HasMoreJitter,
+			itemBase:      fc.L2ItemTTLBase,
+			itemJitter:    fc.L2ItemJitter,
+			mineL2Base:    fc.L2MineTTLBase,
+			mineL2Jitter:  fc.L2MineJitter,
+			l1MineTTL:     fc.L1MineTTLSeconds,
+			extendBase:    fc.ExtendTTLBase,
+			ttlLow:        fc.TTLLow,
+			ttlMedium:     fc.TTLMedium,
+			ttlHigh:       fc.TTLHigh,
+		}
+	}
+	return feedCacheParams{
+		safeSize: 50, l1PublicTTL: 15,
+		idListBase: 60, idListJitter: 31,
+		hasMoreBase: 10, hasMoreJitter: 11,
+		itemBase: 60, itemJitter: 31,
+		mineL2Base: 30, mineL2Jitter: 21, l1MineTTL: 30,
+		extendBase: 60, ttlLow: 30, ttlMedium: 60, ttlHigh: 300,
+	}
+}
+
+// jitterN 返回 [0, n) 的随机偏移；n<=0 时返回 0，避免 rand.Intn(0) panic。
+func jitterN(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return rand.Intn(n)
 }
 
 // NewKnowPostFeedService 创建带有 L1 缓存实例的 Feed 服务。
@@ -91,6 +140,7 @@ type FeedCacheInvalidator interface {
 //   - l1Mine: 我的 Feed 的 L1 缓存（带前缀的 freecache）
 //   - hotKey: 热点探测器
 //   - counter: 计数器客户端，nil 表示不使用计数器
+//   - cfg: Feed 缓存配置，nil 时使用与 ApplyDefaults 一致的默认 TTL
 func NewKnowPostFeedService(
 	repo Repo,
 	redisClient *redis.Client,
@@ -99,6 +149,7 @@ func NewKnowPostFeedService(
 	hotKey *cache.HotKeyDetector,
 	counter CounterClient,
 	logger *zap.Logger,
+	cfg *config.KnowPostFeedCacheConfig,
 ) *KnowPostFeedService {
 	return &KnowPostFeedService{
 		repo:     repo,
@@ -108,6 +159,7 @@ func NewKnowPostFeedService(
 		hotKey:   hotKey,
 		counter:  counter,
 		logger:   logger,
+		cfg:      cfg,
 	}
 }
 
@@ -163,7 +215,8 @@ var itemIDsPool = sync.Pool{
 //   - *FeedPageResponse: 包含 Items（FeedItemResponse 列表）、Page、Size 和 HasMore。
 //   - error: 数据库查询错误等。
 func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
-	safeSize := clamp(size, 1, defaultSafeSize)
+	p := s.feedCacheTTLValues()
+	safeSize := clamp(size, 1, p.safeSize)
 	safePage := max(page, 1)
 	feedVersion := s.currentPublicFeedVersion(ctx)
 	localPageKey := fmt.Sprintf("feed:public:%d:%d:v%d:%d", safeSize, safePage, feedLayoutVer, feedVersion)
@@ -302,7 +355,8 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 //  2. 如果 ZSet 有数据，按 post_id 批量查 know_posts 详情
 //  3. 如果 ZSet 为空或只有部分数据，降级到原来的读扩散路径
 func (s *KnowPostFeedService) GetMineFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
-	safeSize := clamp(size, 1, defaultSafeSize)
+	p := s.feedCacheTTLValues()
+	safeSize := clamp(size, 1, p.safeSize)
 	safePage := max(page, 1)
 	offset := (safePage - 1) * safeSize
 
@@ -373,7 +427,8 @@ func (s *KnowPostFeedService) GetMineFeed(ctx context.Context, userID uint64, pa
 //   - *FeedPageResponse: 分页结果。
 //   - error: 查询失败时的错误。
 func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
-	safeSize := clamp(size, 1, defaultSafeSize)
+	p := s.feedCacheTTLValues()
+	safeSize := clamp(size, 1, p.safeSize)
 	safePage := max(page, 1)
 	feedVersion := s.currentMineFeedVersion(ctx, userID)
 	key := fmt.Sprintf("feed:mine:%d:%d:%d:%d", userID, safeSize, safePage, feedVersion)
@@ -382,7 +437,9 @@ func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64,
 	if val, err := s.l1Mine.Get([]byte(key)); err == nil {
 		resp, parseErr := s.parseFeedPage(val)
 		if parseErr == nil {
-			s.hotKey.Record(key)
+			if s.hotKey != nil {
+				s.hotKey.Record(key)
+			}
 			return resp, nil
 		}
 	}
@@ -392,8 +449,10 @@ func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64,
 	if err == nil && cached != "" {
 		resp, parseErr := s.parseFeedPage([]byte(cached))
 		if parseErr == nil {
-			s.l1Mine.Set([]byte(key), []byte(cached), l1MineCacheTTL)
-			s.hotKey.Record(key)
+			s.l1Mine.Set([]byte(key), []byte(cached), p.l1MineTTL)
+			if s.hotKey != nil {
+				s.hotKey.Record(key)
+			}
 			return resp, nil
 		}
 	}
@@ -424,12 +483,14 @@ func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64,
 	if err != nil {
 		return resp, nil
 	}
-	baseTTL := l2MineTTLBase + rand.Intn(l2MineJitter)
+	baseTTL := p.mineL2Base + jitterN(p.mineL2Jitter)
 	if setErr := s.redis.Set(ctx, key, string(jsonBytes), time.Duration(baseTTL)*time.Second).Err(); setErr != nil {
 		s.logger.Warn("failed to set mine feed L2 cache", zap.String("key", key), zap.Error(setErr))
 	}
-	s.l1Mine.Set([]byte(key), jsonBytes, baseTTL)
-	s.hotKey.Record(key)
+	s.l1Mine.Set([]byte(key), jsonBytes, p.l1MineTTL)
+	if s.hotKey != nil {
+		s.hotKey.Record(key)
+	}
 
 	return resp, nil
 }
@@ -568,6 +629,7 @@ func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, h
 }
 
 func (s *KnowPostFeedService) writeFeedIDListCache(ctx context.Context, idsKey, hasMoreKey string, rows []KnowPostFeedRow, hasMore bool) {
+	p := s.feedCacheTTLValues()
 	idVals := make([]interface{}, len(rows))
 	for i, r := range rows {
 		idVals[i] = strconv.FormatUint(r.ID, 10)
@@ -578,17 +640,18 @@ func (s *KnowPostFeedService) writeFeedIDListCache(ctx context.Context, idsKey, 
 	if err := s.redis.RPush(ctx, idsKey, idVals...).Err(); err != nil {
 		s.logger.Warn("failed to RPush feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
 	}
-	ttl := time.Duration(l2IDListTTLBase+rand.Intn(l2IDListJitter)) * time.Second
+	ttl := time.Duration(p.idListBase+jitterN(p.idListJitter)) * time.Second
 	if err := s.redis.Expire(ctx, idsKey, ttl).Err(); err != nil {
 		s.logger.Warn("failed to set expire on feed IDs", zap.String("idsKey", idsKey), zap.Error(err))
 	}
-	hasMoreTTL := time.Duration(l2HasMoreTTLBase+rand.Intn(l2HasMoreJitter)) * time.Second
+	hasMoreTTL := time.Duration(p.hasMoreBase+jitterN(p.hasMoreJitter)) * time.Second
 	if err := s.redis.Set(ctx, hasMoreKey, boolToStr(hasMore), hasMoreTTL).Err(); err != nil {
 		s.logger.Warn("failed to set hasMore cache", zap.String("hasMoreKey", hasMoreKey), zap.Error(err))
 	}
 }
 
 func (s *KnowPostFeedService) writeFeedItemCaches(ctx context.Context, items []FeedItemResponse) {
+	p := s.feedCacheTTLValues()
 	pipe := s.redis.Pipeline()
 	for _, item := range items {
 		itemKey := "feed:item:" + item.ID
@@ -597,7 +660,7 @@ func (s *KnowPostFeedService) writeFeedItemCaches(ctx context.Context, items []F
 			s.logger.Warn("failed to marshal feed item for cache", zap.String("itemID", item.ID), zap.Error(err))
 			continue
 		}
-		ttl := time.Duration(l2ItemTTLBase+rand.Intn(l2ItemJitter)) * time.Second
+		ttl := time.Duration(p.itemBase+jitterN(p.itemJitter)) * time.Second
 		pipe.Set(ctx, itemKey, string(jsonBytes), ttl)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
@@ -805,8 +868,8 @@ func (s *KnowPostFeedService) recordItemHotKey(ctx context.Context, itemID strin
 	hotKeyID := "knowpost:" + itemID
 	s.hotKey.Record(hotKeyID)
 
-	baseTTL := extendTTLBase
-	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
+	p := s.feedCacheTTLValues()
+	target := s.hotKey.TtlForPublic(ctx, p.extendBase, hotKeyID)
 
 	// Lua 脚本原子操作：只有当前 TTL < 目标 TTL 时才延长
 	itemKey := "feed:item:" + itemID
@@ -842,7 +905,8 @@ func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, 
 		s.logger.Warn("failed to marshal feed page for cache", zap.String("key", key), zap.Error(err))
 		return
 	}
-	cache.Set([]byte(key), jsonBytes, l1FeedCacheTTL)
+	p := s.feedCacheTTLValues()
+	cache.Set([]byte(key), jsonBytes, p.l1PublicTTL)
 }
 
 // parseFeedPage 将 feed 页的 JSON 缓存数据反序列化为 FeedPageResponse。

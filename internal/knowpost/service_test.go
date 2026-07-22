@@ -3,10 +3,14 @@ package knowpost
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/jmoiron/sqlx"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/pkg/config"
@@ -408,3 +412,232 @@ func NewRealSnowflakeForTest(t *testing.T) *SnowflakeIdGenerator {
 	}
 	return gen
 }
+
+// ============================================================================
+// CreateDraft 幂等（SET NX 认领）
+// ============================================================================
+
+type captureDraftRepo struct {
+	mu     sync.Mutex
+	posts  []*KnowPost
+	fail   error
+	insert int
+}
+
+func (r *captureDraftRepo) InsertDraft(ctx context.Context, post *KnowPost) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.insert++
+	if r.fail != nil {
+		return r.fail
+	}
+	cp := *post
+	r.posts = append(r.posts, &cp)
+	return nil
+}
+func (r *captureDraftRepo) UpdateContent(ctx context.Context, post *KnowPost) (int64, error) {
+	return 0, nil
+}
+func (r *captureDraftRepo) UpdateMetadata(ctx context.Context, post *KnowPost) (int64, error) {
+	return 0, nil
+}
+func (r *captureDraftRepo) Publish(ctx context.Context, id, creatorID uint64) (int64, error) {
+	return 0, nil
+}
+func (r *captureDraftRepo) UpdateTop(ctx context.Context, id, creatorID uint64, isTop bool) (int64, error) {
+	return 0, nil
+}
+func (r *captureDraftRepo) UpdateVisibility(ctx context.Context, id, creatorID uint64, visible KnowPostVisibility) (int64, error) {
+	return 0, nil
+}
+func (r *captureDraftRepo) SoftDelete(ctx context.Context, id, creatorID uint64) (int64, error) {
+	return 0, nil
+}
+func (r *captureDraftRepo) FindDetailByID(ctx context.Context, id uint64) (*KnowPostDetailRow, error) {
+	return nil, nil
+}
+func (r *captureDraftRepo) ListFeedPublic(ctx context.Context, limit, offset int) ([]KnowPostFeedRow, error) {
+	return nil, nil
+}
+func (r *captureDraftRepo) ListMyPublished(ctx context.Context, userID uint64, limit, offset int) ([]KnowPostFeedRow, error) {
+	return nil, nil
+}
+func (r *captureDraftRepo) ListIDsForBloom(ctx context.Context, lastID uint64, limit int) ([]uint64, error) {
+	return nil, nil
+}
+func (r *captureDraftRepo) FindByIDs(ctx context.Context, ids []uint64) ([]KnowPostFeedRow, error) {
+	return nil, nil
+}
+func (r *captureDraftRepo) WithDB(db sqlx.ExtContext) Repo { return r }
+
+func TestCreateDraft_NoIdemKey(t *testing.T) {
+	srv := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
+	repo := &captureDraftRepo{}
+	svc := &KnowPostService{
+		repo:  repo,
+		idGen: NewRealSnowflakeForTest(t),
+		redis: rdb,
+	}
+	id, err := svc.CreateDraft(context.Background(), 1001, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == 0 {
+		t.Fatal("expected non-zero id")
+	}
+	if repo.insert != 1 {
+		t.Fatalf("insert=%d want 1", repo.insert)
+	}
+}
+
+func TestCreateDraft_IdempotentReplay(t *testing.T) {
+	srv := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
+	repo := &captureDraftRepo{}
+	svc := &KnowPostService{
+		repo:  repo,
+		idGen: NewRealSnowflakeForTest(t),
+		redis: rdb,
+	}
+	const key = "client-req-1"
+	id1, err := svc.CreateDraft(context.Background(), 1001, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, err := svc.CreateDraft(context.Background(), 1001, key)
+	if err != nil {
+		t.Fatalf("replay should not error: %v", err)
+	}
+	if id1 != id2 {
+		t.Fatalf("id1=%d id2=%d want same", id1, id2)
+	}
+	if repo.insert != 1 {
+		t.Fatalf("insert=%d want 1 (second call must not insert)", repo.insert)
+	}
+	// 不同用户同 key 互不影响
+	id3, err := svc.CreateDraft(context.Background(), 2002, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id3 == id1 {
+		t.Fatal("different creators should not share idempotency key space")
+	}
+	if repo.insert != 2 {
+		t.Fatalf("insert=%d want 2", repo.insert)
+	}
+}
+
+func TestCreateDraft_InsertFailReleasesClaim(t *testing.T) {
+	srv := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
+	repo := &captureDraftRepo{fail: errors.New("db down")}
+	svc := &KnowPostService{
+		repo:  repo,
+		idGen: NewRealSnowflakeForTest(t),
+		redis: rdb,
+	}
+	_, err := svc.CreateDraft(context.Background(), 1001, "k-fail")
+	if err == nil {
+		t.Fatal("expected insert error")
+	}
+	// pending 应被 CAS 删除，允许后续成功创建
+	repo.fail = nil
+	id, err := svc.CreateDraft(context.Background(), 1001, "k-fail")
+	if err != nil {
+		t.Fatalf("retry after fail: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected id")
+	}
+	if repo.insert != 2 {
+		t.Fatalf("insert=%d want 2 (fail + success)", repo.insert)
+	}
+}
+
+func TestCreateDraft_ConcurrentSameKeySingleInsert(t *testing.T) {
+	srv := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
+	repo := &captureDraftRepo{}
+	// 人为放慢第一次 insert，让其他协程进入 wait pending 路径
+	orig := repo
+	_ = orig
+	slow := &slowInsertRepo{inner: repo, delay: 80 * time.Millisecond}
+	svc := &KnowPostService{
+		repo:  slow,
+		idGen: NewRealSnowflakeForTest(t),
+		redis: rdb,
+	}
+	const key = "concurrent-key"
+	const n = 8
+	ids := make([]uint64, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			ids[i], errs[i] = svc.CreateDraft(context.Background(), 1001, key)
+		}(i)
+	}
+	wg.Wait()
+	var first uint64
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("goroutine %d: %v", i, errs[i])
+		}
+		if first == 0 {
+			first = ids[i]
+		} else if ids[i] != first {
+			t.Fatalf("ids differ: %v", ids)
+		}
+	}
+	if repo.insert != 1 {
+		t.Fatalf("insert=%d want 1 under concurrency", repo.insert)
+	}
+}
+
+// slowInsertRepo 在 InsertDraft 前 sleep，用于并发幂等测试。
+type slowInsertRepo struct {
+	inner Repo
+	delay time.Duration
+}
+
+func (r *slowInsertRepo) InsertDraft(ctx context.Context, post *KnowPost) error {
+	time.Sleep(r.delay)
+	return r.inner.InsertDraft(ctx, post)
+}
+func (r *slowInsertRepo) UpdateContent(ctx context.Context, post *KnowPost) (int64, error) {
+	return r.inner.UpdateContent(ctx, post)
+}
+func (r *slowInsertRepo) UpdateMetadata(ctx context.Context, post *KnowPost) (int64, error) {
+	return r.inner.UpdateMetadata(ctx, post)
+}
+func (r *slowInsertRepo) Publish(ctx context.Context, id, creatorID uint64) (int64, error) {
+	return r.inner.Publish(ctx, id, creatorID)
+}
+func (r *slowInsertRepo) UpdateTop(ctx context.Context, id, creatorID uint64, isTop bool) (int64, error) {
+	return r.inner.UpdateTop(ctx, id, creatorID, isTop)
+}
+func (r *slowInsertRepo) UpdateVisibility(ctx context.Context, id, creatorID uint64, visible KnowPostVisibility) (int64, error) {
+	return r.inner.UpdateVisibility(ctx, id, creatorID, visible)
+}
+func (r *slowInsertRepo) SoftDelete(ctx context.Context, id, creatorID uint64) (int64, error) {
+	return r.inner.SoftDelete(ctx, id, creatorID)
+}
+func (r *slowInsertRepo) FindDetailByID(ctx context.Context, id uint64) (*KnowPostDetailRow, error) {
+	return r.inner.FindDetailByID(ctx, id)
+}
+func (r *slowInsertRepo) ListFeedPublic(ctx context.Context, limit, offset int) ([]KnowPostFeedRow, error) {
+	return r.inner.ListFeedPublic(ctx, limit, offset)
+}
+func (r *slowInsertRepo) ListMyPublished(ctx context.Context, userID uint64, limit, offset int) ([]KnowPostFeedRow, error) {
+	return r.inner.ListMyPublished(ctx, userID, limit, offset)
+}
+func (r *slowInsertRepo) ListIDsForBloom(ctx context.Context, lastID uint64, limit int) ([]uint64, error) {
+	return r.inner.ListIDsForBloom(ctx, lastID, limit)
+}
+func (r *slowInsertRepo) FindByIDs(ctx context.Context, ids []uint64) ([]KnowPostFeedRow, error) {
+	return r.inner.FindByIDs(ctx, ids)
+}
+func (r *slowInsertRepo) WithDB(db sqlx.ExtContext) Repo { return r }

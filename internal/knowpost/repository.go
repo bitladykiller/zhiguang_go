@@ -279,6 +279,26 @@ LIMIT ? OFFSET ?
 	return rows, nil
 }
 
+// ListIDsForBloom 按 id 游标扫描未删除知文 ID，供详情 Bloom 预热。
+//
+// WHY 用 lastID 游标而非 OFFSET：全表预热时 OFFSET 越深越慢，游标稳定且可中断续跑。
+func (r *KnowPostRepository) ListIDsForBloom(ctx context.Context, lastID uint64, limit int) ([]uint64, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	var ids []uint64
+	err := sqlx.SelectContext(ctx, r.db, &ids, `
+SELECT id FROM know_posts
+WHERE id > ? AND status != ?
+ORDER BY id ASC
+LIMIT ?
+`, lastID, KnowPostStatusDeleted, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list ids for bloom: %w", err)
+	}
+	return ids, nil
+}
+
 // ListMyPublished 分页查询某用户的已发布知文，使用 sqlx.SelectContext。
 func (r *KnowPostRepository) ListMyPublished(ctx context.Context, userID uint64, limit, offset int) ([]KnowPostFeedRow, error) {
 	var rows []KnowPostFeedRow

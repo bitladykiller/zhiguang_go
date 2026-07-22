@@ -5,26 +5,71 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/zhiguang/app/internal/outbox"
+	"github.com/zhiguang/app/pkg/contextutil"
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
 // --- [写操作] --- //
 
+const (
+	// draftIdemTTL 幂等键存活时间；覆盖弱网重试窗口，过期后允许重新创建。
+	draftIdemTTL = 5 * time.Minute
+	// draftIdemPendingPrefix 认领占位前缀；写库完成前 key 为此形态，完成后覆盖为数字 id。
+	draftIdemPendingPrefix = "pending:"
+	// draftIdemWaitInterval / draftIdemMaxWait 并发请求等待「认领者」固化正式 id 的策略。
+	draftIdemWaitInterval = 50 * time.Millisecond
+	draftIdemMaxWait      = 3 * time.Second
+)
+
+// draftIdemCASDelScript：仅当 value 仍是本请求的 pending 标记时删除，避免误删其他请求已固化的 id。
+var draftIdemCASDelScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`)
+
 // CreateDraft 创建一篇新的知文草稿，并返回其雪花算法生成的 ID。
-// 如果 idempotencyKey 非空，则通过 Redis 实现幂等性：相同 creator + key 在 5 分钟内
-// 重复调用返回相同的 draft ID。
+//
+// 幂等（X-Idempotency-Key 非空时）：
+//  1. Redis SET NX 认领 key = idem:draft:{creator}:{key}，值为 pending:{token}
+//  2. 仅认领成功者执行 InsertDraft
+//  3. 写库成功后将 key 覆盖为正式 draft id（TTL 刷新）
+//  4. 写库失败 CAS 删除本请求的 pending，允许重试
+//  5. 认领失败：若已是正式 id 则直接返回（真幂等，无 ErrConflict）；若仍是 pending 则短暂等待
+//
+// WHY 不用「先 GET 再 SET」：并发下两个请求都可能 miss 并各插一条草稿。
+// WHY 不用「先 Insert 再 SETNX」：两个请求都可能 Insert 成功，库内仍双写。
+// WHY 不返回 ErrConflict：幂等重放应返回同一 id，由 handler 正常 201/成功响应，避免前端当失败再重试。
 func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64, idempotencyKey string) (uint64, error) {
+	var (
+		idemKey       string
+		pendingMarker string
+		claimed       bool
+	)
+
 	if idempotencyKey != "" {
-		redisKey := fmt.Sprintf("idem:draft:%d:%s", creatorID, idempotencyKey)
-		if existingID, err := s.redis.Get(ctx, redisKey).Uint64(); err == nil && existingID > 0 {
-			return existingID, errcode.ErrConflict.WithMsg("重复请求，草稿已创建")
+		idemKey = fmt.Sprintf("idem:draft:%d:%s", creatorID, idempotencyKey)
+		// 认领 token 使用雪花 id，全局唯一且无需额外 UUID 依赖。
+		pendingMarker = draftIdemPendingPrefix + strconv.FormatUint(s.idGen.NextID(), 10)
+
+		existing, ok, err := s.claimDraftIdempotency(ctx, idemKey, pendingMarker)
+		if err != nil {
+			return 0, err
 		}
+		if ok {
+			// 已有正式 draft id：幂等命中，直接返回。
+			return existing, nil
+		}
+		claimed = true
 	}
 
 	id := s.idGen.NextID()
@@ -40,15 +85,92 @@ func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64, ide
 		UpdateTime: now,
 	}
 	if err := s.repo.InsertDraft(ctx, post); err != nil {
+		if claimed {
+			// 仅清理自己的 pending，避免误删后来请求已固化的正式 id。
+			if _, delErr := draftIdemCASDelScript.Run(ctx, s.redis, []string{idemKey}, pendingMarker).Result(); delErr != nil {
+				// 清理失败只记日志语义由调用方通过 insert 错误感知；不覆盖原始 err。
+				_ = delErr
+			}
+		}
 		return 0, fmt.Errorf("create draft: insert: %w", err)
 	}
 
-	if idempotencyKey != "" {
-		redisKey := fmt.Sprintf("idem:draft:%d:%s", creatorID, idempotencyKey)
-		s.redis.Set(ctx, redisKey, id, 5*time.Minute)
+	if claimed {
+		// 覆盖 pending 为正式 id；即使并发读到过 pending，短暂等待后也能拿到 id。
+		if err := s.redis.Set(ctx, idemKey, id, draftIdemTTL).Err(); err != nil {
+			// 写库已成功：幂等键失败不应导致客户端重试再插一条。
+			// 返回成功 id；后续重放可能因 key 缺失再创建（短窗口风险），依赖 TTL 与重试概率。
+			if s.bloom != nil {
+				s.bloom.AddUint64(ctx, id)
+			}
+			return id, nil
+		}
+	}
+
+	// 草稿创建成功即加入 Bloom：作者随后读详情不会被「一定不存在」误拦。
+	if s.bloom != nil {
+		s.bloom.AddUint64(ctx, id)
 	}
 
 	return id, nil
+}
+
+// claimDraftIdempotency 尝试认领幂等键。
+//
+// 返回：
+//   - existingID, true, nil：key 已是正式 draft id，调用方应直接返回该 id
+//   - 0, false, nil：本请求 SET NX 认领成功，可继续 Insert
+//   - 0, false, err：等待超时 / Redis / context 错误
+func (s *KnowPostService) claimDraftIdempotency(ctx context.Context, idemKey, pendingMarker string) (existingID uint64, alreadyDone bool, err error) {
+	deadline := time.Now().Add(draftIdemMaxWait)
+	for {
+		// 1) 尝试原子认领
+		ok, setErr := s.redis.SetNX(ctx, idemKey, pendingMarker, draftIdemTTL).Result()
+		if setErr != nil {
+			return 0, false, fmt.Errorf("create draft: claim idempotency: %w", setErr)
+		}
+		if ok {
+			return 0, false, nil
+		}
+
+		// 2) 认领失败：读当前值
+		val, getErr := s.redis.Get(ctx, idemKey).Result()
+		if getErr == redis.Nil {
+			// key 刚好过期，下一轮重新 SET NX
+			if time.Now().After(deadline) {
+				return 0, false, errcode.ErrInternal.WithMsg("create draft: idempotency claim timeout")
+			}
+			if !contextutil.Sleep(ctx, draftIdemWaitInterval) {
+				return 0, false, ctx.Err()
+			}
+			continue
+		}
+		if getErr != nil {
+			return 0, false, fmt.Errorf("create draft: get idempotency: %w", getErr)
+		}
+
+		if strings.HasPrefix(val, draftIdemPendingPrefix) {
+			// 其他请求正在写库：等待其固化正式 id
+			if time.Now().After(deadline) {
+				return 0, false, errcode.ErrInternal.WithMsg("create draft: wait idempotency timeout")
+			}
+			if !contextutil.Sleep(ctx, draftIdemWaitInterval) {
+				return 0, false, ctx.Err()
+			}
+			continue
+		}
+
+		id, parseErr := strconv.ParseUint(val, 10, 64)
+		if parseErr != nil || id == 0 {
+			// 脏值：删除后重试认领（仅本业务前缀 key，风险可控）
+			_ = s.redis.Del(ctx, idemKey).Err()
+			if time.Now().After(deadline) {
+				return 0, false, errcode.ErrInternal.WithMsg("create draft: invalid idempotency value")
+			}
+			continue
+		}
+		return id, true, nil
+	}
 }
 
 // ConfirmContent 在用户上传内容后记录 OSS 对象元数据。
