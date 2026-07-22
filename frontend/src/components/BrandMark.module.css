@@ -1,0 +1,41 @@
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mark {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(145deg, rgba(214, 163, 90, 0.98), rgba(17, 24, 39, 0.98)),
+    var(--ink-950);
+  color: var(--paper-strong);
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 900;
+  box-shadow: 0 16px 34px rgba(17, 24, 39, 0.2);
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.text strong {
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.text span {
+  margin-top: 4px;
+  color: rgba(250, 247, 240, 0.58);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}

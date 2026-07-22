@@ -1,55 +1,37 @@
-import { apiFetch } from "./apiClient";
-import type {
-  AuthResponse,
-  AuthenticatedUser,
-  LoginRequest,
-  LoginResponse,
-  LogoutRequest,
-  RefreshResponse,
-  RegisterRequest,
-  RegisterResponse,
-  SendCodeRequest,
-  SendCodeResponse
-} from "@/types/auth";
+import type { User } from "@/types/domain";
 
-const AUTH_PREFIX = "/api/v1/auth";
+const STORAGE_KEY = "zhiguang.user";
+
+export const fallbackUser: User = {
+  id: "local-user",
+  name: "知光创作者",
+  title: "知识工程实践者",
+  email: "creator@zhiguang.local",
+  skills: ["AI Agent", "Go 后端", "知识管理"]
+};
 
 export const authService = {
-  sendCode: (payload: SendCodeRequest) =>
-    apiFetch<SendCodeResponse>(`${AUTH_PREFIX}/send-code`, {
-      method: "POST",
-      body: payload
-    }),
+  current(): User | null {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as User;
+    } catch {
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+  },
 
-  register: (payload: RegisterRequest) =>
-    apiFetch<RegisterResponse>(`${AUTH_PREFIX}/register`, {
-      method: "POST",
-      body: payload
-    }),
+  login(account: string): User {
+    const user = {
+      ...fallbackUser,
+      email: account.includes("@") ? account : fallbackUser.email
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+    return user;
+  },
 
-  login: (payload: LoginRequest) =>
-    apiFetch<LoginResponse>(`${AUTH_PREFIX}/login`, {
-      method: "POST",
-      body: payload
-    }),
-
-  logout: (payload: LogoutRequest, accessToken: string) =>
-    apiFetch<void>(`${AUTH_PREFIX}/logout`, {
-      method: "POST",
-      body: payload,
-      accessToken
-    }),
-
-  fetchCurrentUser: (accessToken: string) =>
-    apiFetch<AuthenticatedUser>(`${AUTH_PREFIX}/me`, {
-      accessToken
-    }),
-
-  refresh: (refreshToken: string) =>
-    apiFetch<AuthResponse>(`${AUTH_PREFIX}/refresh`, {
-      method: "POST",
-      body: { refreshToken },
-      // 刷新接口不应携带（已过期的）access token
-      accessToken: null
-    }).then((resp): RefreshResponse => resp.token)
+  logout(): void {
+    localStorage.removeItem(STORAGE_KEY);
+  }
 };

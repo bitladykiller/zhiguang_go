@@ -1,149 +1,52 @@
-import { FormEvent, useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import { useAuth } from "@/context/AuthContext";
-import type { LoginRequest } from "@/types/auth";
-import { authService } from "@/services/authService";
-import styles from "./LoginPage.module.css";
-
-type LocationState = {
-  from?: string;
-};
+import { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import BrandMark from "@/components/BrandMark";
+import Button from "@/components/ui/Button";
+import { useAuth } from "@/features/auth/AuthProvider";
+import styles from "@/pages/PageStyles.module.css";
 
 const LoginPage = () => {
+  const [account, setAccount] = useState("creator@zhiguang.local");
+  const [password, setPassword] = useState("");
+  const { login } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
-  const { login, isLoading, user } = useAuth();
-  const [identifier, setIdentifier] = useState("");
-  const [code, setCode] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [sendingCode, setSendingCode] = useState(false);
-  const [countdown, setCountdown] = useState(0);
 
-  const from = (location.state as LocationState | undefined)?.from ?? "/";
-
-  useEffect(() => {
-    if (!isLoading && user) {
-      navigate(from, { replace: true });
-    }
-  }, [isLoading, user, navigate, from]);
-
-  useEffect(() => {
-    if (countdown <= 0) return;
-    const timer = window.setTimeout(() => setCountdown(prev => prev - 1), 1000);
-    return () => window.clearTimeout(timer);
-  }, [countdown]);
-
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    setError(null);
-    setSubmitting(true);
-
-    try {
-      const payload: LoginRequest = { identifierType: "PHONE", identifier, code };
-      await login(payload);
-      navigate(from, { replace: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "登录失败，请稍后重试";
-      setError(message);
-    } finally {
-      setSubmitting(false);
-    }
+    login(account);
+    navigate("/profile");
   };
-
-  const handleSendCode = async () => {
-    if (!identifier) {
-      setError("请先填写账号信息");
-      return;
-    }
-    setError(null);
-    setSendingCode(true);
-    try {
-      const response = await authService.sendCode({
-        scene: "LOGIN",
-        identifierType: "PHONE",
-        identifier
-      });
-      setCountdown(Math.max(1, response.expireSeconds ?? 300));
-    } catch (err) {
-      const info = err instanceof Error ? err.message : "验证码发送失败";
-      setError(info);
-    } finally {
-      setSendingCode(false);
-    }
-  };
-
-  const isDisabled = submitting || !identifier || !code;
 
   return (
-    <div className={styles.page}>
-      <div className={styles.card}>
-        <div className={styles.titleBlock}>
-          <h1 className={styles.title}>欢迎回来</h1>
-          <p className={styles.subtitle}>登录知光，与知识发光</p>
+    <div className={styles.authPage}>
+      <section className={styles.authVisual}>
+        <BrandMark />
+        <div className={styles.headerText}>
+          <span className={styles.kicker}>Welcome back</span>
+          <h1>回到你的知识工作台。</h1>
+          <p>当前登录页使用本地状态模拟登录，后续接入 Go 后端认证接口时不需要重做页面结构。</p>
         </div>
-
-        <form className={styles.form} onSubmit={handleSubmit}>
-          {/* 只保留手机号 + 验证码登录，不提供选择 */}
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="identifier">
-              手机号
-            </label>
-            <input
-              id="identifier"
-              className={styles.input}
-              value={identifier}
-              onChange={event => setIdentifier(event.target.value)}
-              placeholder="请输入账号"
-              type="tel"
-              autoComplete="tel"
-            />
-          </div>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="code">
-              验证码
-            </label>
-            <div className={styles.codeRow}>
-              <input
-                id="code"
-                className={styles.input}
-                value={code}
-                onChange={event => setCode(event.target.value)}
-                placeholder="请输入验证码"
-                autoComplete="one-time-code"
-              />
-              <button
-                type="button"
-                className={styles.codeButton}
-                disabled={sendingCode || countdown > 0}
-                onClick={handleSendCode}
-              >
-                {countdown > 0 ? `${countdown}s` : "获取验证码"}
-              </button>
-            </div>
-            <span className={styles.tips}>验证码用于校验登录，不需要输入密码。</span>
-          </div>
-
-          {error ? <div className={styles.error}>{error}</div> : null}
-
-          <div className={styles.actions}>
-            <button type="submit" className={styles.submitButton} disabled={isDisabled}>
-              {submitting ? "登录中..." : "登录"}
-            </button>
-            <div className={styles.switchLink}>
-              还没有账号？
-              <button
-                type="button"
-                style={{ background: "none", border: "none", color: "var(--color-primary-strong)", fontWeight: 600, cursor: "pointer" }}
-                onClick={() => navigate("/register", { state: { from } })}
-              >
-                前往注册
-              </button>
-            </div>
-          </div>
+      </section>
+      <section className={styles.authCard}>
+        <div>
+          <h2>登录</h2>
+          <p className={styles.helper}>继续管理发布、收藏和学习路径。</p>
+        </div>
+        <form className={styles.authForm} onSubmit={submit}>
+          <label className={styles.field}>
+            <span>邮箱或手机号</span>
+            <input className={styles.input} value={account} onChange={(event) => setAccount(event.target.value)} />
+          </label>
+          <label className={styles.field}>
+            <span>密码</span>
+            <input className={styles.input} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="任意输入即可演示" />
+          </label>
+          <Button type="submit">登录</Button>
         </form>
-      </div>
+        <p className={styles.linkText}>
+          还没有账号？<Link to="/register">创建一个</Link>
+        </p>
+      </section>
     </div>
   );
 };

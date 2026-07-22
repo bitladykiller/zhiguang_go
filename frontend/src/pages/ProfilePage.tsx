@@ -1,170 +1,68 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import AppLayout from "@/components/layout/AppLayout";
-import MainHeader from "@/components/layout/MainHeader";
-import SectionHeader from "@/components/common/SectionHeader";
-import AuthStatus from "@/features/auth/AuthStatus";
-import { useAuth } from "@/context/AuthContext";
-import styles from "./ProfilePage.module.css";
-import feedStyles from "./HomePage.module.css";
-import CourseCard from "@/components/cards/CourseCard";
-import LikeFavBar from "@/components/common/LikeFavBar";
-import { knowpostService } from "@/services/knowpostService";
-import RelationCounters from "@/components/common/RelationCounters";
+import { useNavigate } from "react-router-dom";
+import ArticleCard from "@/components/ArticleCard";
+import Button from "@/components/ui/Button";
+import EmptyState from "@/components/ui/EmptyState";
+import Tag from "@/components/ui/Tag";
+import { useAuth } from "@/features/auth/AuthProvider";
+import AppLayout from "@/layouts/AppLayout";
+import { mockArticles } from "@/services/contentService";
+import styles from "@/pages/PageStyles.module.css";
 
 const ProfilePage = () => {
-  const { user, tokens } = useAuth();
-  const displayName = user?.nickname ?? user?.phone ?? user?.email ?? "知光用户";
-  const avatarInitial = displayName.trim().charAt(0) || "知";
-
-  // 领域标签展示：仅解析 tagJson
-  const tags = useMemo(() => {
-    if (user && typeof user.tagJson === "string") {
-      try {
-        const parsed = JSON.parse(user.tagJson);
-        return Array.isArray(parsed)
-          ? parsed.filter((t) => typeof t === "string")
-          : [];
-      } catch {
-        return [];
-      }
-    }
-    return [];
-  }, [user]);
-
-
-  // 我的知文列表数据
-  const [items, setItems] = useState<Array<{
-    id: string;
-    title: string;
-    description: string;
-    coverImage?: string;
-    tags: string[];
-    tagJson?: string;
-    authorAvatar?: string;
-    authorAvator?: string;
-    authorNickname: string;
-    likeCount?: number;
-    favoriteCount?: number;
-    liked?: boolean;
-    faved?: boolean;
-    isTop?: boolean;
-  }>>([]);
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // 抽取成单一函数，供首次加载与编辑动作后复用
-  const reloadMine = async () => {
-    if (!tokens?.accessToken) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const resp = await knowpostService.mine(1, 20, tokens.accessToken);
-      setItems(resp.items ?? []);
-      setHasMore(!!resp.hasMore);
-      setPage(resp.page ?? 1);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "加载失败";
-      setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void reloadMine();
-  }, [tokens?.accessToken]);
-
+  const { user } = useAuth();
+  const navigate = useNavigate();
 
   return (
-    <AppLayout
-      header={
-        <MainHeader
-          headline="我的知光主页"
-          subtitle="完善个人信息，积累你的知识资产"
-          rightSlot={<AuthStatus />}
-        />
-      }
-    >
-      <>
-        <SectionHeader
-          title="个人信息"
-          subtitle="让同学们更快认识你"
-          actions={<Link to="/profile/edit" className="ghost-button">编辑资料</Link>}
-        />
-        <div className={styles.profileGrid}>
-          <div className={styles.avatarBox}>
-            {user?.avatar ? (
-              <img src={user.avatar} alt="avatar" className={styles.avatarImg} />
-            ) : (
-              <span>{avatarInitial}</span>
-            )}
+    <AppLayout>
+      <div className={styles.page}>
+        <section className={styles.header}>
+          <div className={styles.headerText}>
+            <span className={styles.kicker}>个人主页</span>
+            <h1>{user ? `${user.name} 的知识资产` : "登录后管理你的知识资产。"}</h1>
+            <p>展示创作者定位、技能标签、发布内容和收藏沉淀，让个人主页像一个可信的知识档案。</p>
           </div>
-          <div className={styles.infoBox}>
-            <div className={styles.nickname}>{displayName}</div>
-            <div className={styles.tags}>
-              {tags.length > 0 ? (
-                tags.map(tag => <span key={tag}>{tag}</span>)
-              ) : (
-                <span>未设置</span>
-              )}
+          {!user ? (
+            <div className={styles.headerActions}>
+              <Button onClick={() => navigate("/login")}>登录</Button>
             </div>
-          </div>
-        </div>
-        <div className={styles.bioBlock}>{user?.bio ?? "暂无简介"}</div>
+          ) : null}
+        </section>
 
-        {/* 关系计数展示 */}
-        {user?.id ? (
-          <div style={{ marginTop: 8 }}>
-            <RelationCounters userId={user.id} />
-          </div>
-        ) : null}
-
-        <SectionHeader title="我的知文" subtitle="仅显示你已发布的知文" />
-        {error ? <div style={{ color: "var(--color-danger)" }}>{error}</div> : null}
-        {!user ? (
-          <div style={{ color: "var(--color-text-muted)", padding: 12 }}>请登录后查看你的知文</div>
-        ) : (
-          <div className={feedStyles.masonry}>
-            {items.map(item => (
-              <div key={item.id} className={feedStyles.masonryItem}>
-                <CourseCard
-                  id={item.id}
-                  title={item.title}
-                  summary={item.description ?? ""}
-                  tags={item.tags ?? []}
-                  isTop={item.isTop}
-                  authorTags={(() => {
-                    try {
-                      return item.tagJson ? (JSON.parse(item.tagJson) as unknown[]).filter((t) => typeof t === "string") as string[] : [];
-                    } catch {
-                      return [];
-                    }
-                  })()}
-                  teacher={{ name: item.authorNickname, avatarUrl: item.authorAvatar ?? item.authorAvator }}
-                  coverImage={item.coverImage}
-                  to={`/post/${item.id}`}
-                  editable
-                  onChanged={(action) => {
-                    if (action === "delete") {
-                      setItems(prev => prev.filter(x => x.id !== item.id));
-                    } else {
-                      void reloadMine();
-                    }
-                  }}
-              footerExtra={<LikeFavBar entityId={item.id} compact initialCounts={{ like: item.likeCount ?? 0, fav: item.favoriteCount ?? 0 }} initialState={{ liked: item.liked, faved: item.faved }} />}
-            />
+        {user ? (
+          <>
+            <section className={styles.section}>
+              <div className={styles.sectionHead}>
+                <div className={styles.sectionTitle}>
+                  <h2>{user.name}</h2>
+                  <p>{user.title}</p>
+                </div>
               </div>
-            ))}
-            {loading ? <div className={feedStyles.masonryItem}><div>加载中…</div></div> : null}
-            {!loading && items.length === 0 ? (
-              <div className={feedStyles.masonryItem}><div>暂无内容</div></div>
-            ) : null}
-          </div>
+              <div className={styles.headerActions}>
+                {user.skills.map((skill) => (
+                  <Tag key={skill} tone="gold">
+                    {skill}
+                  </Tag>
+                ))}
+              </div>
+            </section>
+            <section className={styles.section}>
+              <div className={styles.sectionHead}>
+                <div className={styles.sectionTitle}>
+                  <h2>代表知文</h2>
+                  <p>个人主页默认展示最近沉淀内容。</p>
+                </div>
+              </div>
+              <div className={styles.grid}>
+                {mockArticles.slice(0, 3).map((article) => (
+                  <ArticleCard key={article.id} article={article} />
+                ))}
+              </div>
+            </section>
+          </>
+        ) : (
+          <EmptyState title="尚未登录" description="登录后可查看你的发布、收藏和学习进度。" action={{ label: "去登录", onClick: () => navigate("/login") }} />
         )}
-      </>
+      </div>
     </AppLayout>
   );
 };

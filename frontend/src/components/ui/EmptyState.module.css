@@ -1,0 +1,32 @@
+.empty {
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  min-height: 280px;
+  padding: 44px 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 253, 248, 0.72);
+  text-align: center;
+}
+
+.icon {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  color: var(--gold-strong);
+  background: rgba(214, 163, 90, 0.14);
+}
+
+.empty strong {
+  color: var(--ink-950);
+  font-size: 18px;
+}
+
+.empty p {
+  max-width: 420px;
+  color: var(--ink-500);
+  line-height: 1.7;
+}
