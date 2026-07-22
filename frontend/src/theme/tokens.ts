@@ -1,31 +1,35 @@
 export const colors = {
-  primary: "#ff8a41",
-  primaryStrong: "#ff7a22",
-  primaryLight: "#ffe1bf",
-  primarySoft: "#fff2e1",
-  success: "#12c07b",
-  info: "#4b85f1",
-  surface: "#ffffff",
-  surfaceSoft: "#fff6ea",
-  surfaceMuted: "#fff0de",
-  textStrong: "#1f1f33",
-  text: "#3a3a4a",
-  textMuted: "#76768a",
-  border: "rgba(255, 163, 88, 0.3)",
-  divider: "rgba(31, 31, 51, 0.08)"
+  primary: "#d97706",
+  primaryStrong: "#b45309",
+  primaryLight: "#fff4df",
+  primarySoft: "#f7efe2",
+  secondary: "#0f766e",
+  secondaryStrong: "#115e59",
+  accent: "#2563eb",
+  success: "#0f9f6e",
+  info: "#2563eb",
+  danger: "#c2413a",
+  surface: "#fffdf9",
+  surfaceSoft: "#eef6f2",
+  surfaceMuted: "#f7efe2",
+  textStrong: "#18212f",
+  text: "#334155",
+  textMuted: "#64748b",
+  border: "rgba(24, 33, 47, 0.12)",
+  divider: "rgba(24, 33, 47, 0.08)"
 };
 
 export const radii = {
-  xs: "8px",
-  sm: "12px",
-  md: "16px",
-  lg: "24px",
-  xl: "32px"
+  xs: "4px",
+  sm: "6px",
+  md: "8px",
+  lg: "12px",
+  xl: "16px"
 };
 
 export const shadows = {
-  card: "0 16px 42px rgba(26, 26, 44, 0.08)",
-  soft: "0 14px 32px rgba(255, 138, 65, 0.18)"
+  card: "0 18px 36px rgba(24, 33, 47, 0.08)",
+  soft: "0 14px 34px rgba(24, 33, 47, 0.08)"
 };
 
 export const layout = {

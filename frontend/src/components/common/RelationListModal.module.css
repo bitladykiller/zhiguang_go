@@ -9,9 +9,10 @@
 }
 
 ._modal_1q1ln_12 {
-  background: var(--color-bg-card, #fff);
-  border-radius: 12px;
-  box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+  background: var(--color-surface);
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  border-radius: var(--radius-md);
+  box-shadow: 0 18px 42px rgba(24, 33, 47, 0.18);
   width: min(560px, 92vw);
   max-height: 80vh;
   display: flex;
@@ -28,7 +29,7 @@
 
 ._title_1q1ln_32 {
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 800;
   color: var(--color-text, #222);
 }
 
@@ -56,14 +57,14 @@
   align-items: center;
   gap: 10px;
   padding: 8px 6px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--color-border, #eee);
 }
 
 ._avatar_1q1ln_69 {
   width: 32px;
   height: 32px;
-  border-radius: 50%;
+  border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -89,7 +90,7 @@
 ._more_1q1ln_93 {
   border: 1px solid var(--color-border, #ddd);
   background: var(--color-bg, #fff);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 6px 12px;
   cursor: pointer;
 }
@@ -101,5 +102,5 @@
 
 ._error_1q1ln_106 {
   padding: 12px;
-  color: #c00;
+  color: var(--color-danger);
 }

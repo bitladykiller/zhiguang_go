@@ -1,22 +1,164 @@
-.heroRow {
-  margin-bottom: 24px;
-}
-
 .masonry {
   column-count: 4;
-  column-gap: 24px;
+  column-gap: 18px;
 }
 
 .masonryItem {
   break-inside: avoid;
   -webkit-column-break-inside: avoid;
-  margin-bottom: 24px;
+  margin-bottom: 18px;
   /* 保持卡片宽度由列宽决定，不额外增加内边距 */
 }
 
-.heroCard {
-  /* 作为顶部大卡展示，宽度占可用区域 */
+.feedToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  background: rgba(255, 253, 249, 0.84);
+  box-shadow: 0 12px 28px rgba(24, 33, 47, 0.06);
+  backdrop-filter: blur(14px);
+}
+
+.feedToolbar > div {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.toolbarEyebrow {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--color-secondary-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.feedToolbar strong {
+  color: var(--color-text-strong);
+  font-size: 15px;
+}
+
+.toolbarNote {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.stateBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(194, 65, 58, 0.24);
+  background: rgba(255, 241, 240, 0.9);
+  color: var(--color-danger);
+}
+
+.stateBanner strong {
+  color: var(--color-danger);
+}
+
+.skeletonCard,
+.emptyState {
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  background: rgba(255, 253, 249, 0.9);
+  box-shadow: var(--shadow-card);
+}
+
+.skeletonCard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px;
+}
+
+.skeletonCover,
+.skeletonLineStrong,
+.skeletonLine,
+.skeletonMeta {
+  overflow: hidden;
+  position: relative;
+  background: linear-gradient(90deg, rgba(226, 232, 240, 0.82), rgba(255, 253, 249, 0.92), rgba(226, 232, 240, 0.82));
+  background-size: 220% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.skeletonCover {
+  aspect-ratio: 16 / 10;
+  border-radius: var(--radius-sm);
+}
+
+.skeletonLineStrong {
+  width: 78%;
+  height: 20px;
+  border-radius: var(--radius-sm);
+}
+
+.skeletonLine {
   width: 100%;
+  height: 56px;
+  border-radius: var(--radius-sm);
+}
+
+.skeletonMeta {
+  width: 62%;
+  height: 36px;
+  border-radius: var(--radius-sm);
+}
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.emptyMark {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+  color: #fff;
+  font-size: 24px;
+  font-weight: 900;
+  box-shadow: 0 16px 28px rgba(15, 118, 110, 0.18);
+}
+
+.emptyState strong {
+  color: var(--color-text-strong);
+  font-size: 18px;
+}
+
+.emptyState span {
+  max-width: 420px;
+  color: var(--color-text-muted);
+  font-size: 14px;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+
+  100% {
+    background-position: -120% 0;
+  }
 }
 
 @media (max-width: 1200px) {
@@ -34,5 +176,20 @@
 @media (max-width: 700px) {
   .masonry {
     column-count: 1;
+  }
+
+  .feedToolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .feedToolbar > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .toolbarNote {
+    white-space: normal;
   }
 }

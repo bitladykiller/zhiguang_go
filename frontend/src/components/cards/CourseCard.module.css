@@ -2,20 +2,31 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 20px;
-  border-radius: 24px;
-  background: var(--color-surface);
+  gap: 14px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 253, 249, 0.96);
+  border: 1px solid rgba(24, 33, 47, 0.1);
   box-shadow: var(--shadow-card);
-  min-height: 280px;
+  min-height: 260px;
   overflow: hidden;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, var(--color-primary), var(--color-secondary));
+  opacity: 0;
+  transition: opacity 0.18s ease;
 }
 
 .card a {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
   height: 100%;
   color: inherit;
 }
@@ -26,7 +37,12 @@
 
 .card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 24px 48px rgba(26, 26, 44, 0.12);
+  border-color: rgba(15, 118, 110, 0.2);
+  box-shadow: 0 24px 48px rgba(24, 33, 47, 0.12);
+}
+
+.card:hover::before {
+  opacity: 1;
 }
 
 .topBadge {
@@ -44,23 +60,24 @@
   font-size: 12px;
   font-weight: 700;
   padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--color-primary-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-secondary-strong);
   color: #fff;
-  box-shadow: 0 10px 24px rgba(26, 26, 44, 0.12);
+  box-shadow: 0 10px 24px rgba(24, 33, 47, 0.12);
 }
 
 .content {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 16px;
+  gap: 12px;
   /* 取消免费徽章后，移除额外的上边距 */
   margin-top: 0;
 }
 
 .title {
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 18px;
+  line-height: 1.35;
+  font-weight: 800;
   color: var(--color-text-strong);
 }
 
@@ -68,6 +85,10 @@
   font-size: 14px;
   color: var(--color-text-muted);
   line-height: 1.6;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 .description em {
   font-style: normal;
@@ -92,31 +113,35 @@
 }
 
 .teacher {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
 .teacherAvatar {
-  width: 40px;
-  height: 40px;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
   border-radius: 999px;
   display: grid;
   place-items: center;
-  background: rgba(255, 138, 65, 0.12);
+  background: rgba(15, 118, 110, 0.1);
   font-weight: 600;
-  color: var(--color-primary-strong);
+  color: var(--color-secondary-strong);
 }
 
 .teacherAvatarImg {
-  width: 40px;
-  height: 40px;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
   border-radius: 999px;
   object-fit: cover;
   display: block;
 }
 
 .teacherInfo {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   font-size: 13px;
@@ -126,6 +151,9 @@
 .teacherName {
   color: var(--color-text-strong);
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .authorTags {
@@ -158,22 +186,62 @@
   display: flex;
   align-items: center;
   justify-content: flex-start;
+  padding-top: 12px;
+  border-top: 1px solid rgba(24, 33, 47, 0.08);
 }
 
 .cover {
   width: 100%;
-  border-radius: 18px;
-  height: auto;
+  height: 100%;
+  object-fit: cover;
   display: block;
+  transition: transform 0.22s ease;
 }
 
 .coverWrap {
   position: relative;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-soft);
+}
+
+.card:hover .cover {
+  transform: scale(1.03);
+}
+
+.coverFallback {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 14px;
+  color: var(--color-secondary-strong);
+  background:
+    linear-gradient(135deg, rgba(238, 246, 242, 0.96), rgba(255, 244, 223, 0.9)),
+    repeating-linear-gradient(135deg, rgba(15, 118, 110, 0.08) 0 1px, transparent 1px 14px);
+  border: 1px solid rgba(15, 118, 110, 0.12);
+}
+
+.coverFallback span {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 253, 249, 0.78);
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .variantHorizontal {
-  grid-template-columns: 1.1fr 0.9fr;
-  align-items: stretch;
+  min-height: 220px;
 }
 
 .variantHorizontalText {
@@ -194,7 +262,7 @@
   display: grid;
   place-items: center;
   color: var(--color-primary-strong);
-  box-shadow: inset 0 0 0 1px rgba(255, 138, 65, 0.22), 0 10px 24px rgba(26, 26, 44, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.22), 0 10px 24px rgba(24, 33, 47, 0.12);
 }
 
 /* 右上角编辑菜单入口 */
@@ -204,18 +272,18 @@
   right: 12px;
   width: 28px;
   height: 28px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   display: grid;
   place-items: center;
-  background: rgba(26, 26, 44, 0.06);
+  background: rgba(24, 33, 47, 0.06);
   color: var(--color-text-muted);
   cursor: pointer;
   z-index: 5;
   border: none;
   outline: none;
 }
-.menuButton:hover { background: rgba(26, 26, 44, 0.12); color: var(--color-text-strong); }
-.menuButton:focus { box-shadow: 0 0 0 2px rgba(255, 138, 65, 0.28); }
+.menuButton:hover { background: rgba(24, 33, 47, 0.12); color: var(--color-text-strong); }
+.menuButton:focus { box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.28); }
 
 .menuList {
   position: absolute;
@@ -223,9 +291,9 @@
   right: 12px;
   min-width: 160px;
   background: var(--color-surface);
-  border-radius: 12px;
-  box-shadow: 0 12px 28px rgba(26, 26, 44, 0.12);
-  border: 1px solid rgba(26, 26, 44, 0.08);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 28px rgba(24, 33, 47, 0.12);
+  border: 1px solid rgba(24, 33, 47, 0.08);
   padding: 6px;
   z-index: 10;
 }
@@ -238,15 +306,25 @@
   font-size: 13px;
   color: var(--color-text-strong);
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   border: none;
 }
-.menuItem:hover { background: rgba(255, 138, 65, 0.08); }
+.menuItem:hover { background: rgba(15, 118, 110, 0.08); }
 .menuDanger { color: var(--color-danger); }
 
 @media (max-width: 1100px) {
   .variantHorizontal {
-    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .card {
+    min-height: 0;
+  }
+
+  .title {
+    font-size: 17px;
   }
 }

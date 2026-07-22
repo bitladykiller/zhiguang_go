@@ -84,6 +84,7 @@ const SearchPage = () => {
           />
         </MainHeader>
       }
+      variant="cardless"
     >
       <>
         {showLoginHint && !user ? (

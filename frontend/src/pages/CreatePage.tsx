@@ -140,7 +140,7 @@ const CreatePage = () => {
 
       // 5) 发布
       await knowpostService.publish(id);
-      setMessage("发布成功 ✅");
+      setMessage("发布成功");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "发布失败";
       setError(msg);
@@ -189,6 +189,7 @@ const CreatePage = () => {
           rightSlot={<AuthStatus />}
         />
       }
+      variant="cardless"
     >
       <div className={styles.formCard}>
         <SectionHeader title="基本信息" subtitle="精准描述你的内容，帮助同学快速了解" />

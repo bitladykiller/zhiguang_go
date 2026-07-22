@@ -3,15 +3,16 @@
   flex-direction: column;
   gap: 32px;
   padding: 32px;
-  border-radius: 32px;
-  background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 18px 42px rgba(26, 26, 44, 0.08);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  background: rgba(255, 253, 249, 0.95);
+  box-shadow: var(--shadow-card);
   position: relative; /* 让预览层仅覆盖卡片区域 */
 }
 
 .heroImage {
   width: 100%;
-  border-radius: 28px;
+  border-radius: var(--radius-md);
   max-height: 360px;
   object-fit: cover;
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.12);
@@ -32,7 +33,7 @@
 
 .title {
   font-size: 28px;
-  font-weight: 700;
+  font-weight: 800;
   color: var(--color-text-strong);
 }
 
@@ -74,8 +75,9 @@
 }
 
 .body {
-  background: rgba(255, 248, 238, 0.8);
-  border-radius: 24px;
+  background: rgba(238, 246, 242, 0.64);
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  border-radius: var(--radius-md);
   padding: 28px;
   line-height: 1.7;
   color: var(--color-text);
@@ -96,25 +98,25 @@
 .markdown p { margin: 12px 0; }
 .markdown ul,
 .markdown ol { margin: 12px 0; padding-left: 1.4em; }
-.markdown a { color: var(--color-primary); text-decoration: underline; }
+.markdown a { color: var(--color-secondary-strong); text-decoration: underline; }
 
 .markdown blockquote {
   margin: 12px 0;
   padding-left: 12px;
-  border-left: 3px solid #ddd;
+  border-left: 3px solid rgba(15, 118, 110, 0.24);
   color: var(--color-text-muted);
 }
 
 .markdown img {
   max-width: 100%;
   height: auto;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
 }
 
 .markdown pre {
   background: #f6f8fa;
   padding: 12px 14px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   overflow: auto;
 }
 
@@ -140,7 +142,7 @@
   position: relative;
   width: 180px;
   aspect-ratio: 3 / 4; /* 宽:高 = 3:4 */
-  border-radius: 16px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.1);
   cursor: pointer;
@@ -156,11 +158,11 @@
   position: absolute;
   top: 8px;
   right: 8px;
-  background: rgba(26, 26, 44, 0.7);
+  background: rgba(24, 33, 47, 0.72);
   color: #fff;
   font-size: 12px;
   padding: 4px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
 }
 
 .previewOverlay {
@@ -182,7 +184,7 @@
 .previewImage {
   max-width: 100%;
   max-height: 80vh;
-  border-radius: 16px;
+  border-radius: var(--radius-md);
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
   object-fit: contain;
 }
@@ -194,7 +196,7 @@
   background: rgba(255, 255, 255, 0.85);
   color: var(--color-text);
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   width: 40px;
   height: 40px;
   display: flex;
@@ -222,7 +224,7 @@
   background: rgba(255, 255, 255, 0.9);
   color: var(--color-text);
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   width: 32px;
   height: 32px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
@@ -234,10 +236,10 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  background: var(--color-primary);
+  background: var(--color-secondary);
   color: #fff;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   padding: 8px 14px;
   font-size: 14px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
@@ -247,9 +249,10 @@
 .ragPanel {
   height: 100%;
   width: 420px;
-  background: #fff;
-  border-radius: 20px;
-  box-shadow: 0 18px 42px rgba(26, 26, 44, 0.12);
+  background: var(--color-surface);
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  border-radius: var(--radius-md);
+  box-shadow: 0 18px 42px rgba(24, 33, 47, 0.12);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -282,9 +285,9 @@
   width: 100%;
   min-height: 64px;
   resize: vertical;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   padding: 10px 12px;
-  border: 1px solid rgba(0,0,0,0.08);
+  border: 1px solid rgba(24, 33, 47, 0.12);
   outline: none;
 }
 
@@ -295,13 +298,13 @@
 
 .ragBtn {
   border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   padding: 8px 12px;
   cursor: pointer;
 }
 
 .ragBtnPrimary {
-  background: var(--color-primary);
+  background: var(--color-secondary);
   color: #fff;
 }
 
@@ -319,8 +322,8 @@
 .ragAnswer {
   margin-top: 6px;
   padding: 12px;
-  border-radius: 12px;
-  background: rgba(246, 248, 250, 0.8);
+  border-radius: var(--radius-md);
+  background: rgba(246, 248, 250, 0.86);
   color: var(--color-text);
   line-height: 1.8;
   flex: 1;

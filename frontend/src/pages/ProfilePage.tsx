@@ -87,6 +87,7 @@ const ProfilePage = () => {
           rightSlot={<AuthStatus />}
         />
       }
+      variant="cardless"
     >
       <>
         <SectionHeader

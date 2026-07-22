@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import clsx from "clsx";
 import { Link } from "react-router-dom";
 import Tag from "@/components/common/Tag";
-import { HeartIcon } from "@/components/icons/Icon";
+import { EyeIcon, HeartIcon, SparkIcon } from "@/components/icons/Icon";
 import { useAuth } from "@/context/AuthContext";
 import { knowpostService } from "@/services/knowpostService";
 import type { KnowpostDetailResponse, VisibleScope } from "@/types/knowpost";
@@ -192,7 +192,12 @@ const CourseCard = ({
             </div>
           ) : null}
         </div>
-      ) : null}
+      ) : (
+        <div className={styles.coverFallback} aria-hidden="true">
+          <SparkIcon width={30} height={30} strokeWidth={1.4} />
+          <span>{tags?.[0] ? `#${tags[0]}` : "知光"}</span>
+        </div>
+      )}
 
       <div className={styles.content}>
         <h3 className={styles.title}>{title}</h3>
@@ -234,7 +239,10 @@ const CourseCard = ({
                   <HeartIcon width={16} height={16} strokeWidth={1.6} />
                   {stats.likes}
                 </span>
-                <span className={styles.statItem}>👁️ {stats.views}</span>
+                <span className={styles.statItem}>
+                  <EyeIcon width={16} height={16} strokeWidth={1.6} />
+                  {stats.views}
+                </span>
               </>
             ) : null}
           </div>
@@ -248,7 +256,7 @@ const CourseCard = ({
   );
 
   return (
-    <article className={clsx(styles.card, className)}>
+    <article className={clsx(styles.card, layout === "horizontal" && styles.variantHorizontal, className)}>
       {(detail?.isTop ?? isTop) ? (
         <div className={styles.topBadge}><span>置顶</span></div>
       ) : null}
