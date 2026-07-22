@@ -41,7 +41,7 @@ func initKnowPost(
 	feedPublicCache := &knowpost.PrefixCache{Cache: l1Cache, Prefix: "fp:"}
 	feedMineCache := &knowpost.PrefixCache{Cache: l1Cache, Prefix: "fm:"}
 
-	feedSvc := knowpost.NewKnowPostFeedService(knowpost.NewKnowPostRepository(db), redisClient, feedPublicCache, feedMineCache, hotKeyDetector, counter, logger)
+	feedSvc := knowpost.NewKnowPostFeedService(knowpost.NewKnowPostRepository(db), redisClient, feedPublicCache, feedMineCache, hotKeyDetector, counter, logger, &cfg.KnowPost.FeedCache)
 	kpSvc := knowpost.NewKnowPostService(db, idGen, redisClient, detailCache, hotKeyDetector, &cfg.OSS, counter, feedSvc, logger, nil, &cfg.KnowPost)
 	kpHandler := knowpost.NewKnowPostHandler(kpSvc, kpSvc, feedSvc)
 
