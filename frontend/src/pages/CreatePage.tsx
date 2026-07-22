@@ -1,364 +1,114 @@
-import AppLayout from "@/components/layout/AppLayout";
-import MainHeader from "@/components/layout/MainHeader";
-import SectionHeader from "@/components/common/SectionHeader";
-import TagInput from "@/components/common/TagInput";
-import Select from "@/components/common/Select";
-import { useRef, useState } from "react";
-import { knowpostService, uploadToPresigned, computeSha256 } from "@/services/knowpostService";
-import AuthStatus from "@/features/auth/AuthStatus";
-import { useAuth } from "@/context/AuthContext";
-import styles from "./CreatePage.module.css";
+import { Send } from "lucide-react";
+import { useState } from "react";
+import Button from "@/components/ui/Button";
+import AppLayout from "@/layouts/AppLayout";
+import { contentService } from "@/services/contentService";
+import type { PublishDraft } from "@/types/domain";
+import styles from "@/pages/PageStyles.module.css";
+
+const initialDraft: PublishDraft = {
+  title: "",
+  summary: "",
+  content: "",
+  tags: [],
+  visibility: "public"
+};
 
 const CreatePage = () => {
-  const { user, tokens } = useAuth();
-  const [type, setType] = useState("图文");
-  const [tags, setTags] = useState<string[]>([]);
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [isFree, setIsFree] = useState(true);
-  const [price, setPrice] = useState<number>(0);
-  const [visiblePublic, setVisiblePublic] = useState(true);
-  const [summary, setSummary] = useState("");
-  const [aiSummaryEnabled, setAiSummaryEnabled] = useState(false);
-  const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [postId, setPostId] = useState<string | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [draft, setDraft] = useState<PublishDraft>(initialDraft);
+  const [tagText, setTagText] = useState("AI, 工程实践");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
-  // 图片直传相关
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [imageUploading, setImageUploading] = useState(false);
-  const [uploadedImgUrls, setUploadedImgUrls] = useState<string[]>([]);
-  const MAX_IMAGES = 15;
-
-  const ensureDraft = async (): Promise<string> => {
-    if (postId) return postId;
-    const resp = await knowpostService.createDraft();
-    const idStr = String(resp.id);
-    setPostId(idStr);
-    setMessage(`草稿已创建：${idStr}`);
-    return idStr;
-  };
-
-  const handleSelectImages = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    if (!tokens?.accessToken) {
-      setError("请先登录后再上传图片");
+  const publish = async () => {
+    setError("");
+    setMessage("");
+    if (!draft.title.trim()) {
+      setError("请填写标题。");
       return;
     }
-    setError(null);
-    setMessage(null);
-    setImageUploading(true);
-    try {
-      const id = await ensureDraft();
-      const currentCount = uploadedImgUrls.length;
-      const remaining = Math.max(0, MAX_IMAGES - currentCount);
-      if (remaining <= 0) {
-        setError(`最多可选择 ${MAX_IMAGES} 张图片`);
-        return;
-      }
-      const allSelected = Array.from(files);
-      const arr = allSelected.slice(0, remaining);
-      for (const f of arr) {
-        const match = f.name.match(/\.[^.]+$/);
-        const ext = match ? match[0] : ".jpg";
-        const contentType = f.type || (ext.toLowerCase() === ".png" ? "image/png" : ext.toLowerCase() === ".svg" ? "image/svg+xml" : "image/jpeg");
-        const presign = await knowpostService.presign({
-          fileName: f.name,
-          contentType,
-          folder: `knowposts/${id}/images`
-        }, tokens.accessToken);
-        await uploadToPresigned(presign.putUrl, presign.headers, f);
-        const publicUrl = presign.publicUrl;
-        setUploadedImgUrls(prev => [...prev, publicUrl]);
-      }
-      const ignored = allSelected.length - arr.length;
-      setMessage(`图片上传成功：${arr.length} 张${ignored > 0 ? `（已超过上限，忽略 ${ignored} 张）` : ""}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "图片上传失败";
-      setError(msg);
-    } finally {
-      setImageUploading(false);
-    }
-  };
-
-  const handlePublish = async () => {
-    setMessage(null);
-    setError(null);
-    if (!title.trim()) {
-      setError("请填写标题");
+    if (!draft.content.trim()) {
+      setError("请填写正文。");
       return;
     }
-    if (!content.trim()) {
-      setError("请填写内容正文");
-      return;
-    }
-    if (!tokens?.accessToken) {
-      setError("请先登录后再发布内容");
-      return;
-    }
-    if (summary.trim().length > 50) {
-      setError("摘要不能超过50字");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      // 1) 创建或复用草稿
-      const id = await ensureDraft();
-
-      // 2) 预签名上传正文（将文本作为 Markdown 文件上传）
-      const file = new File([content], "content.md", { type: "text/markdown" });
-      const size = file.size;
-      const sha256 = await computeSha256(file);
-      const presign = await knowpostService.presign({
-        fileName: file.name,
-        contentType: "text/markdown",
-        folder: `knowposts/${id}/content`
-      }, tokens.accessToken);
-      const { etag } = await uploadToPresigned(presign.putUrl, presign.headers, file);
-
-      // 3) 确认正文
-      await knowpostService.confirmContent(id, {
-        objectKey: presign.objectKey,
-        etag,
-        size,
-        sha256
-      });
-
-      // 4) 生成/使用摘要并保存元数据（标题、标签、摘要等）
-      const description = summary.trim();
-      await knowpostService.update(id, {
-        title: title.trim(),
-        tags: tags.length ? tags : undefined,
-        imgUrls: uploadedImgUrls.length ? uploadedImgUrls : undefined,
-        visible: visiblePublic ? "public" : "private",
-        isTop: false,
-        description: description || undefined
-      });
-
-      // 5) 发布
-      await knowpostService.publish(id);
-      setMessage("发布成功");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "发布失败";
-      setError(msg);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-  const handleToggleAiSummary = async () => {
-    // 切换开关；开启时触发生成
-    if (!aiSummaryEnabled) {
-      if (!tokens?.accessToken) {
-        setError("请先登录以使用 AI 摘要");
-        return;
-      }
-      if (!content.trim()) {
-        setError("正文为空，无法生成摘要");
-        return;
-      }
-      setAiSummaryLoading(true);
-      setMessage(null);
-      setError(null);
-      try {
-        const id = await ensureDraft();
-        const resp = await knowpostService.suggestDescription(id, title.trim(), content, tokens.accessToken);
-        const desc = (resp.description ?? "").slice(0, 50);
-        setSummary(desc);
-        setAiSummaryEnabled(true);
-        setMessage("AI 摘要已生成");
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "生成失败";
-        setError(msg);
-      } finally {
-        setAiSummaryLoading(false);
-      }
-    } else {
-      setAiSummaryEnabled(false);
-    }
+    const payload = {
+      ...draft,
+      tags: tagText
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    };
+    await contentService.publish(payload);
+    setMessage("知文已保存为本地草稿展示。接入后端后可替换为真实发布接口。");
   };
 
   return (
-    <AppLayout
-      header={
-        <MainHeader
-          headline="创建新内容"
-          subtitle="分享你的知识，让更多人受益"
-          rightSlot={<AuthStatus />}
-        />
-      }
-      variant="cardless"
-    >
-      <div className={styles.formCard}>
-        <SectionHeader title="基本信息" subtitle="精准描述你的内容，帮助同学快速了解" />
-        <div className={styles.formGrid}>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="title">
-              标题 *
-            </label>
-            <input
-              id="title"
-              className={styles.input}
-              placeholder="输入内容标题"
-              value={title}
-              onChange={e => setTitle(e.target.value)}
-            />
+    <AppLayout>
+      <div className={styles.page}>
+        <section className={styles.header}>
+          <div className={styles.headerText}>
+            <span className={styles.kicker}>创作中心</span>
+            <h1>写一篇结构清楚、值得收藏的知文。</h1>
+            <p>标题表达观点，摘要说明价值，正文沉淀方法。页面先提供稳定工程化表单，后续可接图片上传和草稿 API。</p>
           </div>
-          <Select
-            id="type"
-            label="内容类型 *"
-            value={type}
-            onChange={setType}
-            options={[
-              { label: "图文", value: "图文" },
-              { label: "视频", value: "视频" }
-            ]}
-          />
-          <div className={`${styles.field} ${styles.fullWidth}`}>
-            <label className={styles.label}>图片（多选） *</label>
-            <div
-              className={styles.uploadBox}
-              role="button"
-              tabIndex={0}
-              onClick={() => {
-                if (uploadedImgUrls.length >= MAX_IMAGES) {
-                  setError(`最多可选择 ${MAX_IMAGES} 张图片`);
-                  return;
-                }
-                fileInputRef.current?.click();
-              }}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") fileInputRef.current?.click(); }}
-            >
-              <span>{imageUploading ? "正在上传…" : "点击上传图片"}</span>
-              <small>支持 JPG / PNG / SVG，最多 {MAX_IMAGES} 张；单张不超过 5MB（已选 {uploadedImgUrls.length} / {MAX_IMAGES}）</small>
+        </section>
+
+        <section className={styles.formPanel}>
+          <div className={styles.formGrid}>
+            <div className={styles.field}>
+              <label htmlFor="title">标题</label>
               <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className={styles.fileInputHidden}
-                onChange={e => handleSelectImages(e.target.files)}
+                id="title"
+                className={styles.input}
+                value={draft.title}
+                placeholder="例如：如何设计一个可靠的 Agent 工作流"
+                onChange={(event) => setDraft((prev) => ({ ...prev, title: event.target.value }))}
               />
             </div>
-            {uploadedImgUrls.length > 0 ? (
-              <div className={styles.thumbGrid}>
-                {uploadedImgUrls.map((url, idx) => (
-                  <img key={idx} src={url} alt="" className={styles.thumb} onClick={() => setPreviewUrl(url)} />
-                ))}
-              </div>
-            ) : null}
-          </div>
-          <div className={`${styles.field} ${styles.fullWidth}`}>
-            <label className={styles.label} htmlFor="content">
-              内容正文 *
-            </label>
-            <textarea
-              id="content"
-              className={styles.textarea}
-              placeholder="写下你的知识内容..."
-              value={content}
-              onChange={e => setContent(e.target.value)}
-            />
-          </div>
-          <div className={`${styles.field} ${styles.fullWidth}`}>
-            <div className={styles.fieldHeader}>
-              <label className={styles.label} htmlFor="summary">知识摘要</label>
-              <div className={styles.headActions}>
-                <span>AI 摘要</span>
-                <div
-                  className={`${styles.inlineSwitch} ${aiSummaryEnabled ? styles.inlineSwitchOn : ""}`}
-                  role="button"
-                  tabIndex={0}
-                  aria-pressed={aiSummaryEnabled}
-                  aria-label="AI 摘要开关"
-                  onClick={handleToggleAiSummary}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleToggleAiSummary(); }}
-                />
-                {aiSummaryLoading ? <small className={styles.muted}>生成中…</small> : null}
-              </div>
+            <div className={styles.field}>
+              <label htmlFor="visibility">可见性</label>
+              <select
+                id="visibility"
+                className={styles.select}
+                value={draft.visibility}
+                onChange={(event) => setDraft((prev) => ({ ...prev, visibility: event.target.value as PublishDraft["visibility"] }))}
+              >
+                <option value="public">公开</option>
+                <option value="private">私密</option>
+              </select>
             </div>
-            <textarea
-              id="summary"
-              className={styles.textarea}
-              placeholder="填写内容摘要（50字以内）"
-              value={summary}
-              onChange={e => setSummary(e.target.value)}
-            />
-            <small className={summary.trim().length > 50 ? styles.charCountOver : styles.charCount}>
-              {summary.trim().length} / 50
-            </small>
-          </div>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="price">
-              价格
-            </label>
-            <input
-              id="price"
-              className={styles.input}
-              type="number"
-              min="0"
-              step="0.1"
-              value={isFree ? 0 : price}
-              onChange={e => setPrice(Number(e.target.value))}
-              disabled={isFree}
-            />
-          </div>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="tags">
-              标签
-            </label>
-            <TagInput
-              id="tags"
-              value={tags}
-              onChange={setTags}
-              placeholder="输入标签后按回车"
-            />
-          </div>
-          <div className={`${styles.field} ${styles.fullWidth}`}>
-            <div
-              className={styles.toggle}
-              role="button"
-              tabIndex={0}
-              onClick={() => setIsFree(prev => !prev)}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setIsFree(prev => !prev); }}
-            >
-              <div>
-                <div className={styles.label}>免费分享</div>
-                <small>{isFree ? "已开启" : "关闭后可设置价格"}</small>
-              </div>
-              <div className={`${styles.switch} ${isFree ? styles.switchOn : ""}`} aria-hidden="true" />
+            <div className={styles.fullField}>
+              <label htmlFor="summary">摘要</label>
+              <input
+                id="summary"
+                className={styles.input}
+                value={draft.summary}
+                placeholder="用一句话说明读者能获得什么"
+                onChange={(event) => setDraft((prev) => ({ ...prev, summary: event.target.value }))}
+              />
+            </div>
+            <div className={styles.fullField}>
+              <label htmlFor="tags">标签</label>
+              <input id="tags" className={styles.input} value={tagText} onChange={(event) => setTagText(event.target.value)} />
+              <span className={styles.helper}>用英文逗号分隔，例如：RAG, Go, 工程化</span>
+            </div>
+            <div className={styles.fullField}>
+              <label htmlFor="content">正文</label>
+              <textarea
+                id="content"
+                className={styles.textarea}
+                value={draft.content}
+                placeholder="写下背景、问题、方法、验证和风险..."
+                onChange={(event) => setDraft((prev) => ({ ...prev, content: event.target.value }))}
+              />
             </div>
           </div>
-          <div className={`${styles.field} ${styles.fullWidth}`}>
-            <div
-              className={styles.toggle}
-              role="button"
-              tabIndex={0}
-              onClick={() => setVisiblePublic(prev => !prev)}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setVisiblePublic(prev => !prev); }}
-            >
-              <div>
-                <div className={styles.label}>可见范围</div>
-                <small>{visiblePublic ? "公开" : "私密"}</small>
-              </div>
-              <div className={`${styles.switch} ${visiblePublic ? styles.switchOn : ""}`} aria-hidden="true" />
-            </div>
-          </div>
-        </div>
-        <div className={styles.actions}>
-          <button type="button" className={styles.submit} onClick={handlePublish} disabled={submitting}>
-            {submitting ? "发布中…" : "发布"}
-          </button>
-        </div>
-        {error ? <div className={styles.error}>{error}</div> : null}
-        {message ? <div className={styles.success}>{message}</div> : null}
-        {previewUrl ? (
-          <div className={styles.previewOverlay} onClick={() => setPreviewUrl(null)}>
-            <img src={previewUrl} className={styles.previewImage} alt="预览" />
-          </div>
-        ) : null}
+          {message ? <div className={styles.message}>{message}</div> : null}
+          {error ? <div className={styles.error}>{error}</div> : null}
+          <Button icon={<Send size={18} />} onClick={publish}>
+            发布知文
+          </Button>
+        </section>
       </div>
     </AppLayout>
   );

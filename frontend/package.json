@@ -1,6 +1,6 @@
 {
-  "name": "zhiguang-fe",
-  "version": "0.1.0",
+  "name": "zhiguang-frontend",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,22 +10,18 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@coze/api": "^1.3.8",
-    "clsx": "^2.0.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-markdown": "^10.1.0",
-    "react-router-dom": "^6.21.0",
-    "remark-gfm": "^4.0.1"
+    "@vitejs/plugin-react": "^4.3.4",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
   },
   "devDependencies": {
-    "@types/node": "^20.11.17",
-    "@types/react": "^18.2.34",
-    "@types/react-dom": "^18.2.15",
-    "@vitejs/plugin-react": "^4.2.0",
-    "autoprefixer": "^10.4.16",
-    "postcss": "^8.4.32",
-    "typescript": "^5.2.2",
-    "vite": "^5.0.0"
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
   }
 }

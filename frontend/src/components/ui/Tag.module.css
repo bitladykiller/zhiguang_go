@@ -1,0 +1,24 @@
+.tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 9px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  color: var(--ink-600);
+  background: rgba(255, 253, 248, 0.72);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.gold {
+  border-color: rgba(214, 163, 90, 0.36);
+  color: var(--gold-strong);
+  background: rgba(214, 163, 90, 0.12);
+}
+
+.blue {
+  border-color: rgba(37, 99, 235, 0.22);
+  color: var(--blue);
+  background: rgba(37, 99, 235, 0.08);
+}

@@ -1,6 +1,4 @@
 node_modules
 dist
-.git
-.gitignore
-docs
-.git.embedded-backup
+npm-debug.log
+.DS_Store

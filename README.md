@@ -178,7 +178,7 @@ docker compose build
 
 前端 `frontend/Dockerfile` 也已做容器化处理：
 
-- 构建阶段使用 `node:20-alpine`
+- 构建阶段使用 `node:22-alpine`
 - 运行阶段使用 `nginx:alpine`
 - Nginx 会把 `/api` 代理到 Docker Compose 内部的 `app:8080`
 - 浏览器访问 `http://localhost` 即可打开前端页面

@@ -1,143 +1,67 @@
-import { useRef, useState } from "react";
-import AppLayout from "@/components/layout/AppLayout";
-import MainHeader from "@/components/layout/MainHeader";
-import SectionHeader from "@/components/common/SectionHeader";
-import SearchBar from "@/components/common/SearchBar";
-import AuthStatus from "@/features/auth/AuthStatus";
-import styles from "./SearchPage.module.css";
-import { searchService } from "@/services/searchService";
-import type { FeedItem } from "@/types/knowpost";
-import CourseCard from "@/components/cards/CourseCard";
-import LikeFavBar from "@/components/common/LikeFavBar";
-import feedStyles from "./HomePage.module.css";
-import { useAuth } from "@/context/AuthContext";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import ArticleCard from "@/components/ArticleCard";
+import SearchBox from "@/components/SearchBox";
+import EmptyState from "@/components/ui/EmptyState";
+import AppLayout from "@/layouts/AppLayout";
+import { contentService, mockArticles } from "@/services/contentService";
+import type { Article } from "@/types/domain";
+import styles from "@/pages/PageStyles.module.css";
 
 const SearchPage = () => {
-  const [q, setQ] = useState("");
-  const [size] = useState<number>(20);
-  const [items, setItems] = useState<FeedItem[]>([]);
-  const [nextAfter, setNextAfter] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState<boolean>(false);
+  const [params, setParams] = useSearchParams();
+  const [query, setQuery] = useState(params.get("q") ?? "");
+  const [results, setResults] = useState<Article[]>([]);
   const [loading, setLoading] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [suggestLoading, setSuggestLoading] = useState(false);
-  const debounceRef = useRef<number | null>(null);
-  const { user } = useAuth();
-  const [showLoginHint, setShowLoginHint] = useState(false);
 
-  const executeSearch = async (keyword: string) => {
-    const text = keyword.trim();
-    if (!text) return;
-    if (!user) {
-      setShowLoginHint(true);
+  useEffect(() => {
+    const q = params.get("q") ?? "";
+    setQuery(q);
+    if (!q.trim()) {
+      setResults([]);
+      return;
     }
-    setQ(text);
     setLoading(true);
-    try {
-      const resp = await searchService.query({ q: text, size, after: null });
-      setItems(resp.items ?? []);
-      setNextAfter(resp.nextAfter ?? null);
-      setHasMore(!!resp.hasMore);
-    } catch {
-      setItems([]);
-      setNextAfter(null);
-      setHasMore(false);
-    } finally {
+    void contentService.search(q).then((items) => {
+      setResults(items);
       setLoading(false);
-    }
+    });
+  }, [params]);
+
+  const submit = () => {
+    if (query.trim()) setParams({ q: query.trim() });
   };
 
   return (
-    <AppLayout
-      header={
-        <MainHeader
-          headline="搜索你想学习的知识"
-          subtitle="从提示词或你的历史记录开始探索，连接灵感与成长"
-          rightSlot={<AuthStatus />}
-        >
-          <SearchBar
-            placeholder="搜索你想学习的知识..."
-            value={q}
-            suggestions={suggestions}
-            suggestLoading={suggestLoading}
-            onSuggestionClick={(s) => {
-              executeSearch(s);
-            }}
-            onChange={(val) => {
-              setQ(val);
-              // 前缀联想：300ms 防抖
-              if (debounceRef.current) window.clearTimeout(debounceRef.current);
-              debounceRef.current = window.setTimeout(async () => {
-                if (!val.trim()) { setSuggestions([]); return; }
-                try {
-                  setSuggestLoading(true);
-                  const resp = await searchService.suggest(val.trim(), 10);
-                  setSuggestions(resp.items ?? []);
-                } catch {
-                  setSuggestions([]);
-                } finally {
-                  setSuggestLoading(false);
-                }
-              }, 300);
-            }}
-            onSubmit={() => executeSearch(q)}
-          />
-        </MainHeader>
-      }
-      variant="cardless"
-    >
-      <>
-        {showLoginHint && !user ? (
-          <div className={styles.loginHint}>
-            当前为未登录状态，登录后可获得更完整的推荐与学习记录。
+    <AppLayout>
+      <div className={styles.page}>
+        <section className={styles.header}>
+          <div className={styles.headerText}>
+            <span className={styles.kicker}>全站搜索</span>
+            <h1>用关键词找到可执行的知识。</h1>
+            <p>搜索标题、摘要和标签。后端搜索服务不可用时，会自动用本地样例数据展示页面效果。</p>
+            <SearchBox value={query} onChange={setQuery} onSubmit={submit} />
           </div>
-        ) : null}
-        <SectionHeader title="搜索结果" subtitle={loading ? "加载中…" : items.length ? `共 ${items.length} 条（可能有更多）` : "请输入关键词后搜索"} />
-        <div className={feedStyles.masonry}>
-          {items.map(item => (
-            <div key={item.id} className={feedStyles.masonryItem}>
-              <CourseCard
-                id={item.id}
-                title={item.title}
-                summary={item.description ?? ""}
-                tags={item.tags ?? []}
-                isTop={item.isTop}
-                authorTags={(() => {
-                  try {
-                    return item.tagJson ? (JSON.parse(item.tagJson) as unknown[]).filter((t) => typeof t === "string") as string[] : [];
-                  } catch {
-                    return [];
-                  }
-                })()}
-                teacher={{ name: item.authorNickname, avatarUrl: item.authorAvatar ?? item.authorAvator }}
-                coverImage={item.coverImage}
-                to={`/post/${item.id}`}
-                footerExtra={<LikeFavBar entityId={item.id} compact initialCounts={{ like: item.likeCount ?? 0, fav: item.favoriteCount ?? 0 }} initialState={{ liked: item.liked, faved: item.faved }} />}
-              />
+        </section>
+
+        <section className={styles.section}>
+          <div className={styles.sectionHead}>
+            <div className={styles.sectionTitle}>
+              <h2>{params.get("q") ? `搜索结果：${params.get("q")}` : "热门主题"}</h2>
+              <p>{loading ? "正在检索..." : params.get("q") ? `找到 ${results.length} 条内容` : "先从这些方向开始。"}</p>
             </div>
-          ))}
-        </div>
-        {hasMore ? (
-          <button
-            className={styles.loadMoreBtn}
-            type="button"
-            onClick={async () => {
-              if (!q.trim()) return;
-              setLoading(true);
-              try {
-                const resp = await searchService.query({ q: q.trim(), size, after: nextAfter });
-                setItems(prev => [...prev, ...(resp.items ?? [])]);
-                setNextAfter(resp.nextAfter ?? null);
-                setHasMore(!!resp.hasMore);
-              } catch {
-                // 保持已有数据
-              } finally {
-                setLoading(false);
-              }
-            }}
-          >加载更多</button>
-        ) : null}
-      </>
+          </div>
+          {params.get("q") && results.length === 0 && !loading ? (
+            <EmptyState title="没有匹配结果" description="换一个关键词，或先浏览热门主题。" />
+          ) : (
+            <div className={styles.grid}>
+              {(params.get("q") ? results : mockArticles).map((article) => (
+                <ArticleCard key={article.id} article={article} />
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
     </AppLayout>
   );
 };
