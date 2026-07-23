@@ -42,7 +42,7 @@ type KnowPostService struct {
 	redis     *redis.Client
 	l1Cache   *PrefixCache
 	hotKey    *cache.HotKeyDetector
-	// bloom 与空值缓存叠加：前置拦截一定不存在的 ID；nil 表示关闭。
+	// bloom 与空值缓存叠加：RedisBloom CF.* 前置拦截一定不存在的 ID，软删 CF.DEL；nil 表示关闭。
 	bloom     *cache.RedisBloom
 	ossCfg    *config.OssConfig
 	counter   CounterClient
@@ -105,7 +105,7 @@ func NewKnowPostService(
 	return svc
 }
 
-// newDetailBloom 按配置装配详情存在性 Bloom；关闭或依赖缺失时返回 nil。
+// newDetailBloom 按配置装配详情存在性过滤器（RedisBloom CF.*）；关闭或依赖缺失时返回 nil。
 func newDetailBloom(redisClient *redis.Client, cfg *config.KnowPostConfig, logger *zap.Logger) *cache.RedisBloom {
 	if redisClient == nil || cfg == nil {
 		return nil
@@ -123,10 +123,10 @@ func newDetailBloom(redisClient *redis.Client, cfg *config.KnowPostConfig, logge
 	}, logger)
 }
 
-// WarmDetailBloom 从数据库游标扫描未删除知文 ID，批量写入 Bloom。
+// WarmDetailBloom 从数据库游标扫描未删除知文 ID，批量写入 CF 过滤器。
 //
-// 启动时异步调用一次即可；写路径 CreateDraft 与读路径回源成功也会增量 Add。
-// 空过滤器时 MightContain fail-open，因此预热完成前不会误拦详情。
+// 启动时异步调用一次即可；写路径 CreateDraft 与读路径回源成功也会增量 Add；
+// 软删路径 Delete 会 CF.DEL。键不存在时 MightContain fail-open。
 func (s *KnowPostService) WarmDetailBloom(ctx context.Context) error {
 	if s == nil || s.bloom == nil || s.repo == nil {
 		return nil

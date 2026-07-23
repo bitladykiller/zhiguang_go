@@ -2,14 +2,16 @@ package knowpost
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/zhiguang/app/internal/cache"
 	"github.com/coocood/freecache"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
+	"github.com/zhiguang/app/internal/cache"
 	"go.uber.org/zap"
 )
 
@@ -429,17 +431,12 @@ func TestDetailLayoutVer(t *testing.T) {
 }
 
 // TestGetDetail_BloomRejectsUnknownID：过滤器已预热且不含该 ID 时直接 404，不回源。
+// 依赖 RedisBloom CF.*（REDIS_BLOOM_ADDR，默认 127.0.0.1:6379）。
 func TestGetDetail_BloomRejectsUnknownID(t *testing.T) {
 	srv := miniredis.RunT(t)
 	svc := newTestDetailService(t, srv)
-	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-
-	// 使用 cache 包需要 import — 在测试内联构造
-	svc.bloom = mustBloom(t, rdb)
-	// 先写入无关 id 使过滤器 warm，再查不存在 id
+	svc.bloom = mustBloom(t)
 	svc.bloom.AddUint64(context.Background(), 100)
-	// 不应调用 repo：设为会 panic 的 mock 更麻烦，这里用 nil repo 但先被 bloom 拦住
 	svc.repo = nil
 
 	_, err := svc.GetDetail(context.Background(), 999888777, nil)
@@ -452,9 +449,7 @@ func TestGetDetail_BloomRejectsUnknownID(t *testing.T) {
 func TestGetDetail_BloomAllowsExistingAfterAdd(t *testing.T) {
 	srv := miniredis.RunT(t)
 	svc := newTestDetailService(t, srv)
-	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-	svc.bloom = mustBloom(t, rdb)
+	svc.bloom = mustBloom(t)
 	svc.bloom.AddUint64(context.Background(), 1)
 
 	now := time.Now()
@@ -475,13 +470,37 @@ func TestGetDetail_BloomAllowsExistingAfterAdd(t *testing.T) {
 func TestQueryDetailFromDB_NilRepo(t *testing.T) {
 	t.Skip("nil-repo guard is in getDetailUnderLock, not queryDetailFromDB")
 }
-func mustBloom(t *testing.T, rdb *redis.Client) *cache.RedisBloom {
+
+// mustBloom 连接带 RedisBloom 的 Redis；不可用则 Skip。
+func mustBloom(t *testing.T) *cache.RedisBloom {
 	t.Helper()
+	addr := os.Getenv("REDIS_BLOOM_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:6379"
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	t.Cleanup(func() { _ = rdb.Close() })
+	ctx := context.Background()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		t.Skipf("redis not reachable at %s: %v", addr, err)
+	}
+	probe := "cf:probe:knowpost:" + t.Name()
+	if err := rdb.Do(ctx, "CF.RESERVE", probe, 100).Err(); err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "unknown command") {
+			t.Skipf("RedisBloom CF.* unavailable at %s: %v", addr, err)
+		}
+		// item exists 可接受
+	}
+	_ = rdb.Del(ctx, probe).Err()
+
+	key := "cf:test:detail:" + t.Name()
 	b := cache.NewRedisBloom(rdb, cache.BloomConfig{
-		Enabled: true, ExpectedItems: 1000, FalsePositiveRate: 0.01, Key: "bloom:test:detail",
+		Enabled: true, ExpectedItems: 1000, FalsePositiveRate: 0.01, Key: key,
 	}, zap.NewNop())
 	if b == nil {
 		t.Fatal("bloom nil")
 	}
+	t.Cleanup(func() { _ = rdb.Del(context.Background(), key).Err() })
 	return b
 }

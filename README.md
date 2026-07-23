@@ -98,7 +98,7 @@ make dev-up
 - Go API Server(`http://localhost:8080`)
 
 - MySQL 8.0.30
-- Redis 7
+- Redis Stack（`redis/redis-stack-server`，含 RedisBloom `CF.*` 供知文存在性过滤）
 - Kafka(3 brokers) + Zookeeper
 - Canal Server
 - Elasticsearch 8.5.0
@@ -129,7 +129,7 @@ cp config/config-local.yaml.example config/config-local.yaml
 默认本地配置已经指向本机开发环境暴露的端口：
 
 - MySQL: `localhost:3306`
-- Redis: `localhost:6379`
+- Redis Stack: 容器内 `redis:6379`（宿主机默认不映射；集成测可用 `REDIS_BLOOM_ADDR`）
 - Kafka: `localhost:9092,9093,9094`
 - Elasticsearch: `localhost:9200`
 
@@ -448,7 +448,7 @@ sequenceDiagram
 flowchart TD
     A[用户创建草稿] --> B[雪花算法生成知文ID]
     B --> C[MySQL 写草稿]
-    C --> D[加入 Bloom]
+    C --> D[CF.ADD 写入存在性过滤器]
     D --> E[客户端直传正文到 OSS]
     E --> F[确认内容元数据]
     F --> G[编辑标题 / 标签 / 描述]
@@ -467,7 +467,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[请求详情] --> B{Bloom 判断}
+    A[请求详情] --> B{CF.EXISTS}
     B -->|一定不存在| C[直接 404]
     B -->|可能存在或故障放行| D{L1 freecache}
     D -->|命中| E[解析详情]
@@ -486,7 +486,7 @@ flowchart TD
     M --> N[返回详情]
 ```
 
-设计点：Bloom 拦恶意扫号，NULL 缓存兜住误判和软删除，分布式锁防击穿，liked/faved 用户态数据后置查询，避免把个人状态写入共享缓存。
+设计点：RedisBloom CF.* 拦恶意扫号且软删 CF.DEL，NULL 缓存兜住误判与模块缺失边界，分布式锁防击穿，liked/faved 用户态数据后置查询，避免把个人状态写入共享缓存。
 
 #### 5.3 点赞 / 收藏
 
@@ -546,11 +546,11 @@ flowchart TD
 
 1. **分层清晰**：`cmd` 启动、`bootstrap` 装配、`server` 路由生命周期、`internal/<domain>` 按领域拆分、`pkg` 放公共能力。
 2. **真值和投影分离**：MySQL / Bitmap 保存真值，Redis / ES / Kafka 消费结果都是可重建派生数据。
-3. **缓存不是简单 set/get**：知文详情使用 Bloom + NULL + L1 + Redis + DB + 分布式锁 + 热点 TTL 延长。
+3. **缓存不是简单 set/get**：知文详情使用 RedisBloom CF + NULL + L1 + Redis + DB + 分布式锁 + 热点 TTL 延长。
 4. **异步不是直接双写**：通过事务 outbox 绑定业务写入和事件，再由 Canal/Kafka 驱动下游。
 5. **计数有可恢复设计**：Lua 保证状态翻转原子性，Kafka 水位保证消费幂等，dirty repair 从 Bitmap 修复 SDS。
 6. **关系模块承认边界**：双表和 Redis ZSet 是合理建模，但 relation consumer 的 recoverability、排序语义和大 V 冷启动仍有演进空间。
 
 ### 7. 面试 1 分钟介绍
 
-> 这是一个知识内容社区后端，核心模块包括知文发布、关注关系、点赞收藏计数、搜索和 AI 增强。技术上我重点处理了三类问题：第一是缓存和高并发读，比如知文详情用 Bloom、空值缓存、L1/L2、多实例版本号和分布式锁；第二是异步一致性，比如知文和关系写入通过事务 outbox 进入 Canal/Kafka，再投影到 ES 和 Redis；第三是高频互动计数，比如点赞状态用 Bitmap 做真值，展示计数用 Hash 快照，失败后通过 dirty repair 从 Bitmap 重建。整体设计上我会先区分真值和投影，再分别处理性能、幂等和补偿。
+> 这是一个知识内容社区后端，核心模块包括知文发布、关注关系、点赞收藏计数、搜索和 AI 增强。技术上我重点处理了三类问题：第一是缓存和高并发读，比如知文详情用 RedisBloom 可删除 Cuckoo（CF.*）、空值缓存、L1/L2、多实例版本号和分布式锁；第二是异步一致性，比如知文和关系写入通过事务 outbox 进入 Canal/Kafka，再投影到 ES 和 Redis；第三是高频互动计数，比如点赞状态用 Bitmap 做真值，展示计数用 Hash 快照，失败后通过 dirty repair 从 Bitmap 重建。整体设计上我会先区分真值和投影，再分别处理性能、幂等和补偿。

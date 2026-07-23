@@ -178,11 +178,11 @@ knowpost:
     ttl_low: 30
     ttl_medium: 60
     ttl_high: 300
-    # Bloom 与空值缓存叠加：前置拦截一定不存在的 ID
+    # RedisBloom CF.*（配置键名 bloom_*）与空值缓存叠加；软删 CF.DEL；需 redis-stack-server
     bloom_enabled: true
     bloom_expected_items: 1000000
     bloom_false_positive_rate: 0.01
-    bloom_key: "bloom:knowpost:ids"
+    bloom_key: "cf:knowpost:ids"
   feed_cache:
     safe_size: 50
     l1_ttl_seconds: 15
