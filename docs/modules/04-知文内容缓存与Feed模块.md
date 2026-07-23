@@ -705,7 +705,16 @@ flowchart TD
     F --> G
 ```
 
-**当前工程状态**：写扩散生产端可能未完整接线，空时间线会大量走降级。面试必须诚实区分「设计」与「落地」。
+**当前工程状态（源码接线）**：
+
+| 项 | 状态 |
+|----|------|
+| `FanoutService` / `FanoutConsumer` | 有实现；Kafka brokers 非空时 consumer 会启动 |
+| `FanoutPublisher` | **knowpost / bootstrap 未调用**，发布不会往 `fanout` topic 灌消息 |
+| Canal | 只写 `canal-outbox`，**不写** `fanout` |
+| `GetMineFeed` 空 timeline | 降级 **本人已发布**，不是完整关注流读扩散 |
+
+因此线上时间线通常为空，「我的 Feed」大量走 `GetMyPublished` 整页缓存/DB。面试必须区分「写扩散算法」与「生产闭环」。跨模块总图见 [`docs/跨模块流程图.md`](../跨模块流程图.md) §6。
 
 ## A6. 配置表（详情缓存 + Bloom）
 
@@ -730,7 +739,7 @@ flowchart TD
 
 ## A8. 60 秒口述稿
 
-> 知文写路径事务内绑 outbox，保证搜索等异步不丢。读路径是 Bloom 前置加空值缓存叠加，再加 L1/L2 和读穿锁回源；更新用版本号让旧缓存自然失联。公共 Feed 用 ID 列表加条目碎片，我的 Feed 优先时间线写扩散并可读库降级。用户点赞状态绝不进共享缓存。
+> 知文写路径事务内绑 outbox，保证搜索等异步不丢。读路径是 Bloom 前置加空值缓存叠加，再加 L1/L2 和读穿锁回源；更新用版本号让旧缓存自然失联。公共 Feed 用 ID 列表加条目碎片；我的 Feed 代码上先读 timeline，但写扩散生产端未闭环时会降级本人已发布列表。用户点赞状态绝不进共享缓存。
 
 
 ---

@@ -12,8 +12,11 @@
 - 搜索能力支持全文检索和 completion suggester
 - `knowpost` 变更会通过事务内 outbox + Canal/Kafka 消费链路投递到 Elasticsearch
 - `knowpost` 的缓存回源使用 Redis 分布式锁 + 手写看门狗续约，避免长尾回源时锁提前过期
-- `canal.enabled=true` 时，会切换为与 Java 版一致的 `Canal -> Kafka -> relation/search consumers` 链路
-- `canal.enabled=false` 时，不会启动异步 outbox 消费链路
+- `canal.enabled=true` 时，启动 `Canal -> Kafka(canal-outbox) -> relation/search consumers` 链路
+- `canal.enabled=false` 时，不启动上述 outbox 异步投影；**不会**自动切换 outbox DirectPoll
+- like/fav 走独立 topic `counter-events`（AggregationConsumer + 进程内 dirty repairLoop）
+- 写扩散 `internal/fanout`：**Consumer/算法已实现**，但 **Publisher 未注入发布路径**（半接线）；与 `canal-outbox` 不是同一 topic
+- 跨模块流程图与接线核对：[`docs/跨模块流程图.md`](docs/跨模块流程图.md)
 - Kafka 本地环境已调整为 3 broker；`counter-events` 与 `canal-outbox` 主题使用 3 副本并要求 `min.insync.replicas=2`
 - `docker-compose.yml` 已包含本地 Canal 服务，默认会订阅 `zhiguang.outbox`
 - Canal 配置通过自定义镜像内置，`conf/example` 与 `logs` 使用 Docker 命名卷持久化
@@ -276,10 +279,12 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
 
 - **Canal Server**：通过 `docker-compose.yml` 中的自定义 Docker 镜像运行，订阅 `zhiguang.outbox` 表，
   监控 INSERT 事件（毫秒级精度），将行级变更序列化为 JSON 后投递到 Kafka topic `canal-outbox`
-- **relation outbox consumer**：消费 `canal-outbox` 中的 `following` 聚合类型事件，将关注关系变更广播到 follower 反向索引表，并失效多级缓存
-- **search outbox consumer**：消费 `canal-outbox` 中的 `knowpost` 聚合类型事件，将知文变更同步到 Elasticsearch 索引
+- **relation outbox consumer**：消费 `canal-outbox` 中的关系类事件，投影 Redis ZSet，并在消费端 **HIncrBy** 用户 following/follower 展示数（**不经** `counter-events`）
+- **search outbox consumer**：消费 `canal-outbox` 中的 knowpost 类事件，回查 MySQL + 补计数后同步 Elasticsearch
 
-当 `canal.enabled=false` 时，不会启动上述两个消费者，应用仍可正常提供 API 服务（仅丢失异步同步能力）。
+当 `canal.enabled=false` 时，不会启动上述两个消费者与 Canal Bridge，应用仍可正常提供 API 服务（仅丢失异步投影能力；**不会**自动启用 DirectPoll）。
+
+写扩散 topic `fanout` 与 `canal-outbox` 分离：`FanoutConsumer` 在 Kafka 可用时会启动，但当前发布路径**不会**调用 `FanoutPublisher`，时间线通常依赖读侧降级（见 `docs/modules/06`、`docs/跨模块流程图.md` §6）。
 
 ### 计数器修复机制
 
@@ -289,7 +294,7 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
 |---------|------|------------|
 | Bitmap | 位图权威数据源，记录每个用户对每个实体的点赞/收藏状态 | `bm:{metric}:{entityType}:{entityID}:{chunk}` |
 | SDS | 位图的聚合快照（点赞数/收藏数），用于快速查询 | `cnt:{entityType}:{entityID}` |
-| Dirty Set | 标记 SDS 可能不一致的实体，触发修复 | `dirty:counter` |
+| Dirty Set | 标记 SDS 可能不一致的实体，触发修复 | `repair:counter:dirty` |
 
 **正常路径**：
 
@@ -301,13 +306,12 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
 
 **异常修复路径**：
 
-- 当 Kafka 发布失败或 flush/commit 失败时，实体被加入 **Dirty Set**
-- **Repair Loop**（每个实例的后台 goroutine）周期性扫描 Dirty Set：
+- 当 Kafka 发布失败或 flush/commit 失败时，实体被加入 **Dirty Set**，并尽量写入 MySQL `counter_failed_messages`
+- **Repair Loop** 挂在 **AggregationConsumer 同进程**（不是独立 FailureWorker Runner），`repair.Enabled` 时周期扫描 Dirty Set：
   1. 尝试获取全局 leader 锁 `lock:counter:repair`（避免多实例同时修复）
-  2. 对每个 Dirty Member 执行 `rebuildSds`：从位图重新统计 BITCOUNT 覆盖 SDS
-  3. 失败时通过**指数退避**（500ms → 1s → 2s → ... → 30s cap）延迟重试
-  4. 超过限流阈值（每分钟 5 次重建）时拒绝重建并提升退避等级
-- 所有失败消息持久化到 MySQL 表 `counter_failed_messages`，用于后续离线排查
+  2. 对每个 Dirty Member 从位图 BITCOUNT 重建绝对值并覆盖 SDS
+  3. 失败时按策略退避/限流（以 `internal/counter` 与配置为准）
+- 失败表另有 `ReplayFailedMessages` 可对 pending 记录做绝对值重建；**bootstrap 默认未挂周期任务**扫表
 
 **水位线幂等**：
 
@@ -351,7 +355,7 @@ ZhiGuang 是一个知识内容社区后端，核心业务是让用户发布图�
 | 知文 | 草稿、内容确认、元数据编辑、发布、详情、Feed | `internal/knowpost` |
 | 计数 | 点赞、收藏、计数快照、点赞人列表 | `internal/counter` |
 | 关系 | 关注、取关、关注列表、粉丝列表、关系状态 | `internal/relation` |
-| Feed 扩散 | 把作者发布内容投递到粉丝时间线 | `internal/fanout` |
+| Feed 扩散 | 粉丝时间线写扩散（算法+Consumer 在；Publisher 生产路径未闭环） | `internal/fanout` |
 | 搜索 | 全文检索、标签过滤、自动补全、ES 投影 | `internal/search` |
 | 异步链路 | 事务 outbox、Canal、Kafka、消费者幂等 | `internal/outbox` / `internal/canal` |
 | 存储 | OSS 预签名上传与业务元数据确认 | `internal/storage` |
@@ -548,9 +552,10 @@ flowchart TD
 2. **真值和投影分离**：MySQL / Bitmap 保存真值，Redis / ES / Kafka 消费结果都是可重建派生数据。
 3. **缓存不是简单 set/get**：知文详情使用 RedisBloom CF + NULL + L1 + Redis + DB + 分布式锁 + 热点 TTL 延长。
 4. **异步不是直接双写**：通过事务 outbox 绑定业务写入和事件，再由 Canal/Kafka 驱动下游。
-5. **计数有可恢复设计**：Lua 保证状态翻转原子性，Kafka 水位保证消费幂等，dirty repair 从 Bitmap 修复 SDS。
-6. **关系模块承认边界**：双表和 Redis ZSet 是合理建模，但 relation consumer 的 recoverability、排序语义和大 V 冷启动仍有演进空间。
+5. **计数有可恢复设计**：Lua 保证状态翻转原子性，Kafka 水位保证消费幂等，AggregationConsumer 内 dirty repairLoop 从 Bitmap 修复 SDS。
+6. **关系模块承认边界**：双表和 Redis ZSet 是合理建模；用户关注数消费端 HIncrBy；dedupe/排序/深分页/大 V 冷启动仍有演进空间。
+7. **写扩散半接线**：fanout 算法与 Consumer 在，发布路径未灌 `fanout` topic，读侧需降级（见跨模块流程图）。
 
 ### 7. 面试 1 分钟介绍
 
-> 这是一个知识内容社区后端，核心模块包括知文发布、关注关系、点赞收藏计数、搜索和 AI 增强。技术上我重点处理了三类问题：第一是缓存和高并发读，比如知文详情用 RedisBloom 可删除 Cuckoo（CF.*）、空值缓存、L1/L2、多实例版本号和分布式锁；第二是异步一致性，比如知文和关系写入通过事务 outbox 进入 Canal/Kafka，再投影到 ES 和 Redis；第三是高频互动计数，比如点赞状态用 Bitmap 做真值，展示计数用 Hash 快照，失败后通过 dirty repair 从 Bitmap 重建。整体设计上我会先区分真值和投影，再分别处理性能、幂等和补偿。
+> 这是一个知识内容社区后端，核心模块包括知文发布、关注关系、点赞收藏计数、搜索和 AI 增强。技术上我重点处理了三类问题：第一是缓存和高并发读，比如知文详情用 RedisBloom 可删除 Cuckoo（CF.*）、空值缓存、L1/L2、多实例版本号和分布式锁；第二是异步一致性，比如知文和关系写入通过事务 outbox 进入 Canal/Kafka 的 `canal-outbox`，再投影到 ES 和关系 ZSet；第三是高频互动计数，点赞状态用 Bitmap 做真值，展示计数用 SDS 快照，失败后走 dirty set + AggregationConsumer 内 repairLoop。写扩散我会诚实说算法在、生产端未闭环。整体设计上我会先区分真值和投影，再分别处理性能、幂等和补偿。

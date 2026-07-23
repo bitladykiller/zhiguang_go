@@ -164,9 +164,11 @@ flowchart TD
 
 `EventProcessor` 会做三件事：
 
-1. 二次去重
+1. 二次去重（`SETNX dedup:rel:*`，约 10 分钟窗口）
 2. 更新 Redis ZSet
-3. 调 counter 模块增减关注数 / 粉丝数
+3. 通过 `UserCounter` **直接 `HIncrBy` 用户维度 SDS** 增减 following/follower
+
+注意：第 3 步 **不经过** `counter-events` Kafka，也没有 partition 水位；与 like/fav 的异步聚合是两条语义。
 
 ```mermaid
 flowchart LR
@@ -176,7 +178,7 @@ flowchart LR
     D --> E[EventProcessor]
     E --> F[SETNX 去重]
     E --> G[ZADD/ZREM 投影]
-    E --> H[counter 关注数/粉丝数]
+    E --> H[HIncrBy user SDS<br/>非 counter-events]
 ```
 
 ## 5. 设计亮点
@@ -590,9 +592,18 @@ flowchart TD
     G --> H[读侧降级]
 ```
 
-### 当前状态
+### 当前状态（源码接线，务必照实说）
 
-算法与消费者有实现；生产端是否完整接线以代码为准。面试区分「设计」与「落地」。
+| 组件 | 状态 |
+|------|------|
+| `fanout.Service` 写 timeline 算法 | 已实现（批量、大 V 截断、TTL） |
+| `FanoutConsumer` | Kafka brokers 非空时 bootstrap **会启动** |
+| `FanoutPublisher` | 有实现；**knowpost / bootstrap 均未调用** |
+| Canal Bridge | 只写 `canal-outbox`，**不会**写入 `fanout` topic |
+| 读侧 `GetMineFeed` | 先读 `timeline:{userID}`，空则降级 **本人已发布**（不是完整关注流读扩散） |
+
+结论：**写扩散是「半接线」**——消费端与算法在，生产端未把发布事件灌进 `fanout`。  
+面试区分「设计能力」与「生产闭环」；不要讲成发布后粉丝收件箱已自动推送。
 
 ## A5. 60 秒口述
 
