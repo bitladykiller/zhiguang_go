@@ -29,3 +29,6 @@ server
 nul
 # Linux: dotfile settings
 .vscode/
+
+# 本地文档不纳入版本库
+docs/
