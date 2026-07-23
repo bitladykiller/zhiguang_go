@@ -90,44 +90,51 @@
    - 当前用户是否已点赞/已收藏
 
 ```text
-请求 → Cuckoo（一定不存在？）→ 404
+请求 → CF.EXISTS（一定不存在？）→ 404
          ↓ 可能存在
        L1 → L2(NULL?) → 读穿锁 → DB
          ↓ 不存在
-       写 NULL（兜底误判 / 删除失败 / 预热窗口）
+       写 NULL（兜底误判 / 删除失败 / 预热窗口 / 模块缺失）
 ```
 
 这里有几个关键细节：
 
-### 3.2.0 Cuckoo Filter + 空值缓存（叠加，默认开启）
+### 3.2.0 RedisBloom Cuckoo（CF.*）+ 空值缓存（叠加，默认开启）
 
-实现：`internal/cache/bloom.go` 的 `RedisBloom`（类型名兼容；语义为 **Cuckoo Filter**）。
+实现：`internal/cache/bloom.go` 的 `RedisBloom`（类型名兼容；底层为 **RedisBloom 模块** `CF.*`）。
 
-- Redis 字节表 + fingerprint 双桶 + 踢出插入
-- Add / Delete / Lookup 均走 **Lua**（`GETRANGE`/`SETRANGE`），多实例原子、无第三方依赖、不依赖 RedisBloom 模块
+| 能力 | 命令 |
+|------|------|
+| 预留容量 | `CF.RESERVE`（capacity / BUCKETSIZE / MAXITERATIONS / EXPANSION） |
+| 插入 | `CF.ADD` |
+| 删除 | `CF.DEL` |
+| 查询 | `CF.EXISTS` |
+| 运维 | `CF.INFO`（代码侧 `Info`）；模块另有 INSERT/COUNT/SCANDUMP 等可扩展 |
+
+**依赖**：Docker Redis 使用 `redis/redis-stack-server`（内置 RedisBloom）。标准 `redis:alpine` **无** `CF.*`，会 fail-open 到仅 NULL 路径。
 
 配置（`knowpost.detail_cache`，键名保留 `bloom_*`）：
 
 | 配置项 | 默认 | 含义 |
 |--------|------|------|
 | `bloom_enabled` | true | 是否开启 |
-| `bloom_expected_items` | 1000000 | 预估元素量（推算 bucket 数） |
-| `bloom_false_positive_rate` | 0.01 | 目标误判率（过小会放大表） |
-| `bloom_key` | `cuckoo:knowpost:ids` | 表键；另有 `{key}:n` 计数用于 IsWarm |
+| `bloom_expected_items` | 1000000 | 映射 `CF.RESERVE` capacity |
+| `bloom_false_positive_rate` | 0.01 | 影响默认 BUCKETSIZE（更严→更大） |
+| `bloom_key` | `cf:knowpost:ids` | CF 键 |
 
 行为：
 
 1. **读路径最前**：`MightContain=false` → 一定不存在 → 直接 404，不打 L1/L2/DB。
-2. **写路径维护**：`CreateDraft` 成功、详情回源成功 → `Add` 增量写入。
-3. **软删维护**：`Delete` 成功后 → `DeleteUint64` 清除 fingerprint。
+2. **写路径维护**：`CreateDraft` 成功、详情回源成功 → `CF.ADD`。
+3. **软删维护**：`Delete` 成功后 → `CF.DEL`。
 4. **启动预热**：`initKnowPost` 异步 `WarmDetailBloom`，游标扫描 `ListIDsForBloom`。
-5. **冷启动 fail-open**：表键不存在时一律视为可能存在，避免误拦全站；表已初始化后即使 count 为 0 也正常判定。
-6. **Redis 故障 fail-open**：过滤器不可用时退回仅空值缓存路径。
+5. **冷启动 fail-open**：CF 键不存在时一律视为可能存在，避免误拦全站。
+6. **模块/Redis 故障 fail-open**：`unknown command` 或连接失败时退回仅空值缓存路径。
 
 为什么要和 NULL **叠加**而不是二选一：
 
-- Cuckoo 擅长拦「从未出现过的扫号 ID」，且**软删后可删除**。
-- NULL 擅长兜「查过确认不存在 / 过滤器误判 / 踢出失败未写入 / 预热未完成」。
+- CF 擅长拦「从未出现过的扫号 ID」，且**软删后可 `CF.DEL`**。
+- NULL 擅长兜「查过确认不存在 / 过滤器误判 / 模块不可用 / 预热未完成」。
 - 两者叠加后：穿透成本更低，又不牺牲正确性。
 
 ### 3.2.1 版本化缓存键
@@ -150,8 +157,8 @@
 
 这是穿透防护的**第二道防线**，专门吸收：
 
-- Cuckoo 误判后回源仍不存在
-- 删除失败 / 踢出失败 / 指纹碰撞等边界
+- CF 误判后回源仍不存在
+- 删除失败 / 模块缺失 / 指纹碰撞等边界
 - 过滤器未预热 / fail-open 时的真实 miss
 
 注意：403（无权限）**不写 NULL**，避免把私有资源语义和「不存在」混在一起。
@@ -504,7 +511,7 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 | `internal/knowpost/detail_service.go` | 详情读 | `GetDetail` / `getDetailUnderLock` |
 | `internal/knowpost/feed_service.go` | Feed 读与失效 | `GetPublicFeed` / `InvalidateAfterPostMutation` |
 | `internal/knowpost/cache.go` | 版本失效 Lua | `invalidateCache` |
-| `internal/cache/bloom.go` | Redis Cuckoo | `RedisBloom`（Cuckoo）/ `WarmDetailBloom` / `Delete` |
+| `internal/cache/bloom.go` | RedisBloom CF.* | `RedisBloom` / `WarmDetailBloom` / `Delete` / `Info` |
 | `internal/bootstrap/init_knowpost.go` | 装配与异步预热 | `initKnowPost` |
 
 ## A2. 详情完整读路径（中文流程图）
@@ -528,7 +535,7 @@ flowchart TD
     L -->|不存在或已删| M[写空值缓存]
     M --> E
     L -->|存在| N[查计数并写回缓存]
-    N --> O[Cuckoo Add]
+    N --> O[CF.ADD]
     O --> P[补齐点赞收藏状态]
     G --> Q[返回响应]
     I --> Q
@@ -537,8 +544,8 @@ flowchart TD
 
 ### 讲解要点
 
-1. **Cuckoo 在最前**：专门拦扫号 ID，减少无效 L1/L2/DB；软删可 Delete。
-2. **NULL 在 L2**：吸收误判、删除失败、预热未完成窗口。
+1. **CF.EXISTS 在最前**：专门拦扫号 ID，减少无效 L1/L2/DB；软删 `CF.DEL`。
+2. **NULL 在 L2**：吸收误判、删除失败、模块缺失、预热未完成窗口。
 3. **读穿锁**：防击穿，不是防穿透。
 4. **用户态后置**：liked/faved 永不进共享缓存。
 5. **冷启动 / Redis 故障 fail-open**：宁可多打一次缓存，也不误拦真实内容。
@@ -553,7 +560,7 @@ flowchart TD
     D --> E[事务提交]
     E --> F[失效详情缓存版本自增]
     F --> G[删除条目碎片并抬高信息流版本]
-    G --> H[若创建草稿则 Cuckoo Add]
+    G --> H[若创建草稿则 CF.ADD]
     H --> I[Canal 投递后投影搜索等下游]
 ```
 
@@ -562,8 +569,8 @@ flowchart TD
 - 真值在 MySQL；缓存是 best-effort。
 - outbox 与业务同事务，避免「库成功消息丢」。
 - 失效靠 **版本号 INCR**，不是扫全部分页 key。
-- 创建草稿就要 `Add` Cuckoo，否则作者马上读详情可能被拦（过滤器已预热时）。
-- 软删成功后 `Delete` Cuckoo，避免已删 ID 继续放行。
+- 创建草稿就要 `CF.ADD`，否则作者马上读详情可能被拦（过滤器已预热时）。
+- 软删成功后 `CF.DEL`，避免已删 ID 继续放行。
 
 ## A4. 公共 Feed 碎片组装（中文流程图）
 
@@ -616,12 +623,12 @@ flowchart TD
 | `detail_cache.bloom_enabled` | true | 是否开启布隆 |
 | `detail_cache.bloom_expected_items` | 1000000 | 预估元素量 |
 | `detail_cache.bloom_false_positive_rate` | 0.01 | 目标误判率 |
-| `detail_cache.bloom_key` | cuckoo:knowpost:ids | Cuckoo 表键（另有 `:n` 计数） |
+| `detail_cache.bloom_key` | cf:knowpost:ids | RedisBloom CF 键 |
 
 ## A7. 风险清单（主动讲）
 
 1. L1 删 key 可能不带完整版本段（靠版本 miss 缓解）。
-2. Cuckoo 支持 Delete；软删写路径会清除 fingerprint，NULL 仍作兜底。
+2. RedisBloom `CF.DEL` 支持删除；软删写路径调用，NULL 仍作兜底；无模块时 fail-open。
 3. 私有内容若曾被作者读入共享缓存，L1/L2 命中路径需注意权限边界。
 4. GetMyPublished SQL 可能过宽（含 draft）——以源码为准。
 5. 写扩散未闭环时「我的 Feed」偏读库。
@@ -641,7 +648,7 @@ flowchart TD
 
 1. **内容生命周期**：草稿、确认正文、编辑元数据、发布、置顶、可见性、软删除。
 2. **内容读取**：详情页、公共 Feed、我的发布列表。
-3. **缓存治理**：Cuckoo、NULL、L1/L2、版本化 key、读穿锁、热点 TTL。
+3. **缓存治理**：RedisBloom CF、NULL、L1/L2、版本化 key、读穿锁、热点 TTL。
 4. **下游投影触发**：通过 outbox 触发搜索索引、Feed 扩散等派生数据更新。
 
 面试时先说这四类职责，会比直接讲接口更完整。
@@ -650,14 +657,14 @@ flowchart TD
 
 | API | Handler 方法 | Service 方法 | 核心动作 |
 |-----|--------------|---------------|----------|
-| `POST /knowposts/draft` | `CreateDraft` | `CreateDraft` | 生成雪花 ID，写草稿，处理幂等键，Cuckoo Add |
+| `POST /knowposts/draft` | `CreateDraft` | `CreateDraft` | 生成雪花 ID，写草稿，处理幂等键，CF.ADD |
 | `PUT /knowposts/:id/content` | `ConfirmContent` | `ConfirmContent` | 保存 OSS 对象元数据，失效详情和 Feed |
 | `PUT /knowposts/:id/metadata` | `UpdateMetadata` | `UpdateMetadata` | 更新标题、标签、描述，事务内写 outbox |
 | `POST /knowposts/:id/publish` | `Publish` | `Publish` | 草稿转发布，事务内写 outbox |
 | `PUT /knowposts/:id/top` | `UpdateTop` | `UpdateTop` | 更新置顶状态，事务内写 outbox |
 | `PUT /knowposts/:id/visibility` | `UpdateVisibility` | `UpdateVisibility` | 更新可见性，事务内写 outbox |
-| `DELETE /knowposts/:id` | `Delete` | `Delete` | 软删除，事务内写 outbox，Cuckoo Delete |
-| `GET /knowposts/:id` | `GetDetail` | `GetDetail` | Cuckoo + 多级缓存 + DB 回源 + 用户态增强 |
+| `DELETE /knowposts/:id` | `Delete` | `Delete` | 软删除，事务内写 outbox，CF.DEL |
+| `GET /knowposts/:id` | `GetDetail` | `GetDetail` | CF.EXISTS + 多级缓存 + DB 回源 + 用户态增强 |
 | `GET /knowposts/feed/public` | `GetPublicFeed` | `GetPublicFeed` | 公共 Feed 碎片缓存 |
 | `GET /knowposts/feed/mine` | `GetMyPublished` | `GetMineFeed` | 时间线优先，读库降级 |
 
@@ -716,7 +723,7 @@ sequenceDiagram
 | 发布 | 版本失效 | feed version 变化 | 作者列表失效 | 保持存在 | published |
 | 改可见性 | 版本失效 | feed version 变化 | 作者列表失效 | 不变 | visibility updated |
 | 置顶 | 版本失效 | feed version 变化 | 作者列表失效 | 不变 | top updated |
-| 删除 | 版本失效 / NULL | feed version 变化 | 作者列表失效 | Cuckoo `Delete` | deleted |
+| 删除 | 版本失效 / NULL | feed version 变化 | 作者列表失效 | `CF.DEL` | deleted |
 
 面试重点：缓存失效不是“删一个 key”这么简单，因为详情、公共 Feed、我的 Feed、搜索索引是不同读模型。
 
@@ -758,7 +765,7 @@ flowchart TD
 
 ## B8. 这个模块最值得主动承认的边界
 
-1. **Cuckoo 可删除**：软删后写路径 `DeleteUint64`；若删除失败或指纹碰撞，仍依赖 NULL / DB 状态兜底。
+1. **CF 可删除**：软删后 `CF.DEL`；模块缺失/删除失败时仍依赖 NULL / DB 状态兜底。
 2. **版本号会增加一次 Redis 读**：读详情前要拿版本，但换来多实例一致性。
 3. **Feed 精确失效难**：版本号是粗粒度失效，牺牲部分命中率换正确性。
 4. **用户态不能进共享缓存**：liked/faved 必须后置查询，否则不同用户会互相污染。
@@ -766,4 +773,4 @@ flowchart TD
 
 ## B9. 2 分钟展开回答
 
-> 知文模块我会按写路径和读路径分开讲。写路径里，草稿创建支持幂等键，正文上传走 OSS 直传，业务侧只保存 object key、etag、sha256 和 size；发布、删除、置顶、可见性这些会影响下游读模型的操作，都在事务内写 outbox；软删后还会从 Cuckoo 过滤器 Delete。读路径里，详情先过 Cuckoo，再查 freecache 和 Redis，未命中后用 Redis 分布式锁回源 MySQL，避免击穿；不存在数据写 NULL，避免穿透。公共 Feed 用 ID 列表和 item 碎片组合，避免整页缓存大范围失效。整个模块的核心不是 CRUD，而是内容真值、缓存、搜索投影和用户态数据之间的边界。
+> 知文模块我会按写路径和读路径分开讲。写路径里，草稿创建支持幂等键，正文上传走 OSS 直传，业务侧只保存 object key、etag、sha256 和 size；发布、删除、置顶、可见性这些会影响下游读模型的操作，都在事务内写 outbox；软删后 CF.DEL。读路径里，详情先过 CF.EXISTS，再查 freecache 和 Redis，未命中后用 Redis 分布式锁回源 MySQL，避免击穿；不存在数据写 NULL，避免穿透。公共 Feed 用 ID 列表和 item 碎片组合，避免整页缓存大范围失效。整个模块的核心不是 CRUD，而是内容真值、缓存、搜索投影和用户态数据之间的边界。

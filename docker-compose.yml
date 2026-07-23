@@ -111,11 +111,13 @@ services:
       - backend
     logging: *default-logging
 
+  # redis-stack-server 内置 RedisBloom（CF.*/BF.*），知文详情 Cuckoo 过滤器依赖 CF.*
   redis:
-    image: redis:7-alpine
+    image: redis/redis-stack-server:7.2.0-v10
     container_name: zhiguang-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      REDIS_ARGS: "--appendonly yes"
     volumes:
       - redis_data:/data
     healthcheck:

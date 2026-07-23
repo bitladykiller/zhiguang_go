@@ -1,59 +1,53 @@
-// Package cache 的存在性过滤器：基于 Redis 的共享 Cuckoo Filter（可删除）。
+// Package cache 的存在性过滤器：基于 RedisBloom 模块的共享 Cuckoo Filter（CF.*）。
 //
 // 设计目标：
 //   - 与详情「空值缓存」叠加：过滤器拦截「一定不存在」的扫号请求；
 //     误判为可能存在时，仍走 L1/L2/读穿锁，并由 NULL 缓存兜底。
-//   - 多实例共享：表数据存在 Redis，Lua 保证 Add/Delete/Lookup 原子性。
-//   - 无第三方依赖 / 不依赖 RedisBloom 模块：标准 Redis GETRANGE/SETRANGE + EVAL。
-//   - 支持可靠删除：软删后 Delete 清除 fingerprint，减少对 NULL/DB 的依赖。
+//   - 多实例共享：数据在 Redis 模块侧，官方 CF 命令原子、功能完整。
+//   - 依赖 RedisBloom 模块（docker 使用 redis-stack-server），非进程内库。
+//   - 支持可靠删除：软删后 CF.DEL，减少对 NULL/DB 的依赖。
 //
-// 语义（Cuckoo Filter）：
+// 语义（Cuckoo Filter / CF.*）：
 //   - MightContain=false → 一定不存在（可直接 404）
 //   - MightContain=true  → 可能存在（必须继续查缓存/DB）
-//   - Delete 成功清除本成员 fingerprint（若因指纹碰撞误删他人槽位，概率极低）
+//   - Delete → CF.DEL
 //
-// Redis 布局：
-//   - {key}      : 连续字节表，每个 bucket 含 bucketSize 个 1-byte fingerprint（0=空）
-//   - {key}:n    : 近似元素计数，>0 表示已预热（IsWarm）
+// 主要命令：
+//   CF.RESERVE / CF.ADD / CF.DEL / CF.EXISTS / CF.INFO
+//   （模块还提供 CF.INSERT、CF.COUNT、CF.SCANDUMP/LOADCHUNK 等，按需扩展）
 package cache
 
 import (
 	"context"
-	"hash/fnv"
-	"math"
+	"errors"
+	"fmt"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
-const (
-	cuckooBucketSize = 4
-	cuckooLoadFactor = 0.95
-	cuckooMaxKicks   = 500
-	// fingerprint 固定 8 bit（非 0）；与 bucketSize=4 时 FPR 约在百分位量级，足够拦扫号。
-	cuckooFPBits = 8
-	// 与 Lua 内 alt 计算保持一致：alt = i XOR ((fp * golden) % m)
-	cuckooAltMul = 2654435761
-)
-
-// BloomConfig 控制 Redis Cuckoo 的容量与误判目标。
+// BloomConfig 控制 Redis Cuckoo（RedisBloom CF）的容量与行为。
 // 字段名保留 Bloom* 以兼容既有配置与调用方。
 type BloomConfig struct {
 	// Enabled 为 false 时所有操作 no-op，保持与旧行为兼容。
 	Enabled bool
-	// ExpectedItems 预估元素量（用于计算 bucket 数 m）。
+	// ExpectedItems 预估元素量，映射为 CF.RESERVE capacity。
 	ExpectedItems uint64
-	// FalsePositiveRate 目标误判率（当前实现固定 8-bit fingerprint，该字段用于文档/兼容；过小会放大 m）。
+	// FalsePositiveRate 目标误判率；用于选择 bucket size（模块侧近似控制）。
 	FalsePositiveRate float64
-	// Key Redis 表键；空则使用默认 "cuckoo:knowpost:ids"。
+	// Key Redis CF 键；空则使用默认 "cf:knowpost:ids"。
 	Key string
-	// HashCount 保留字段：经典 Bloom 的 k；Cuckoo 忽略。
+	// HashCount 保留字段（经典 Bloom）；CF 忽略。
 	HashCount int
-	// BucketSize 每桶槽位数；0 表示默认 4。
+	// BucketSize 映射 CF.RESERVE BUCKETSIZE；0 表示按 FPR 自动选择（默认 2）。
 	BucketSize int
-	// MaxKicks 插入时最大踢出次数；0 表示默认 500。
+	// MaxKicks 映射 CF.RESERVE MAXITERATIONS；0 表示默认 20。
 	MaxKicks int
+	// Expansion 映射 CF.RESERVE EXPANSION；0 表示默认 1。
+	Expansion int
 }
 
 // DefaultBloomConfig 返回知文详情场景的合理默认值。
@@ -62,24 +56,28 @@ func DefaultBloomConfig() BloomConfig {
 		Enabled:           true,
 		ExpectedItems:     1_000_000,
 		FalsePositiveRate: 0.01,
-		Key:               "cuckoo:knowpost:ids",
-		HashCount:         0,
-		BucketSize:        cuckooBucketSize,
-		MaxKicks:          cuckooMaxKicks,
+		Key:               "cf:knowpost:ids",
+		BucketSize:        2,
+		MaxKicks:          20,
+		Expansion:         1,
 	}
 }
 
-// RedisBloom 使用 Redis 字节表实现的共享 Cuckoo 过滤器。
-// 类型名保留 RedisBloom，避免业务层大面积改名；语义已升级为可删除 Cuckoo。
+// RedisBloom 基于 RedisBloom 模块 CF.* 的共享 Cuckoo 过滤器。
+// 类型名保留 RedisBloom，避免业务层大面积改名。
 type RedisBloom struct {
 	rdb        *redis.Client
 	key        string
-	countKey   string
-	m          uint64 // bucket 数（2 的幂）
+	capacity   int64
 	bucketSize int
-	maxKicks   int
-	tableBytes int
+	maxIter    int
+	expansion  int
 	logger     *zap.Logger
+
+	ensureMu   sync.Mutex
+	ensured    bool
+	moduleOK   bool // 探测到 CF 命令可用
+	moduleFail bool // 明确不可用（unknown command），后续 fail-open
 }
 
 // NewRedisBloom 根据配置创建过滤器。cfg.Enabled=false 或 rdb=nil 时返回 nil。
@@ -97,59 +95,51 @@ func NewRedisBloom(rdb *redis.Client, cfg BloomConfig, logger *zap.Logger) *Redi
 		cfg.FalsePositiveRate = 0.01
 	}
 	if cfg.Key == "" {
-		cfg.Key = "cuckoo:knowpost:ids"
+		cfg.Key = "cf:knowpost:ids"
 	}
 	bs := cfg.BucketSize
 	if bs <= 0 {
-		bs = cuckooBucketSize
+		// 更严 FPR 用更大 bucket（RedisBloom 默认 2）
+		if cfg.FalsePositiveRate <= 0.001 {
+			bs = 4
+		} else {
+			bs = 2
+		}
 	}
-	if bs > 16 {
-		bs = 16
+	if bs > 8 {
+		bs = 8
 	}
-	maxKicks := cfg.MaxKicks
-	if maxKicks <= 0 {
-		maxKicks = cuckooMaxKicks
+	maxIter := cfg.MaxKicks
+	if maxIter <= 0 {
+		maxIter = 20
 	}
-
-	// m = next_pow2(ceil(n / (load * bucketSize)))
-	raw := uint64(math.Ceil(float64(cfg.ExpectedItems) / (cuckooLoadFactor * float64(bs))))
-	m := nextPowerOfTwo(raw)
-	if m < 64 {
-		m = 64
-	}
-	// 误判目标更严时适当放大表（空间换更低碰撞）
-	if cfg.FalsePositiveRate < 0.01 {
-		m = nextPowerOfTwo(m * 2)
+	exp := cfg.Expansion
+	if exp <= 0 {
+		exp = 1
 	}
 
 	return &RedisBloom{
 		rdb:        rdb,
 		key:        cfg.Key,
-		countKey:   cfg.Key + ":n",
-		m:          m,
+		capacity:   int64(cfg.ExpectedItems),
 		bucketSize: bs,
-		maxKicks:   maxKicks,
-		tableBytes: int(m) * bs,
+		maxIter:    maxIter,
+		expansion:  exp,
 		logger:     logger,
 	}
 }
 
-// Add 将成员加入过滤器。失败只记日志，不影响主写路径。
+// Add 将成员加入过滤器（CF.ADD）。失败只记日志，不影响主写路径。
 func (b *RedisBloom) Add(ctx context.Context, member string) {
 	if b == nil || member == "" {
 		return
 	}
-	i1, i2, fp := b.indices(member)
-	res, err := cuckooAddScript.Run(ctx, b.rdb,
-		[]string{b.key, b.countKey},
-		b.m, b.bucketSize, i1, i2, fp, b.maxKicks, b.tableBytes,
-	).Int()
-	if err != nil {
-		b.logger.Warn("cuckoo add failed", zap.String("member", member), zap.Error(err))
+	if !b.ensureReady(ctx) {
 		return
 	}
-	if res == 0 {
-		b.logger.Warn("cuckoo add kick exhausted", zap.String("member", member))
+	if err := b.rdb.Do(ctx, "CF.ADD", b.key, member).Err(); err != nil {
+		b.logger.Warn("cf add failed", zap.String("member", member), zap.Error(err))
+		b.markModuleError(err)
 	}
 }
 
@@ -161,18 +151,22 @@ func (b *RedisBloom) AddUint64(ctx context.Context, id uint64) {
 	b.Add(ctx, strconv.FormatUint(id, 10))
 }
 
-// Delete 从过滤器删除成员（Cuckoo 支持可靠删除）。找不到则 no-op。
+// Delete 从过滤器删除成员（CF.DEL）。找不到则 no-op。
 // 失败只记日志，不阻断软删主路径；NULL 缓存仍作兜底。
 func (b *RedisBloom) Delete(ctx context.Context, member string) {
 	if b == nil || member == "" {
 		return
 	}
-	i1, i2, fp := b.indices(member)
-	if _, err := cuckooDeleteScript.Run(ctx, b.rdb,
-		[]string{b.key, b.countKey},
-		b.m, b.bucketSize, i1, i2, fp,
-	).Result(); err != nil {
-		b.logger.Warn("cuckoo delete failed", zap.String("member", member), zap.Error(err))
+	if !b.ensureReady(ctx) {
+		return
+	}
+	// CF.DEL 返回 0/1；键不存在时可能报错，视为 no-op
+	if err := b.rdb.Do(ctx, "CF.DEL", b.key, member).Err(); err != nil {
+		if isNotExistErr(err) {
+			return
+		}
+		b.logger.Warn("cf delete failed", zap.String("member", member), zap.Error(err))
+		b.markModuleError(err)
 	}
 }
 
@@ -184,13 +178,13 @@ func (b *RedisBloom) DeleteUint64(ctx context.Context, id uint64) {
 	b.Delete(ctx, strconv.FormatUint(id, 10))
 }
 
-// IsWarm 判断过滤器表是否已初始化。
-//
-// WHY 看数据键而非 count：全部 Delete 后 count 可为 0，但表仍有效，
-// 此时应返回 MightContain=false，而不是 fail-open 放行所有 ID。
-// 仅当表键不存在（冷启动未 Add/未预热）时 fail-open。
+// IsWarm 判断 CF 键是否已存在（已 RESERVE 或至少 Add 过）。
+// 冷启动键不存在时 fail-open，避免误拦全站。
 func (b *RedisBloom) IsWarm(ctx context.Context) bool {
 	if b == nil {
+		return false
+	}
+	if b.moduleFail {
 		return false
 	}
 	n, err := b.rdb.Exists(ctx, b.key).Result()
@@ -200,33 +194,30 @@ func (b *RedisBloom) IsWarm(ctx context.Context) bool {
 	return n > 0
 }
 
-// MightContain 判断成员是否可能存在。
+// MightContain 判断成员是否可能存在（CF.EXISTS）。
 //
 // 返回：
 //   - false, nil：一定不存在（仅当过滤器已预热）
 //   - true, nil：可能存在（含误判），或过滤器未预热 / 故障 fail-open
-//   - true, err：Redis 故障时 fail-open，避免误拦真实内容
+//   - true, err：Redis/模块故障时 fail-open
 func (b *RedisBloom) MightContain(ctx context.Context, member string) (bool, error) {
 	if b == nil || member == "" {
+		return true, nil
+	}
+	if b.moduleFail {
 		return true, nil
 	}
 	if !b.IsWarm(ctx) {
 		return true, nil
 	}
-	i1, i2, fp := b.indices(member)
-	res, err := cuckooLookupScript.Run(ctx, b.rdb,
-		[]string{b.key},
-		b.m, b.bucketSize, i1, i2, fp,
-	).Int()
+	// CF.EXISTS 在 RESP2 返回 0/1，RESP3 可能返回 bool
+	raw, err := b.rdb.Do(ctx, "CF.EXISTS", b.key, member).Result()
 	if err != nil {
-		b.logger.Warn("cuckoo might_contain failed, fail-open", zap.String("member", member), zap.Error(err))
+		b.logger.Warn("cf exists failed, fail-open", zap.String("member", member), zap.Error(err))
+		b.markModuleError(err)
 		return true, err
 	}
-	// 1=found, 0=absent, 2=table missing (fail-open)
-	if res == 2 {
-		return true, nil
-	}
-	return res == 1, nil
+	return redisTruthy(raw), nil
 }
 
 // MightContainUint64 便捷方法。
@@ -237,241 +228,172 @@ func (b *RedisBloom) MightContainUint64(ctx context.Context, id uint64) (bool, e
 	return b.MightContain(ctx, strconv.FormatUint(id, 10))
 }
 
-// Stats 返回表参数，便于运维与单测断言。
-// 返回：key, bucket 数 m, fingerprint 位数（兼容旧签名第三项 k）。
+// Stats 返回 key、capacity、bucketSize（兼容旧签名第三项）。
 func (b *RedisBloom) Stats() (key string, m uint64, k int) {
 	if b == nil {
 		return "", 0, 0
 	}
-	return b.key, b.m, cuckooFPBits
+	return b.key, uint64(b.capacity), b.bucketSize
 }
 
-// indices 计算 Cuckoo 双桶下标与 fingerprint。
-func (b *RedisBloom) indices(member string) (i1, i2 uint64, fp int) {
-	h1, h2 := bloomHashes(member)
-	fpByte := byte(h2 & 0xFF)
-	if fpByte == 0 {
-		fpByte = 1
+// Info 调用 CF.INFO，返回解析后的字段（运维/测试用）。模块不可用时返回 error。
+func (b *RedisBloom) Info(ctx context.Context) (map[string]int64, error) {
+	if b == nil {
+		return nil, errors.New("nil filter")
 	}
-	i1 = h1 % b.m
-	alt := (uint64(fpByte) * cuckooAltMul) % b.m
-	i2 = (i1 ^ alt) % b.m
-	return i1, i2, int(fpByte)
-}
-
-func bloomHashes(member string) (uint64, uint64) {
-	a := fnv.New64a()
-	_, _ = a.Write([]byte(member))
-	h1 := a.Sum64()
-
-	bh := fnv.New64()
-	_, _ = bh.Write([]byte(member))
-	// 混入长度避免与 h1 完全相关
-	_, _ = bh.Write([]byte{byte(len(member)), byte(len(member) >> 8)})
-	h2 := bh.Sum64()
-	return h1, h2
-}
-
-func nextPowerOfTwo(n uint64) uint64 {
-	if n <= 1 {
-		return 1
+	if !b.ensureReady(ctx) {
+		return nil, errors.New("redisbloom module unavailable")
 	}
-	n--
-	n |= n >> 1
-	n |= n >> 2
-	n |= n >> 4
-	n |= n >> 8
-	n |= n >> 16
-	n |= n >> 32
-	return n + 1
+	val, err := b.rdb.Do(ctx, "CF.INFO", b.key).Result()
+	if err != nil {
+		return nil, err
+	}
+	return parseCFInfo(val), nil
 }
 
-// --- Lua：纯标准 Redis 命令，兼容 miniredis ---
-// Redis Lua 5.1 无原生位运算，用纯 Lua 实现 bxor。
+// ensureReady 保证模块可用并完成 CF.RESERVE（幂等）。
+func (b *RedisBloom) ensureReady(ctx context.Context) bool {
+	if b == nil || b.moduleFail {
+		return false
+	}
+	b.ensureMu.Lock()
+	defer b.ensureMu.Unlock()
+	if b.ensured && b.moduleOK {
+		return true
+	}
+	if b.moduleFail {
+		return false
+	}
 
-// language=Lua
-const cuckooLuaBXOR = `
-local function bxor(a, b)
-  a = math.floor(tonumber(a) or 0)
-  b = math.floor(tonumber(b) or 0)
-  local r = 0
-  local bitv = 1
-  for _ = 1, 32 do
-    local aa = a % 2
-    local bb = b % 2
-    if aa ~= bb then
-      r = r + bitv
-    end
-    a = math.floor(a / 2)
-    b = math.floor(b / 2)
-    bitv = bitv * 2
-  end
-  return r
-end
-local function alt_index(i, fp, m)
-  local h = (fp * 2654435761) % m
-  return bxor(i, h) % m
-end
-`
+	// 已有键则无需 RESERVE
+	n, err := b.rdb.Exists(ctx, b.key).Result()
+	if err != nil {
+		b.logger.Warn("cf exists check failed", zap.Error(err))
+		b.markModuleError(err)
+		return false
+	}
+	if n > 0 {
+		b.ensured = true
+		b.moduleOK = true
+		return true
+	}
 
-// language=Lua
-var cuckooAddScript = redis.NewScript(cuckooLuaBXOR + `
-local key = KEYS[1]
-local cntkey = KEYS[2]
-local m = tonumber(ARGV[1])
-local b = tonumber(ARGV[2])
-local i1 = tonumber(ARGV[3])
-local i2 = tonumber(ARGV[4])
-local fp = tonumber(ARGV[5])
-local maxk = tonumber(ARGV[6])
-local tsize = tonumber(ARGV[7])
+	// CF.RESERVE key capacity [BUCKETSIZE bs] [MAXITERATIONS mi] [EXPANSION exp]
+	err = b.rdb.Do(ctx, "CF.RESERVE", b.key, b.capacity,
+		"BUCKETSIZE", b.bucketSize,
+		"MAXITERATIONS", b.maxIter,
+		"EXPANSION", b.expansion,
+	).Err()
+	if err != nil {
+		// 并发 RESERVE：另一实例已创建
+		if isAlreadyExistsErr(err) {
+			b.ensured = true
+			b.moduleOK = true
+			return true
+		}
+		b.logger.Warn("cf reserve failed", zap.Error(err))
+		b.markModuleError(err)
+		return false
+	}
+	b.ensured = true
+	b.moduleOK = true
+	return true
+}
 
-local function ensure()
-  local len = redis.call('STRLEN', key)
-  if len ~= tsize then
-    redis.call('SET', key, string.rep('\0', tsize))
-    redis.call('SET', cntkey, 0)
-  end
-end
+func (b *RedisBloom) markModuleError(err error) {
+	if err == nil {
+		return
+	}
+	if isUnknownCommandErr(err) {
+		b.moduleFail = true
+		b.logger.Error("RedisBloom module missing: CF.* unavailable; filter fail-open. Use redis-stack-server image.")
+	}
+}
 
-local function get_bucket(idx)
-  local start = idx * b
-  return redis.call('GETRANGE', key, start, start + b - 1)
-end
+func isUnknownCommandErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "unknown command") ||
+		strings.Contains(s, "err unknown command")
+}
 
-local function set_slot(idx, slot, val)
-  -- slot 1-based
-  local start = idx * b + (slot - 1)
-  redis.call('SETRANGE', key, start, string.char(val))
-end
+func isAlreadyExistsErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	// CF.RESERVE on existing key: "ERR item exists" / "Filter already exists" etc.
+	return strings.Contains(s, "item exists") ||
+		strings.Contains(s, "already exists") ||
+		strings.Contains(s, "busykey")
+}
 
-local function try_place(idx)
-  local data = get_bucket(idx)
-  if not data or #data < b then
-    data = string.rep('\0', b)
-  end
-  for i = 1, b do
-    local c = string.byte(data, i) or 0
-    if c == fp then
-      return 2
-    end
-    if c == 0 then
-      set_slot(idx, i, fp)
-      return 1
-    end
-  end
-  return 0
-end
+func isNotExistErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not found") ||
+		strings.Contains(s, "does not exist") ||
+		errors.Is(err, redis.Nil)
+}
 
-ensure()
-local r1 = try_place(i1)
-if r1 == 2 then
-  return 1
-end
-if r1 == 1 then
-  redis.call('INCR', cntkey)
-  return 1
-end
-local r2 = try_place(i2)
-if r2 == 2 then
-  return 1
-end
-if r2 == 1 then
-  redis.call('INCR', cntkey)
-  return 1
-end
+// redisTruthy 将 CF.EXISTS / CF.ADD 等返回值规范为 bool。
+func redisTruthy(v interface{}) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case int64:
+		return x != 0
+	case int:
+		return x != 0
+	case string:
+		return x == "1" || strings.EqualFold(x, "true")
+	case []byte:
+		s := string(x)
+		return s == "1" || strings.EqualFold(s, "true")
+	default:
+		return toInt64(v) != 0
+	}
+}
 
--- cuckoo kick
-local idx = i1
-local cur = fp
-math.randomseed(tonumber(string.sub(tostring(fp + i1 + i2), -6)) or 1)
-for _ = 1, maxk do
-  local data = get_bucket(idx)
-  if not data or #data < b then
-    data = string.rep('\0', b)
-  end
-  local slot = math.random(1, b)
-  local victim = string.byte(data, slot) or 0
-  set_slot(idx, slot, cur)
-  if victim == 0 then
-    redis.call('INCR', cntkey)
-    return 1
-  end
-  cur = victim
-  idx = alt_index(idx, victim, m)
-end
-return 0
-`)
+// parseCFInfo 将 CF.INFO 返回的 [k1 v1 k2 v2 ...] 或 map 解析为 map[string]int64。
+func parseCFInfo(val interface{}) map[string]int64 {
+	out := make(map[string]int64)
+	switch arr := val.(type) {
+	case []interface{}:
+		for i := 0; i+1 < len(arr); i += 2 {
+			k := fmt.Sprint(arr[i])
+			out[k] = toInt64(arr[i+1])
+		}
+	case map[interface{}]interface{}:
+		for k, v := range arr {
+			out[fmt.Sprint(k)] = toInt64(v)
+		}
+	case map[string]interface{}:
+		for k, v := range arr {
+			out[k] = toInt64(v)
+		}
+	}
+	return out
+}
 
-// language=Lua
-var cuckooDeleteScript = redis.NewScript(`
-local key = KEYS[1]
-local cntkey = KEYS[2]
-local m = tonumber(ARGV[1])
-local b = tonumber(ARGV[2])
-local i1 = tonumber(ARGV[3])
-local i2 = tonumber(ARGV[4])
-local fp = tonumber(ARGV[5])
-
-if redis.call('EXISTS', key) == 0 then
-  return 0
-end
-
-local function clear_in(idx)
-  local start = idx * b
-  local data = redis.call('GETRANGE', key, start, start + b - 1)
-  if not data or #data < b then
-    return false
-  end
-  for i = 1, b do
-    if (string.byte(data, i) or 0) == fp then
-      local off = start + (i - 1)
-      redis.call('SETRANGE', key, off, string.char(0))
-      local n = tonumber(redis.call('GET', cntkey) or '0') or 0
-      if n > 0 then
-        redis.call('DECR', cntkey)
-      end
-      return true
-    end
-  end
-  return false
-end
-
-if clear_in(i1) or clear_in(i2) then
-  return 1
-end
-return 0
-`)
-
-// language=Lua
-var cuckooLookupScript = redis.NewScript(`
-local key = KEYS[1]
-local m = tonumber(ARGV[1])
-local b = tonumber(ARGV[2])
-local i1 = tonumber(ARGV[3])
-local i2 = tonumber(ARGV[4])
-local fp = tonumber(ARGV[5])
-
-if redis.call('EXISTS', key) == 0 then
-  return 2
-end
-
-local function has_fp(idx)
-  local start = idx * b
-  local data = redis.call('GETRANGE', key, start, start + b - 1)
-  if not data then
-    return false
-  end
-  for i = 1, #data do
-    if (string.byte(data, i) or 0) == fp then
-      return true
-    end
-  end
-  return false
-end
-
-if has_fp(i1) or has_fp(i2) then
-  return 1
-end
-return 0
-`)
+func toInt64(v interface{}) int64 {
+	switch x := v.(type) {
+	case int64:
+		return x
+	case int:
+		return int64(x)
+	case string:
+		n, _ := strconv.ParseInt(x, 10, 64)
+		return n
+	case []byte:
+		n, _ := strconv.ParseInt(string(x), 10, 64)
+		return n
+	default:
+		n, _ := strconv.ParseInt(fmt.Sprint(x), 10, 64)
+		return n
+	}
+}
