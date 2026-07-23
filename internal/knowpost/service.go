@@ -42,8 +42,9 @@ type KnowPostService struct {
 	redis     *redis.Client
 	l1Cache   *PrefixCache
 	hotKey    *cache.HotKeyDetector
-	// bloom 与空值缓存叠加：RedisBloom CF.* 前置拦截一定不存在的 ID，软删 CF.DEL；nil 表示关闭。
-	bloom     *cache.RedisBloom
+	// bloom：第三方 RedisBloom（CF.*）客户端薄封装 + 空值缓存叠加；nil 表示关闭。
+	// 过滤器算法由 Redis 模块提供，本服务只做 ADD/DEL/EXISTS 与 fail-open。
+	bloom *cache.RedisBloom
 	ossCfg    *config.OssConfig
 	counter   CounterClient
 	feedCache FeedCacheInvalidator
@@ -105,7 +106,7 @@ func NewKnowPostService(
 	return svc
 }
 
-// newDetailBloom 按配置装配详情存在性过滤器（RedisBloom CF.*）；关闭或依赖缺失时返回 nil。
+// newDetailBloom 按配置装配第三方 RedisBloom CF 客户端；关闭时返回 nil（不创建适配层）。
 func newDetailBloom(redisClient *redis.Client, cfg *config.KnowPostConfig, logger *zap.Logger) *cache.RedisBloom {
 	if redisClient == nil || cfg == nil {
 		return nil

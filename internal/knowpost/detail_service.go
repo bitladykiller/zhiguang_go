@@ -52,11 +52,11 @@ func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) string 
 // 先从 L1（freecache 进程内缓存）查找，未命中则查 L2（Redis 分布式缓存），
 // 再未命中则进入 Redis 分布式锁保护区域回源到 L3（MySQL）。
 //
-// 穿透防护（Bloom + 空值缓存叠加）：
-//  0. Redis Bloom（可选，默认开启）：
+// 穿透防护（第三方 RedisBloom CF.* + 空值缓存叠加）：
+//  0. 存在性过滤（可选，默认开启；算法在 RedisBloom 模块，非业务自研）：
 //     - MightContain=false → 一定不存在，直接 404，不打 L1/L2/DB。
 //     - MightContain=true  → 可能存在，继续三级缓存。
-//     - Redis 故障时 fail-open，退回仅空值缓存路径。
+//     - 模块缺失/Redis 故障/未预热 → fail-open，退回仅空值缓存路径。
 //  1. L1（freecache）：
 //     - 约 50ns 可返回，不经过网络，性能极高。
 //     - TTL 由上游写缓存时决定（通常是 60s + jitter）。

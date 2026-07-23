@@ -11,8 +11,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// newTestBloom 连接带 RedisBloom 的 Redis；不可用则 Skip。
-// 环境变量 REDIS_BLOOM_ADDR 默认 127.0.0.1:6379。
+// newTestBloom 连接带第三方 RedisBloom 模块的 Redis；不可用则 Skip。
+// 环境变量 REDIS_BLOOM_ADDR 默认 127.0.0.1:6379（需 redis-stack 或等效 CF.*）。
 func newTestBloom(t *testing.T) *RedisBloom {
 	t.Helper()
 	rdb := requireRedisBloom(t)

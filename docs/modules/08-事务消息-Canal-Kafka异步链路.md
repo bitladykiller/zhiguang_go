@@ -5,14 +5,22 @@
 这条链路是整个项目最核心的异步骨架之一。  
 它把这些模块串了起来：
 
-- knowpost -> search
-- relation -> relation cache projection / counter
+- knowpost → search（ES 投影）
+- relation → Redis ZSet 投影 + 用户 following/follower 计数（消费端 `HIncrBy`，**不经** `counter-events`）
 
-如果没有它，系统会退化成大量手工双写。
+**不在本链路内、容易混讲的点：**
+
+| 链路 | Topic / 机制 | 与 outbox 关系 |
+|------|--------------|----------------|
+| like/fav 计数 | `counter-events` | **独立**；Bitmap 真翻转后应用发 Kafka |
+| 写扩散 fanout | topic `fanout` | **独立**；当前 **Publisher 未注入**，Canal **不会**把 outbox 转到 fanout |
+| outbox 直连轮询 | `DirectPoll` / `PollConsumer` | 有代码；`canal.enabled=false` 时 **不会**自动启用 |
+
+如果没有 outbox 链路，系统会退化成大量手工双写。跨模块总图见 [`docs/跨模块流程图.md`](../跨模块流程图.md)。
 
 ## 2. 一句话介绍
 
-这个项目采用“事务 outbox + Canal 订阅 binlog + Kafka 分发 + 消费端重试 / 死信 / 业务幂等”的组合，把业务主库写入和异步派生链路解耦开来：业务事务只保证主数据和 outbox 同时提交，后续由 Canal 和 Kafka 把事件送到各消费方；搜索消费端通过同 ID 覆盖写保持幂等，关系消费端通过 Redis 去重键和 ZSet 幂等操作控制重复处理。计数模块的 `counter-events` 是另一条链路，额外实现了 partition 级水位线。
+这个项目采用“事务 outbox + Canal 订阅 binlog + Kafka 分发 + 消费端重试 / 死信 / 业务幂等”的组合，把业务主库写入和异步派生链路解耦开来：业务事务只保证主数据和 outbox 同时提交，后续由 Canal 把 outbox 变更桥到 `canal-outbox`；search / relation 两个 consumer group 各自投影。搜索用同 ID 覆盖写保持幂等；关系用 Redis 去重键 + ZSet 幂等写，并在消费端直接改用户 following/follower SDS。like/fav 的 `counter-events` 与写扩散 `fanout` 都是**旁路**，不要讲成同一条 canal-outbox 流水线。
 
 ## 3. 核心流程
 
@@ -24,6 +32,16 @@
 2. 写 outbox 表
 
 只有两者一起提交成功，事务才真正完成。
+
+```mermaid
+flowchart TD
+    A[业务写请求] --> B[BEGIN]
+    B --> C[写主表]
+    C --> D[写 outbox 表]
+    D --> E{COMMIT}
+    E -->|失败| F[全部回滚]
+    E -->|成功| G[binlog 可见]
+```
 
 ## 3.2 Canal 监听 binlog
 
@@ -38,6 +56,14 @@ Canal 做的是：
    - payload
 4. 包装成统一 JSON Envelope
 
+```mermaid
+flowchart LR
+    A[MySQL binlog] --> B[Canal]
+    B --> C[解析 INSERT/UPDATE]
+    C --> D[提取 aggregate/type/payload]
+    D --> E[JSON Envelope]
+```
+
 ## 3.3 Kafka 分发
 
 Canal Bridge 会把消息写到 `canal-outbox` topic。  
@@ -47,6 +73,13 @@ Canal Bridge 会把消息写到 `canal-outbox` topic。
 - 同一 follow 关系的事件进同一 partition
 
 这样 consumer 侧才有“同分区有序”这个前提。
+
+```mermaid
+flowchart TD
+    A[Canal Bridge] --> B[按聚合根构造 partition key]
+    B --> C[写 Kafka canal-outbox]
+    C --> D[同 knowpost / 同关系 有序]
+```
 
 ## 3.4 Consumer 处理与幂等边界
 
@@ -64,6 +97,19 @@ Canal Bridge 会把消息写到 `canal-outbox` topic。
 2. relation consumer：用 Redis `SETNX dedup:rel:*` 做短窗口去重，并用 ZADD/ZREM 这类幂等操作更新投影。
 3. counter consumer：不走 outbox 通用 consumer，而是在 `counter-events` 链路里使用 partition 级 applied offset 水位。
 
+```mermaid
+flowchart TD
+    A[Kafka 消息] --> B[通用 outbox consumer]
+    B --> C[最多重试 3 次]
+    C --> D{成功?}
+    D -->|是| E[commit]
+    D -->|否| F[记坏消息并 commit 跳过]
+    B --> G[业务 RowHandler]
+    G --> H1[search: 同 ID upsert 覆盖]
+    G --> H2[relation: SETNX 去重 + ZSet 幂等]
+    I[counter-events 独立链路] --> J[partition watermark]
+```
+
 ## 3.5 坏消息处理
 
 对于明确无法解析或重试耗尽的消息，consumer 不会一直卡住，而是：
@@ -73,6 +119,17 @@ Canal Bridge 会把消息写到 `canal-outbox` topic。
 3. commit 掉这条消息
 
 这能防止单条坏数据卡死整条 partition。
+
+```mermaid
+flowchart TD
+    A[消费消息] --> B{可解析?}
+    B -->|否| C[告警 + 失败记录]
+    B -->|是| D[业务处理]
+    D --> E{重试耗尽?}
+    E -->|否| F[重试]
+    E -->|是| C
+    C --> G[commit 跳过, 不阻塞分区]
+```
 
 ## 4. 设计亮点
 
@@ -364,9 +421,11 @@ sequenceDiagram
 |----------|--------|--------------|------|
 | Search | 写 ES 文档 | 同一个 post id 重复 index 覆盖 | 如果旧事件晚于新事件，仍需版本或回查主库缓解 |
 | Relation | 更新 Redis ZSet 和用户计数 | dedupe key + ZADD/ZREM | dedupe 先落标后失败可能吞重试 |
-| Counter | 累加 cnt Hash | partition applied offset + dirty repair | 只适用于 counter-events，不是 outbox 通用能力 |
+| Counter（旁路） | 累加实体 cnt SDS | partition applied offset + AggregationConsumer 内 dirty repairLoop | 只适用于 `counter-events`，不是 outbox 通用能力；**无独立 FailureWorker Runner** |
+| Relation 用户计数 | following/follower SDS | 消费端 `HIncrBy`（跟 ZSet 同一次 EventProcessor） | **不经** counter-events；半成功 + dedupe 先落标是已知边界 |
+| Fanout（旁路） | timeline ZSet | 业务幂等/截断在 FanoutService | 算法与 Consumer 在；**生产端未往 fanout topic 写消息** |
 
-面试时可以说：我不会把所有 consumer 说成一套幂等模型，而是按副作用语义分别处理。
+面试时可以说：我不会把所有 consumer 说成一套幂等模型，而是按副作用语义分别处理；更不会把 fanout、counter-events 和 canal-outbox 讲成一条 topic。
 
 ## B4. Canal Bridge 的 ACK / ROLLBACK 边界
 
@@ -388,7 +447,7 @@ flowchart TD
 | 结论 | 是否保证 | 说明 |
 |------|----------|------|
 | 主表和 outbox 同时提交 | 保证 | 同一个 MySQL 事务 |
-| outbox 一定被 Canal 捕获 | 依赖 Canal 和 binlog 配置 | 需要 canal.enabled 和 filter 正确 |
+| outbox 一定被 Canal 捕获 | 依赖 Canal 和 binlog 配置 | 需要 `canal.enabled=true` 且 filter 正确；关闭时投影停，**不会**自动 DirectPoll |
 | Kafka 不重复投递 | 不保证 | Kafka 是至少一次语义 |
 | Consumer 副作用只执行一次 | 不统一保证 | 需要业务幂等 |
 | ES 与 MySQL 强一致 | 不保证 | ES 是最终一致投影 |
@@ -423,4 +482,4 @@ flowchart TD
 
 ## B8. 2 分钟展开回答
 
-> 这条异步链路解决的是双写一致性。业务服务不直接同时写 MySQL 和 ES/Redis/Kafka，而是在同一个 MySQL 事务里写主表和 outbox。事务提交后，Canal 订阅 outbox 的 binlog，把事件桥接到 Kafka 的 `canal-outbox` topic。下游 search consumer 和 relation consumer 各自处理自己关心的事件。通用 outbox consumer 负责拉消息、解析、重试、失败记录和 commit 跳过，但它不替业务保证所有副作用只执行一次；所以搜索用同 ID 覆盖写，关系用 dedupe key 和 ZSet 幂等命令。计数链路是另一条 `counter-events`，因为 delta 累加不能重复，所以单独做了 partition 水位和 dirty repair。
+> 这条异步链路解决的是双写一致性。业务服务不直接同时写 MySQL 和 ES/Redis/Kafka，而是在同一个 MySQL 事务里写主表和 outbox。事务提交后，Canal 订阅 outbox 的 binlog，把事件桥接到 Kafka 的 `canal-outbox` topic。下游 search 与 relation 两个 consumer group 各自处理：搜索回查 MySQL 后写 ES；关系更新 ZSet，并对 following/follower 做 HIncrBy。通用 outbox consumer 负责拉消息、解析、重试、失败记录和 commit 跳过，但不替业务保证副作用只执行一次。like/fav 计数是另一条 `counter-events`（Bitmap + 水位 + AggregationConsumer 内 dirty repair）；写扩散是 topic `fanout`，当前生产端未闭环。

@@ -75,6 +75,20 @@
 
 **主数据变更和异步事件投递通过事务 outbox 绑定在一起，缓存只做 best-effort 失效，不参与真值定义。**
 
+```mermaid
+flowchart TD
+    A[写操作: 发布/删/置顶/可见性/元数据] --> B[开事务]
+    B --> C[更新 know_posts 主表]
+    C --> D[同事务写 outbox]
+    D --> E{commit?}
+    E -->|失败| X[回滚, 无事件无缓存变更]
+    E -->|成功| F[best-effort 失效详情/Feed 版本]
+    F --> G[软删时 CF.DEL]
+    F --> H[Canal→Kafka→搜索/扩散等]
+```
+
+创建草稿 / 确认正文上传是更轻的写路径：草稿主要是雪花 ID + MySQL 插入 + `CF.ADD`；确认正文是 OSS 元数据回写 + 详情缓存失效，不必然写 outbox。
+
 ## 3.2 详情读路径流程
 
 详情页是这个模块最有技术含量的部分之一。
@@ -89,29 +103,50 @@
    - like/fav count
    - 当前用户是否已点赞/已收藏
 
-```text
-请求 → CF.EXISTS（一定不存在？）→ 404
-         ↓ 可能存在
-       L1 → L2(NULL?) → 读穿锁 → DB
-         ↓ 不存在
-       写 NULL（兜底误判 / 删除失败 / 预热窗口 / 模块缺失）
+```mermaid
+flowchart TD
+    A[详情请求] --> B{CF.EXISTS}
+    B -->|一定不存在| Z[404 不打缓存/DB]
+    B -->|可能存在 / fail-open| C[L1 freecache]
+    C -->|命中| U[补充用户态 like/fav]
+    C -->|未命中| D[Redis L2]
+    D -->|NULL 哨兵| Z
+    D -->|命中详情| U
+    D -->|miss| E[抢分布式锁]
+    E -->|未抢到| F[短暂等待后重查 L2]
+    F --> D
+    E -->|抢到| G[double check L2]
+    G -->|仍 miss| H[回源 MySQL]
+    H -->|存在| I[回填 L1/L2 + CF.ADD]
+    H -->|不存在| J[写 NULL 短 TTL]
+    I --> U
+    J --> Z
+    U --> R[返回详情]
 ```
 
 这里有几个关键细节：
 
-### 3.2.0 RedisBloom Cuckoo（CF.*）+ 空值缓存（叠加，默认开启）
+### 3.2.0 第三方 RedisBloom（Cuckoo CF.*）+ 空值缓存（叠加，默认开启）
 
-实现：`internal/cache/bloom.go` 的 `RedisBloom`（类型名兼容；底层为 **RedisBloom 模块** `CF.*`）。
+**定位（面试务必说清）：**
 
-| 能力 | 命令 |
-|------|------|
+| 层次 | 谁实现 | 说明 |
+|------|--------|------|
+| 过滤算法 / 数据结构 | **第三方** Redis 模块 RedisBloom | Cuckoo Filter，命令 `CF.*`，随 `redis-stack-server` |
+| 业务适配 | 本仓库 `internal/cache/bloom.go` | 薄客户端：配置映射、ADD/DEL/EXISTS、fail-open；**不自研**哈希/踢出/扩容 |
+| 读路径编排 | `knowpost.GetDetail` | CF 前置 + L1/L2/NULL/DB |
+
+配置键仍叫 `bloom_*`、类型名仍叫 `RedisBloom`，仅为历史兼容；叙述应说「第三方 RedisBloom，业务只写适配层」。
+
+| 能力 | 第三方命令 |
+|------|------------|
 | 预留容量 | `CF.RESERVE`（capacity / BUCKETSIZE / MAXITERATIONS / EXPANSION） |
 | 插入 | `CF.ADD` |
 | 删除 | `CF.DEL` |
 | 查询 | `CF.EXISTS` |
-| 运维 | `CF.INFO`（代码侧 `Info`）；模块另有 INSERT/COUNT/SCANDUMP 等可扩展 |
+| 运维 | `CF.INFO`（适配层 `Info`） |
 
-**依赖**：Docker Redis 使用 `redis/redis-stack-server`（内置 RedisBloom）。标准 `redis:alpine` **无** `CF.*`，会 fail-open 到仅 NULL 路径。
+**依赖**：Docker Redis 使用 `redis/redis-stack-server`（内置 RedisBloom）。标准 `redis:alpine` **无** `CF.*`，适配层 fail-open 到仅 NULL 路径。
 
 配置（`knowpost.detail_cache`，键名保留 `bloom_*`）：
 
@@ -136,6 +171,22 @@
 - CF 擅长拦「从未出现过的扫号 ID」，且**软删后可 `CF.DEL`**。
 - NULL 擅长兜「查过确认不存在 / 过滤器误判 / 模块不可用 / 预热未完成」。
 - 两者叠加后：穿透成本更低，又不牺牲正确性。
+
+```mermaid
+flowchart TD
+    subgraph 写维护
+      W1[CreateDraft / 回源成功] --> W2[CF.ADD]
+      W3[软删成功] --> W4[CF.DEL]
+      W5[启动 WarmDetailBloom] --> W6[游标 ListIDsForBloom + ADD]
+    end
+    subgraph 读前置
+      R1[CF.EXISTS] -->|false| R2[404]
+      R1 -->|true/fail-open| R3[进入 L1/L2/DB]
+    end
+    subgraph 故障
+      F1[键不存在/模块缺失] --> F2[fail-open 仅靠 NULL]
+    end
+```
 
 ### 3.2.1 版本化缓存键
 
@@ -174,6 +225,24 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 
 这个流程用来抗缓存击穿。
 
+```mermaid
+sequenceDiagram
+    participant R1 as 请求1
+    participant R2 as 请求2
+    participant Lock as Redis 锁
+    participant Cache as Redis L2
+    participant DB as MySQL
+
+    R1->>Lock: TryLock
+    R2->>Lock: TryLock 失败
+    R2->>R2: sleep 后重查 L2
+    R1->>Cache: double check
+    R1->>DB: 回源
+    R1->>Cache: 回填 / 写 NULL
+    R1->>Lock: Unlock
+    R2->>Cache: 命中回填结果
+```
+
 ### 3.2.4 用户态数据不进共享缓存
 
 详情里的这些数据不会直接进详情缓存：
@@ -200,6 +269,21 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 - 条目碎片缓存能跨页复用单条内容
 - 所以公共 Feed 会把“页 ID 列表”和“单条 item 详情”拆开缓存
 
+```mermaid
+flowchart TD
+    A[公共 Feed 请求 page/cursor] --> B[读 L1 整页]
+    B -->|命中| Z[返回]
+    B -->|miss| C[读 Redis 页 ID 列表碎片]
+    C -->|有 ID 列表| D[批量取 item 碎片]
+    D -->|碎片齐全| E[组装页 + 回填 L1]
+    D -->|缺碎片| F[补缺: 锁 + DB/详情]
+    C -->|无列表| G[锁 + 回源 DB 查 ID 列表]
+    G --> H[写 ID 列表碎片 + item 碎片]
+    F --> E
+    H --> E
+    E --> Z
+```
+
 ### 3.3.2 我的已发布列表
 
 “我的 Feed”没有走碎片缓存，而是直接缓存整页。
@@ -212,6 +296,15 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 
 这是一个非常典型的“按访问模式选缓存模型”的例子。
 
+```mermaid
+flowchart TD
+    A[我的已发布列表] --> B[带 author + version 的整页 key]
+    B -->|L1/Redis 命中| Z[返回]
+    B -->|miss| C[锁 + 回源 DB]
+    C --> D[整页回填]
+    D --> Z
+```
+
 ### 3.3.3 Feed 失效策略
 
 知文写入后不会去枚举删除所有分页 key，而是：
@@ -221,6 +314,16 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 3. 递增当前作者 mine feed version
 
 这样新请求自然切换到新 key，不需要暴力清全量分页缓存。
+
+```mermaid
+flowchart LR
+    A[写后失效] --> B[删 item 碎片]
+    A --> C[公共 feed version++]
+    A --> D[作者 mine feed version++]
+    C --> E[新请求自然用新 key]
+    D --> E
+    B --> E
+```
 
 ## 4. 设计亮点
 
@@ -511,7 +614,7 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 | `internal/knowpost/detail_service.go` | 详情读 | `GetDetail` / `getDetailUnderLock` |
 | `internal/knowpost/feed_service.go` | Feed 读与失效 | `GetPublicFeed` / `InvalidateAfterPostMutation` |
 | `internal/knowpost/cache.go` | 版本失效 Lua | `invalidateCache` |
-| `internal/cache/bloom.go` | RedisBloom CF.* | `RedisBloom` / `WarmDetailBloom` / `Delete` / `Info` |
+| `internal/cache/bloom.go` | 第三方 RedisBloom CF 客户端薄封装 | `RedisBloom` / `WarmDetailBloom` / `Delete` / `Info` |
 | `internal/bootstrap/init_knowpost.go` | 装配与异步预热 | `initKnowPost` |
 
 ## A2. 详情完整读路径（中文流程图）
@@ -610,7 +713,16 @@ flowchart TD
     F --> G
 ```
 
-**当前工程状态**：写扩散生产端可能未完整接线，空时间线会大量走降级。面试必须诚实区分「设计」与「落地」。
+**当前工程状态（源码接线）**：
+
+| 项 | 状态 |
+|----|------|
+| `FanoutService` / `FanoutConsumer` | 有实现；Kafka brokers 非空时 consumer 会启动 |
+| `FanoutPublisher` | **knowpost / bootstrap 未调用**，发布不会往 `fanout` topic 灌消息 |
+| Canal | 只写 `canal-outbox`，**不写** `fanout` |
+| `GetMineFeed` 空 timeline | 降级 **本人已发布**，不是完整关注流读扩散 |
+
+因此线上时间线通常为空，「我的 Feed」大量走 `GetMyPublished` 整页缓存/DB。面试必须区分「写扩散算法」与「生产闭环」。跨模块总图见 [`docs/跨模块流程图.md`](../跨模块流程图.md) §6。
 
 ## A6. 配置表（详情缓存 + Bloom）
 
@@ -635,7 +747,7 @@ flowchart TD
 
 ## A8. 60 秒口述稿
 
-> 知文写路径事务内绑 outbox，保证搜索等异步不丢。读路径是 Bloom 前置加空值缓存叠加，再加 L1/L2 和读穿锁回源；更新用版本号让旧缓存自然失联。公共 Feed 用 ID 列表加条目碎片，我的 Feed 优先时间线写扩散并可读库降级。用户点赞状态绝不进共享缓存。
+> 知文写路径事务内绑 outbox，保证搜索等异步不丢。读路径是 Bloom 前置加空值缓存叠加，再加 L1/L2 和读穿锁回源；更新用版本号让旧缓存自然失联。公共 Feed 用 ID 列表加条目碎片；我的 Feed 代码上先读 timeline，但写扩散生产端未闭环时会降级本人已发布列表。用户点赞状态绝不进共享缓存。
 
 
 ---

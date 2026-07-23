@@ -30,6 +30,16 @@ LLM 模块当前采用“可选能力、按需降级”的策略：摘要能力�
 - service 只负责调用和解析
 - 配置不完整时整个模块降级
 
+```mermaid
+flowchart TD
+    A[SuggestDescription] --> B[截断正文]
+    B --> C[构造 system/user prompt]
+    C --> D[HTTP 调 DeepSeek]
+    D --> E[解析响应]
+    E --> F[返回 50 字内摘要]
+    G[配置缺失] --> H[模块降级不可用]
+```
+
 ## 3.2 RAG 查询流程
 
 当前 `RagQueryService` 还属于占位实现，但接口设计已经提前考虑了未来扩展：
@@ -46,6 +56,18 @@ LLM 模块当前采用“可选能力、按需降级”的策略：摘要能力�
 - LLM 流式生成
 
 时，不需要重做 handler 和接口边界。
+
+```mermaid
+flowchart TD
+    A[RagQuery postID+question] --> B[context 透传]
+    B --> C[流式 channel 输出]
+    C --> D{取消/超时?}
+    D -->|是| E[停止生成并释放]
+    D -->|否| F[占位/未来: 检索+生成]
+    F --> G[embedding]
+    F --> H[ES/向量检索]
+    F --> I[LLM 流式回答]
+```
 
 ## 4. 设计亮点
 
