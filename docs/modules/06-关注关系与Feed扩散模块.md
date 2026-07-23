@@ -67,6 +67,19 @@ score 用的是 `created_at` 毫秒时间戳，member 是对端用户 ID。
 这里最重要的点是：  
 **关系真值写入和 outbox 事件写入在同一个事务里完成。**
 
+```mermaid
+flowchart TD
+    A[Follow 请求] --> B[Redis Lua 用户级令牌桶]
+    B -->|限流| X[429]
+    B -->|通过| C[开 MySQL 事务]
+    C --> D[写 following]
+    D --> E[写 follower]
+    E --> F[写 outbox]
+    F --> G{commit?}
+    G -->|失败| R[回滚]
+    G -->|成功| H[删除受影响列表缓存]
+```
+
 ## 4.2 Unfollow 写路径
 
 取关流程和关注类似，只是变成：
@@ -76,6 +89,14 @@ score 用的是 `created_at` 毫秒时间戳，member 是对端用户 ID。
 3. 写 `FollowCanceled` outbox
 4. commit
 5. 失效缓存
+
+```mermaid
+flowchart TD
+    A[Unfollow] --> B[事务内双表 rel_status=0]
+    B --> C[写 FollowCanceled outbox]
+    C --> D[commit]
+    D --> E[失效列表缓存]
+```
 
 ## 4.3 单条关系判断
 
@@ -92,6 +113,12 @@ score 用的是 `created_at` 毫秒时间戳，member 是对端用户 ID。
 - 引入缓存收益不大
 
 所以直接查库是合理的。
+
+```mermaid
+flowchart LR
+    A[IsFollowing<br/>低成本高一致] --> B[(MySQL 直查)]
+    B --> C[true/false]
+```
 
 ## 4.4 列表读取路径
 
@@ -114,6 +141,21 @@ cursor 分页依赖 ZSet score 顺序：
 
 这条链路的目标是避免 offset 翻页在数据变化时产生跳页和重复。
 
+```mermaid
+flowchart TD
+    A[列表读 offset/cursor] --> B{大 V?}
+    B -->|是| C[L1 freecache]
+    B -->|否| D[Redis ZSet]
+    C -->|命中| Z[返回]
+    C -->|miss| D
+    D -->|有数据| E[ZRevRange / ByScore]
+    D -->|冷| F[预热锁 + 从 MySQL 灌 ZSet]
+    F --> E
+    E -->|窗口不够| G[回退 MySQL 深分页]
+    E -->|足够| Z
+    G --> Z
+```
+
 ## 4.5 异步投影流程
 
 关系变更事件会进入：
@@ -125,6 +167,17 @@ cursor 分页依赖 ZSet score 顺序：
 1. 二次去重
 2. 更新 Redis ZSet
 3. 调 counter 模块增减关注数 / 粉丝数
+
+```mermaid
+flowchart LR
+    A[(MySQL outbox)] --> B[Canal]
+    B --> C[Kafka canal-outbox]
+    C --> D[relation.OutboxConsumer]
+    D --> E[EventProcessor]
+    E --> F[SETNX 去重]
+    E --> G[ZADD/ZREM 投影]
+    E --> H[counter 关注数/粉丝数]
+```
 
 ## 5. 设计亮点
 

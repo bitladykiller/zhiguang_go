@@ -25,6 +25,16 @@
 
 只有两者一起提交成功，事务才真正完成。
 
+```mermaid
+flowchart TD
+    A[业务写请求] --> B[BEGIN]
+    B --> C[写主表]
+    C --> D[写 outbox 表]
+    D --> E{COMMIT}
+    E -->|失败| F[全部回滚]
+    E -->|成功| G[binlog 可见]
+```
+
 ## 3.2 Canal 监听 binlog
 
 Canal 做的是：
@@ -38,6 +48,14 @@ Canal 做的是：
    - payload
 4. 包装成统一 JSON Envelope
 
+```mermaid
+flowchart LR
+    A[MySQL binlog] --> B[Canal]
+    B --> C[解析 INSERT/UPDATE]
+    C --> D[提取 aggregate/type/payload]
+    D --> E[JSON Envelope]
+```
+
 ## 3.3 Kafka 分发
 
 Canal Bridge 会把消息写到 `canal-outbox` topic。  
@@ -47,6 +65,13 @@ Canal Bridge 会把消息写到 `canal-outbox` topic。
 - 同一 follow 关系的事件进同一 partition
 
 这样 consumer 侧才有“同分区有序”这个前提。
+
+```mermaid
+flowchart TD
+    A[Canal Bridge] --> B[按聚合根构造 partition key]
+    B --> C[写 Kafka canal-outbox]
+    C --> D[同 knowpost / 同关系 有序]
+```
 
 ## 3.4 Consumer 处理与幂等边界
 
@@ -64,6 +89,19 @@ Canal Bridge 会把消息写到 `canal-outbox` topic。
 2. relation consumer：用 Redis `SETNX dedup:rel:*` 做短窗口去重，并用 ZADD/ZREM 这类幂等操作更新投影。
 3. counter consumer：不走 outbox 通用 consumer，而是在 `counter-events` 链路里使用 partition 级 applied offset 水位。
 
+```mermaid
+flowchart TD
+    A[Kafka 消息] --> B[通用 outbox consumer]
+    B --> C[最多重试 3 次]
+    C --> D{成功?}
+    D -->|是| E[commit]
+    D -->|否| F[记坏消息并 commit 跳过]
+    B --> G[业务 RowHandler]
+    G --> H1[search: 同 ID upsert 覆盖]
+    G --> H2[relation: SETNX 去重 + ZSet 幂等]
+    I[counter-events 独立链路] --> J[partition watermark]
+```
+
 ## 3.5 坏消息处理
 
 对于明确无法解析或重试耗尽的消息，consumer 不会一直卡住，而是：
@@ -73,6 +111,17 @@ Canal Bridge 会把消息写到 `canal-outbox` topic。
 3. commit 掉这条消息
 
 这能防止单条坏数据卡死整条 partition。
+
+```mermaid
+flowchart TD
+    A[消费消息] --> B{可解析?}
+    B -->|否| C[告警 + 失败记录]
+    B -->|是| D[业务处理]
+    D --> E{重试耗尽?}
+    E -->|否| F[重试]
+    E -->|是| C
+    C --> G[commit 跳过, 不阻塞分区]
+```
 
 ## 4. 设计亮点
 

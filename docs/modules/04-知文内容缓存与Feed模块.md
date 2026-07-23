@@ -75,6 +75,20 @@
 
 **主数据变更和异步事件投递通过事务 outbox 绑定在一起，缓存只做 best-effort 失效，不参与真值定义。**
 
+```mermaid
+flowchart TD
+    A[写操作: 发布/删/置顶/可见性/元数据] --> B[开事务]
+    B --> C[更新 know_posts 主表]
+    C --> D[同事务写 outbox]
+    D --> E{commit?}
+    E -->|失败| X[回滚, 无事件无缓存变更]
+    E -->|成功| F[best-effort 失效详情/Feed 版本]
+    F --> G[软删时 CF.DEL]
+    F --> H[Canal→Kafka→搜索/扩散等]
+```
+
+创建草稿 / 确认正文上传是更轻的写路径：草稿主要是雪花 ID + MySQL 插入 + `CF.ADD`；确认正文是 OSS 元数据回写 + 详情缓存失效，不必然写 outbox。
+
 ## 3.2 详情读路径流程
 
 详情页是这个模块最有技术含量的部分之一。
@@ -89,12 +103,25 @@
    - like/fav count
    - 当前用户是否已点赞/已收藏
 
-```text
-请求 → CF.EXISTS（一定不存在？）→ 404
-         ↓ 可能存在
-       L1 → L2(NULL?) → 读穿锁 → DB
-         ↓ 不存在
-       写 NULL（兜底误判 / 删除失败 / 预热窗口 / 模块缺失）
+```mermaid
+flowchart TD
+    A[详情请求] --> B{CF.EXISTS}
+    B -->|一定不存在| Z[404 不打缓存/DB]
+    B -->|可能存在 / fail-open| C[L1 freecache]
+    C -->|命中| U[补充用户态 like/fav]
+    C -->|未命中| D[Redis L2]
+    D -->|NULL 哨兵| Z
+    D -->|命中详情| U
+    D -->|miss| E[抢分布式锁]
+    E -->|未抢到| F[短暂等待后重查 L2]
+    F --> D
+    E -->|抢到| G[double check L2]
+    G -->|仍 miss| H[回源 MySQL]
+    H -->|存在| I[回填 L1/L2 + CF.ADD]
+    H -->|不存在| J[写 NULL 短 TTL]
+    I --> U
+    J --> Z
+    U --> R[返回详情]
 ```
 
 这里有几个关键细节：
@@ -137,6 +164,22 @@
 - NULL 擅长兜「查过确认不存在 / 过滤器误判 / 模块不可用 / 预热未完成」。
 - 两者叠加后：穿透成本更低，又不牺牲正确性。
 
+```mermaid
+flowchart TD
+    subgraph 写维护
+      W1[CreateDraft / 回源成功] --> W2[CF.ADD]
+      W3[软删成功] --> W4[CF.DEL]
+      W5[启动 WarmDetailBloom] --> W6[游标 ListIDsForBloom + ADD]
+    end
+    subgraph 读前置
+      R1[CF.EXISTS] -->|false| R2[404]
+      R1 -->|true/fail-open| R3[进入 L1/L2/DB]
+    end
+    subgraph 故障
+      F1[键不存在/模块缺失] --> F2[fail-open 仅靠 NULL]
+    end
+```
+
 ### 3.2.1 版本化缓存键
 
 详情缓存键不是固定的 `knowpost:detail:{id}`，而是带版本号：
@@ -174,6 +217,24 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 
 这个流程用来抗缓存击穿。
 
+```mermaid
+sequenceDiagram
+    participant R1 as 请求1
+    participant R2 as 请求2
+    participant Lock as Redis 锁
+    participant Cache as Redis L2
+    participant DB as MySQL
+
+    R1->>Lock: TryLock
+    R2->>Lock: TryLock 失败
+    R2->>R2: sleep 后重查 L2
+    R1->>Cache: double check
+    R1->>DB: 回源
+    R1->>Cache: 回填 / 写 NULL
+    R1->>Lock: Unlock
+    R2->>Cache: 命中回填结果
+```
+
 ### 3.2.4 用户态数据不进共享缓存
 
 详情里的这些数据不会直接进详情缓存：
@@ -200,6 +261,21 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 - 条目碎片缓存能跨页复用单条内容
 - 所以公共 Feed 会把“页 ID 列表”和“单条 item 详情”拆开缓存
 
+```mermaid
+flowchart TD
+    A[公共 Feed 请求 page/cursor] --> B[读 L1 整页]
+    B -->|命中| Z[返回]
+    B -->|miss| C[读 Redis 页 ID 列表碎片]
+    C -->|有 ID 列表| D[批量取 item 碎片]
+    D -->|碎片齐全| E[组装页 + 回填 L1]
+    D -->|缺碎片| F[补缺: 锁 + DB/详情]
+    C -->|无列表| G[锁 + 回源 DB 查 ID 列表]
+    G --> H[写 ID 列表碎片 + item 碎片]
+    F --> E
+    H --> E
+    E --> Z
+```
+
 ### 3.3.2 我的已发布列表
 
 “我的 Feed”没有走碎片缓存，而是直接缓存整页。
@@ -212,6 +288,15 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 
 这是一个非常典型的“按访问模式选缓存模型”的例子。
 
+```mermaid
+flowchart TD
+    A[我的已发布列表] --> B[带 author + version 的整页 key]
+    B -->|L1/Redis 命中| Z[返回]
+    B -->|miss| C[锁 + 回源 DB]
+    C --> D[整页回填]
+    D --> Z
+```
+
 ### 3.3.3 Feed 失效策略
 
 知文写入后不会去枚举删除所有分页 key，而是：
@@ -221,6 +306,16 @@ L1/L2 都 miss 后，不是所有请求一起打 DB，而是：
 3. 递增当前作者 mine feed version
 
 这样新请求自然切换到新 key，不需要暴力清全量分页缓存。
+
+```mermaid
+flowchart LR
+    A[写后失效] --> B[删 item 碎片]
+    A --> C[公共 feed version++]
+    A --> D[作者 mine feed version++]
+    C --> E[新请求自然用新 key]
+    D --> E
+    B --> E
+```
 
 ## 4. 设计亮点
 
