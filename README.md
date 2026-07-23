@@ -259,7 +259,7 @@ docker compose build
 - 搜索、LLM、OSS 在依赖缺失时改为显式 `503`
 - 搜索索引已补齐 `tag_id` mapping 兼容逻辑，旧索引无需手工删除也能支持标签过滤
 - `knowpost` 搜索同步改为事务内 outbox，并由 Canal/Kafka 消费链路异步写入 Elasticsearch
-- 计数器写操作现在保留 `cnt:*` SDS 快照，计数 delta 通过 `counter-events -> agg:* -> cnt:*` 异步折叠；SDS 缺失或损坏时仍可从位图重建
+- 计数器写操作现在保留 `cnt:*` SDS 快照，计数 delta 通过 `counter-events -> AggregationConsumer -> cnt:*` 异步折叠；SDS 缺失或损坏时仍可从位图重建
 - 扩展业务错误码现在会映射到正确的 HTTP 状态码
 - `db/schema.sql` 的 MySQL 拼写错误已修复，可正常初始化
 
@@ -336,3 +336,221 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
   - **Threshold 2** (默认 200)：高热度 Key，延长缓存 TTL 到 10 分钟
   - **Threshold 3** (默认 500)：极高热度 Key，延长缓存 TTL 到 30 分钟
 - 热点衰减后自动恢复默认 TTL，无需人工干预
+
+## 面试版项目细节扩写
+
+这一节用于面试前快速讲清楚项目。它不替代 `docs/modules` 下的分模块文档，而是把系统全景、核心链路、数据真值、缓存和异步一致性串起来。
+
+### 1. 项目定位
+
+ZhiGuang 是一个知识内容社区后端，核心业务是让用户发布图文类知识内容，并围绕内容产生互动、关注、搜索和 AI 增强能力。项目从 Java Spring Boot 重构为 Go，重点不是简单改语言，而是把后端拆成更清晰的领域模块：
+
+| 领域 | 解决的问题 | 主要代码 |
+|------|------------|----------|
+| 鉴权 | 注册、登录、令牌刷新、当前用户识别 | `internal/auth` |
+| 知文 | 草稿、内容确认、元数据编辑、发布、详情、Feed | `internal/knowpost` |
+| 计数 | 点赞、收藏、计数快照、点赞人列表 | `internal/counter` |
+| 关系 | 关注、取关、关注列表、粉丝列表、关系状态 | `internal/relation` |
+| Feed 扩散 | 把作者发布内容投递到粉丝时间线 | `internal/fanout` |
+| 搜索 | 全文检索、标签过滤、自动补全、ES 投影 | `internal/search` |
+| 异步链路 | 事务 outbox、Canal、Kafka、消费者幂等 | `internal/outbox` / `internal/canal` |
+| 存储 | OSS 预签名上传与业务元数据确认 | `internal/storage` |
+| AI | 摘要建议、RAG 查询接口、流式返回 | `internal/llm` |
+
+### 2. 系统整体架构图
+
+```mermaid
+flowchart TB
+    A[客户端 / 前端] --> B[Nginx 反向代理]
+    B --> C[Go HTTP API]
+    C --> D[全局中间件]
+    D --> D1[Trace ID]
+    D --> D2[请求日志]
+    D --> D3[限流]
+    D --> D4[可选鉴权]
+    D --> E[领域 Handler]
+
+    E --> F[Auth 鉴权]
+    E --> G[KnowPost 知文]
+    E --> H[Counter 计数]
+    E --> I[Relation 关注关系]
+    E --> J[Search 搜索]
+    E --> K[Storage 对象存储]
+    E --> L[LLM / RAG]
+
+    F --> M[(MySQL)]
+    G --> M
+    I --> M
+    G --> N[(Redis)]
+    H --> N
+    I --> N
+    G --> O[事务 Outbox]
+    I --> O
+
+    O --> P[Canal 订阅 binlog]
+    P --> Q[Kafka canal-outbox]
+    Q --> R[搜索投影消费者]
+    Q --> S[关系投影消费者]
+    R --> T[(Elasticsearch)]
+    S --> N
+
+    H --> U[Kafka counter-events]
+    U --> V[计数聚合消费者]
+    V --> N
+```
+
+面试时可以这样解释：HTTP 主链路只做强相关业务写入，搜索索引、关系缓存、Feed 扩散等派生数据通过 outbox + Canal + Kafka 异步同步。MySQL 保存强一致真值，Redis 和 ES 只做缓存或投影，出了问题可以回源或重建。
+
+### 3. 一次请求的通用生命周期
+
+```mermaid
+sequenceDiagram
+    participant Client as 客户端
+    participant Router as Gin 路由
+    participant MW as 全局中间件
+    participant Handler as Handler
+    participant Service as Service
+    participant Repo as Repository
+    participant Store as MySQL/Redis/Kafka
+
+    Client->>Router: HTTP 请求
+    Router->>MW: Trace / 日志 / 限流 / 可选鉴权
+    MW->>Handler: 注入上下文和 user_id
+    Handler->>Handler: 参数绑定与基础校验
+    Handler->>Service: 调用业务方法
+    Service->>Repo: 读写真值数据
+    Service->>Store: 读写缓存或发送事件
+    Repo-->>Service: 返回领域数据
+    Service-->>Handler: 返回 DTO 或业务错误
+    Handler-->>Client: 统一响应结构
+```
+
+这个生命周期体现了项目的分层边界：Handler 不写 SQL，Service 做业务编排，Repository 只负责持久化，公共中间件负责横切能力。
+
+### 4. 数据真值和派生数据
+
+| 数据 | 真值位置 | 派生 / 缓存位置 | 为什么这样分 |
+|------|----------|-----------------|--------------|
+| 用户资料 | MySQL `users` | Redis token / 当前用户响应 | 用户信息需要持久化和唯一约束 |
+| 知文内容 | MySQL `know_posts` | freecache、Redis、ES | 内容以 MySQL 为准，缓存和搜索可重建 |
+| 关注关系 | MySQL `following` / `follower` | Redis ZSet | 双表保证双向查询，ZSet 提高列表读取速度 |
+| 点赞收藏状态 | Redis Bitmap | Redis Hash `cnt:*` | Bitmap 是用户状态真值，Hash 是计数快照 |
+| 搜索索引 | MySQL 回查生成 | Elasticsearch | ES 只服务检索，不作为业务真值 |
+| 异步事件 | MySQL `outbox` | Kafka topic | 事件和业务写入同事务，消息链路可恢复 |
+
+面试重点：先讲清“谁是真值，谁是投影”，后续再讲缓存、MQ、ES 才不会散。
+
+### 5. 核心业务链路
+
+#### 5.1 发布知文
+
+```mermaid
+flowchart TD
+    A[用户创建草稿] --> B[雪花算法生成知文ID]
+    B --> C[MySQL 写草稿]
+    C --> D[加入 Bloom]
+    D --> E[客户端直传正文到 OSS]
+    E --> F[确认内容元数据]
+    F --> G[编辑标题 / 标签 / 描述]
+    G --> H[发布知文]
+    H --> I[事务内更新 know_posts]
+    I --> J[事务内写 outbox]
+    J --> K[提交事务]
+    K --> L[失效详情和 Feed 缓存]
+    L --> M[Canal 捕获 outbox 变更]
+    M --> N[Kafka 投递给搜索 / 关系 / Feed 下游]
+```
+
+设计点：内容写库和 outbox 同事务，避免“内容发布成功但搜索永远搜不到”；缓存失效使用版本号和碎片失效，避免多实例本地缓存广播复杂度。
+
+#### 5.2 读取知文详情
+
+```mermaid
+flowchart TD
+    A[请求详情] --> B{Bloom 判断}
+    B -->|一定不存在| C[直接 404]
+    B -->|可能存在或故障放行| D{L1 freecache}
+    D -->|命中| E[解析详情]
+    D -->|未命中| F{L2 Redis}
+    F -->|NULL| C
+    F -->|命中| G[回写 L1]
+    F -->|未命中| H[抢 Redis 分布式锁]
+    H --> I[double check Redis]
+    I -->|已回填| G
+    I -->|仍未命中| J[MySQL 回源]
+    J -->|不存在| K[写 NULL 哨兵]
+    J -->|存在| L[写 Redis 和 L1]
+    E --> M[补齐实时计数和用户态]
+    G --> M
+    L --> M
+    M --> N[返回详情]
+```
+
+设计点：Bloom 拦恶意扫号，NULL 缓存兜住误判和软删除，分布式锁防击穿，liked/faved 用户态数据后置查询，避免把个人状态写入共享缓存。
+
+#### 5.3 点赞 / 收藏
+
+```mermaid
+flowchart TD
+    A[用户点赞] --> B[定位 Bitmap 分片和 bit offset]
+    B --> C[Lua 原子切换状态]
+    C --> D{状态是否变化}
+    D -->|否| E[返回 changed=false]
+    D -->|是| F[构造 CounterEvent]
+    F --> G[写 Kafka counter-events]
+    G -->|成功| H[异步消费者批量折叠到 cnt Hash]
+    G -->|失败| I[记录失败并标记 dirty]
+    H --> J[读侧直接查 cnt:*]
+    I --> K[repair loop 从 Bitmap 重建 SDS]
+```
+
+设计点：Bitmap 保存“谁点过”的状态真值，计数 Hash 是派生快照。即使 Kafka 或聚合失败，也可以从 Bitmap 重新计算绝对值修复。
+
+#### 5.4 关注 / 取关
+
+```mermaid
+flowchart TD
+    A[用户关注] --> B[令牌桶限流]
+    B --> C[校验不能关注自己]
+    C --> D[同事务写 following 与 follower]
+    D --> E[同事务写 outbox]
+    E --> F[提交后删除相关缓存]
+    F --> G[Canal -> Kafka]
+    G --> H[Relation Consumer]
+    H --> I[更新 Redis ZSet 关注 / 粉丝投影]
+    H --> J[更新用户关注数 / 粉丝数]
+```
+
+设计点：MySQL 双表是真值，Redis ZSet 是列表读优化。单条关系判断直查库，避免缓存复杂度高于收益。
+
+#### 5.5 搜索投影
+
+```mermaid
+flowchart TD
+    A[知文发布 / 更新 / 删除] --> B[outbox 事件]
+    B --> C[Canal 捕获]
+    C --> D[Kafka canal-outbox]
+    D --> E[Search Consumer]
+    E --> F[解析 outbox payload]
+    F --> G{操作类型}
+    G -->|delete| H[ES 文档标记 deleted]
+    G -->|upsert| I[回查 MySQL + users]
+    I --> J[读取计数快照]
+    J --> K[构建 ES 文档]
+    K --> L[IndexDocument 写入 ES]
+```
+
+设计点：投影时回查主库，而不是完全相信事件 payload，这样 ES 文档字段可以统一由当前真值生成，避免事件格式演进导致旧字段缺失。
+
+### 6. 面试亮点总结
+
+1. **分层清晰**：`cmd` 启动、`bootstrap` 装配、`server` 路由生命周期、`internal/<domain>` 按领域拆分、`pkg` 放公共能力。
+2. **真值和投影分离**：MySQL / Bitmap 保存真值，Redis / ES / Kafka 消费结果都是可重建派生数据。
+3. **缓存不是简单 set/get**：知文详情使用 Bloom + NULL + L1 + Redis + DB + 分布式锁 + 热点 TTL 延长。
+4. **异步不是直接双写**：通过事务 outbox 绑定业务写入和事件，再由 Canal/Kafka 驱动下游。
+5. **计数有可恢复设计**：Lua 保证状态翻转原子性，Kafka 水位保证消费幂等，dirty repair 从 Bitmap 修复 SDS。
+6. **关系模块承认边界**：双表和 Redis ZSet 是合理建模，但 relation consumer 的 recoverability、排序语义和大 V 冷启动仍有演进空间。
+
+### 7. 面试 1 分钟介绍
+
+> 这是一个知识内容社区后端，核心模块包括知文发布、关注关系、点赞收藏计数、搜索和 AI 增强。技术上我重点处理了三类问题：第一是缓存和高并发读，比如知文详情用 Bloom、空值缓存、L1/L2、多实例版本号和分布式锁；第二是异步一致性，比如知文和关系写入通过事务 outbox 进入 Canal/Kafka，再投影到 ES 和 Redis；第三是高频互动计数，比如点赞状态用 Bitmap 做真值，展示计数用 Hash 快照，失败后通过 dirty repair 从 Bitmap 重建。整体设计上我会先区分真值和投影，再分别处理性能、幂等和补偿。
