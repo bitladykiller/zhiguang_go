@@ -1,20 +1,31 @@
-// Package cache 的存在性过滤器：基于 RedisBloom 模块的共享 Cuckoo Filter（CF.*）。
+// Package cache — 知文详情「存在性过滤器」客户端。
 //
-// 设计目标：
-//   - 与详情「空值缓存」叠加：过滤器拦截「一定不存在」的扫号请求；
-//     误判为可能存在时，仍走 L1/L2/读穿锁，并由 NULL 缓存兜底。
-//   - 多实例共享：数据在 Redis 模块侧，官方 CF 命令原子、功能完整。
-//   - 依赖 RedisBloom 模块（docker 使用 redis-stack-server），非进程内库。
-//   - 支持可靠删除：软删后 CF.DEL，减少对 NULL/DB 的依赖。
+// # 第三方实现（不自研过滤器算法）
 //
-// 语义（Cuckoo Filter / CF.*）：
-//   - MightContain=false → 一定不存在（可直接 404）
-//   - MightContain=true  → 可能存在（必须继续查缓存/DB）
-//   - Delete → CF.DEL
+// 过滤算法与数据结构由 Redis 官方模块 **RedisBloom** 提供（Cuckoo Filter，命令前缀 CF.*），
+// 随 redis-stack-server 镜像部署。本文件只做业务侧薄封装：
 //
-// 主要命令：
-//   CF.RESERVE / CF.ADD / CF.DEL / CF.EXISTS / CF.INFO
-//   （模块还提供 CF.INSERT、CF.COUNT、CF.SCANDUMP/LOADCHUNK 等，按需扩展）
+//   - 映射配置 → CF.RESERVE 参数
+//   - 调用 CF.ADD / CF.DEL / CF.EXISTS / CF.INFO
+//   - 冷启动 / 模块缺失 / Redis 故障时 **fail-open**（宁可多打缓存，不可误 404）
+//
+// 业务层类型名仍叫 RedisBloom / bloom_* 配置键，仅为兼容历史命名；
+// 面试与文档应表述为：「存在性过滤用第三方 RedisBloom（CF.*），业务只写适配层」。
+//
+// # 为何用第三方模块而不是进程内自研 / 纯 Go 库
+//
+//   - 多实例共享：状态在 Redis，各 API 实例一致
+//   - 可删除：软删走 CF.DEL（经典 Bloom 不支持可靠删除）
+//   - 命令原子、运维成熟；本仓库不维护哈希/踢出/扩容算法
+//
+// # 与空值缓存叠加
+//
+//   - CF：拦「一定从未出现过的扫号 ID」（MightContain=false → 404）
+//   - NULL：兜「查过确认不存在 / CF 假阳性 / 未预热 / 模块故障」
+//
+// 语义：
+//   - MightContain=false → 一定不存在（仅过滤器已预热时）
+//   - MightContain=true  → 可能存在，必须继续 L1/L2/DB
 package cache
 
 import (
@@ -29,24 +40,33 @@ import (
 	"go.uber.org/zap"
 )
 
-// BloomConfig 控制 Redis Cuckoo（RedisBloom CF）的容量与行为。
-// 字段名保留 Bloom* 以兼容既有配置与调用方。
+// RedisBloom 模块 CF.* 命令名（第三方模块协议，非本仓库实现）。
+const (
+	cfCmdReserve = "CF.RESERVE"
+	cfCmdAdd     = "CF.ADD"
+	cfCmdDel     = "CF.DEL"
+	cfCmdExists  = "CF.EXISTS"
+	cfCmdInfo    = "CF.INFO"
+)
+
+// BloomConfig 控制第三方 RedisBloom Cuckoo（CF）的容量与行为。
+// 字段名保留 Bloom* 以兼容既有 YAML 与调用方。
 type BloomConfig struct {
-	// Enabled 为 false 时所有操作 no-op，保持与旧行为兼容。
+	// Enabled 为 false 时不创建客户端，详情读路径跳过存在性过滤。
 	Enabled bool
-	// ExpectedItems 预估元素量，映射为 CF.RESERVE capacity。
+	// ExpectedItems 预估元素量 → CF.RESERVE capacity。
 	ExpectedItems uint64
-	// FalsePositiveRate 目标误判率；用于选择 bucket size（模块侧近似控制）。
+	// FalsePositiveRate 目标误判率；仅用于选择 BUCKETSIZE 启发式（模块侧近似）。
 	FalsePositiveRate float64
-	// Key Redis CF 键；空则使用默认 "cf:knowpost:ids"。
+	// Key Redis 上的 CF 键；空则默认 "cf:knowpost:ids"。
 	Key string
-	// HashCount 保留字段（经典 Bloom）；CF 忽略。
+	// HashCount 历史字段（经典 Bloom）；第三方 CF 忽略。
 	HashCount int
-	// BucketSize 映射 CF.RESERVE BUCKETSIZE；0 表示按 FPR 自动选择（默认 2）。
+	// BucketSize → CF.RESERVE BUCKETSIZE；0 表示按 FPR 自动选择。
 	BucketSize int
-	// MaxKicks 映射 CF.RESERVE MAXITERATIONS；0 表示默认 20。
+	// MaxKicks → CF.RESERVE MAXITERATIONS；0 表示默认 20。
 	MaxKicks int
-	// Expansion 映射 CF.RESERVE EXPANSION；0 表示默认 1。
+	// Expansion → CF.RESERVE EXPANSION；0 表示默认 1。
 	Expansion int
 }
 
@@ -63,8 +83,10 @@ func DefaultBloomConfig() BloomConfig {
 	}
 }
 
-// RedisBloom 基于 RedisBloom 模块 CF.* 的共享 Cuckoo 过滤器。
-// 类型名保留 RedisBloom，避免业务层大面积改名。
+// RedisBloom 是第三方 RedisBloom 模块（CF.*）的业务侧客户端。
+//
+// 不实现 Cuckoo/Bloom 算法本身；只封装 go-redis 对 CF 命令的调用与降级策略。
+// 类型名保留 RedisBloom，避免 knowpost 等调用方大面积改名。
 type RedisBloom struct {
 	rdb        *redis.Client
 	key        string
@@ -76,11 +98,11 @@ type RedisBloom struct {
 
 	ensureMu   sync.Mutex
 	ensured    bool
-	moduleOK   bool // 探测到 CF 命令可用
-	moduleFail bool // 明确不可用（unknown command），后续 fail-open
+	moduleOK   bool // 已确认 CF 命令可用且键已就绪
+	moduleFail bool // 明确无模块（unknown command），后续 fail-open
 }
 
-// NewRedisBloom 根据配置创建过滤器。cfg.Enabled=false 或 rdb=nil 时返回 nil。
+// NewRedisBloom 创建第三方 CF 客户端。cfg.Enabled=false 或 rdb=nil 时返回 nil。
 func NewRedisBloom(rdb *redis.Client, cfg BloomConfig, logger *zap.Logger) *RedisBloom {
 	if rdb == nil || !cfg.Enabled {
 		return nil
@@ -99,7 +121,7 @@ func NewRedisBloom(rdb *redis.Client, cfg BloomConfig, logger *zap.Logger) *Redi
 	}
 	bs := cfg.BucketSize
 	if bs <= 0 {
-		// 更严 FPR 用更大 bucket（RedisBloom 默认 2）
+		// RedisBloom 默认 bucket size=2；更严 FPR 时用更大 bucket
 		if cfg.FalsePositiveRate <= 0.001 {
 			bs = 4
 		} else {
@@ -129,7 +151,7 @@ func NewRedisBloom(rdb *redis.Client, cfg BloomConfig, logger *zap.Logger) *Redi
 	}
 }
 
-// Add 将成员加入过滤器（CF.ADD）。失败只记日志，不影响主写路径。
+// Add 调用第三方 CF.ADD。失败只记日志，不阻断业务写路径。
 func (b *RedisBloom) Add(ctx context.Context, member string) {
 	if b == nil || member == "" {
 		return
@@ -137,13 +159,13 @@ func (b *RedisBloom) Add(ctx context.Context, member string) {
 	if !b.ensureReady(ctx) {
 		return
 	}
-	if err := b.rdb.Do(ctx, "CF.ADD", b.key, member).Err(); err != nil {
-		b.logger.Warn("cf add failed", zap.String("member", member), zap.Error(err))
+	if err := b.cfDo(ctx, cfCmdAdd, b.key, member).Err(); err != nil {
+		b.logger.Warn("redisbloom CF.ADD failed", zap.String("member", member), zap.Error(err))
 		b.markModuleError(err)
 	}
 }
 
-// AddUint64 便捷方法：按十进制字符串加入。
+// AddUint64 将 uint64 ID 以十进制字符串加入过滤器。
 func (b *RedisBloom) AddUint64(ctx context.Context, id uint64) {
 	if b == nil {
 		return
@@ -151,8 +173,7 @@ func (b *RedisBloom) AddUint64(ctx context.Context, id uint64) {
 	b.Add(ctx, strconv.FormatUint(id, 10))
 }
 
-// Delete 从过滤器删除成员（CF.DEL）。找不到则 no-op。
-// 失败只记日志，不阻断软删主路径；NULL 缓存仍作兜底。
+// Delete 调用第三方 CF.DEL。找不到则 no-op；失败不阻断软删主路径。
 func (b *RedisBloom) Delete(ctx context.Context, member string) {
 	if b == nil || member == "" {
 		return
@@ -160,17 +181,16 @@ func (b *RedisBloom) Delete(ctx context.Context, member string) {
 	if !b.ensureReady(ctx) {
 		return
 	}
-	// CF.DEL 返回 0/1；键不存在时可能报错，视为 no-op
-	if err := b.rdb.Do(ctx, "CF.DEL", b.key, member).Err(); err != nil {
+	if err := b.cfDo(ctx, cfCmdDel, b.key, member).Err(); err != nil {
 		if isNotExistErr(err) {
 			return
 		}
-		b.logger.Warn("cf delete failed", zap.String("member", member), zap.Error(err))
+		b.logger.Warn("redisbloom CF.DEL failed", zap.String("member", member), zap.Error(err))
 		b.markModuleError(err)
 	}
 }
 
-// DeleteUint64 便捷方法。
+// DeleteUint64 删除 uint64 ID。
 func (b *RedisBloom) DeleteUint64(ctx context.Context, id uint64) {
 	if b == nil {
 		return
@@ -178,8 +198,8 @@ func (b *RedisBloom) DeleteUint64(ctx context.Context, id uint64) {
 	b.Delete(ctx, strconv.FormatUint(id, 10))
 }
 
-// IsWarm 判断 CF 键是否已存在（已 RESERVE 或至少 Add 过）。
-// 冷启动键不存在时 fail-open，避免误拦全站。
+// IsWarm 判断第三方 CF 键是否已存在（已 RESERVE 或至少写入过）。
+// 冷启动键不存在时读路径 fail-open，避免误拦全站。
 func (b *RedisBloom) IsWarm(ctx context.Context) bool {
 	if b == nil {
 		return false
@@ -194,12 +214,12 @@ func (b *RedisBloom) IsWarm(ctx context.Context) bool {
 	return n > 0
 }
 
-// MightContain 判断成员是否可能存在（CF.EXISTS）。
+// MightContain 调用第三方 CF.EXISTS。
 //
 // 返回：
-//   - false, nil：一定不存在（仅当过滤器已预热）
-//   - true, nil：可能存在（含误判），或过滤器未预热 / 故障 fail-open
-//   - true, err：Redis/模块故障时 fail-open
+//   - false, nil：一定不存在（仅过滤器已预热）
+//   - true, nil：可能存在，或未预热 / 模块故障 fail-open
+//   - true, err：Redis 调用失败时 fail-open 并带上错误供观测
 func (b *RedisBloom) MightContain(ctx context.Context, member string) (bool, error) {
 	if b == nil || member == "" {
 		return true, nil
@@ -210,17 +230,16 @@ func (b *RedisBloom) MightContain(ctx context.Context, member string) (bool, err
 	if !b.IsWarm(ctx) {
 		return true, nil
 	}
-	// CF.EXISTS 在 RESP2 返回 0/1，RESP3 可能返回 bool
-	raw, err := b.rdb.Do(ctx, "CF.EXISTS", b.key, member).Result()
+	raw, err := b.cfDo(ctx, cfCmdExists, b.key, member).Result()
 	if err != nil {
-		b.logger.Warn("cf exists failed, fail-open", zap.String("member", member), zap.Error(err))
+		b.logger.Warn("redisbloom CF.EXISTS failed, fail-open", zap.String("member", member), zap.Error(err))
 		b.markModuleError(err)
 		return true, err
 	}
 	return redisTruthy(raw), nil
 }
 
-// MightContainUint64 便捷方法。
+// MightContainUint64 查询 uint64 ID 是否可能存在。
 func (b *RedisBloom) MightContainUint64(ctx context.Context, id uint64) (bool, error) {
 	if b == nil {
 		return true, nil
@@ -228,7 +247,7 @@ func (b *RedisBloom) MightContainUint64(ctx context.Context, id uint64) (bool, e
 	return b.MightContain(ctx, strconv.FormatUint(id, 10))
 }
 
-// Stats 返回 key、capacity、bucketSize（兼容旧签名第三项）。
+// Stats 返回 key、capacity、bucketSize（兼容旧签名）。
 func (b *RedisBloom) Stats() (key string, m uint64, k int) {
 	if b == nil {
 		return "", 0, 0
@@ -236,22 +255,22 @@ func (b *RedisBloom) Stats() (key string, m uint64, k int) {
 	return b.key, uint64(b.capacity), b.bucketSize
 }
 
-// Info 调用 CF.INFO，返回解析后的字段（运维/测试用）。模块不可用时返回 error。
+// Info 调用第三方 CF.INFO（运维/测试）。模块不可用时返回 error。
 func (b *RedisBloom) Info(ctx context.Context) (map[string]int64, error) {
 	if b == nil {
-		return nil, errors.New("nil filter")
+		return nil, errors.New("nil redisbloom client")
 	}
 	if !b.ensureReady(ctx) {
 		return nil, errors.New("redisbloom module unavailable")
 	}
-	val, err := b.rdb.Do(ctx, "CF.INFO", b.key).Result()
+	val, err := b.cfDo(ctx, cfCmdInfo, b.key).Result()
 	if err != nil {
 		return nil, err
 	}
 	return parseCFInfo(val), nil
 }
 
-// ensureReady 保证模块可用并完成 CF.RESERVE（幂等）。
+// ensureReady 保证第三方模块可用，并幂等 CF.RESERVE。
 func (b *RedisBloom) ensureReady(ctx context.Context) bool {
 	if b == nil || b.moduleFail {
 		return false
@@ -265,10 +284,9 @@ func (b *RedisBloom) ensureReady(ctx context.Context) bool {
 		return false
 	}
 
-	// 已有键则无需 RESERVE
 	n, err := b.rdb.Exists(ctx, b.key).Result()
 	if err != nil {
-		b.logger.Warn("cf exists check failed", zap.Error(err))
+		b.logger.Warn("redisbloom key exists check failed", zap.Error(err))
 		b.markModuleError(err)
 		return false
 	}
@@ -279,19 +297,18 @@ func (b *RedisBloom) ensureReady(ctx context.Context) bool {
 	}
 
 	// CF.RESERVE key capacity [BUCKETSIZE bs] [MAXITERATIONS mi] [EXPANSION exp]
-	err = b.rdb.Do(ctx, "CF.RESERVE", b.key, b.capacity,
+	err = b.cfDo(ctx, cfCmdReserve, b.key, b.capacity,
 		"BUCKETSIZE", b.bucketSize,
 		"MAXITERATIONS", b.maxIter,
 		"EXPANSION", b.expansion,
 	).Err()
 	if err != nil {
-		// 并发 RESERVE：另一实例已创建
 		if isAlreadyExistsErr(err) {
 			b.ensured = true
 			b.moduleOK = true
 			return true
 		}
-		b.logger.Warn("cf reserve failed", zap.Error(err))
+		b.logger.Warn("redisbloom CF.RESERVE failed", zap.Error(err))
 		b.markModuleError(err)
 		return false
 	}
@@ -300,13 +317,18 @@ func (b *RedisBloom) ensureReady(ctx context.Context) bool {
 	return true
 }
 
+// cfDo 统一走 go-redis 自定义命令，调用第三方 RedisBloom 模块。
+func (b *RedisBloom) cfDo(ctx context.Context, args ...interface{}) *redis.Cmd {
+	return b.rdb.Do(ctx, args...)
+}
+
 func (b *RedisBloom) markModuleError(err error) {
 	if err == nil {
 		return
 	}
 	if isUnknownCommandErr(err) {
 		b.moduleFail = true
-		b.logger.Error("RedisBloom module missing: CF.* unavailable; filter fail-open. Use redis-stack-server image.")
+		b.logger.Error("RedisBloom third-party module missing: CF.* unavailable; filter fail-open. Use redis/redis-stack-server.")
 	}
 }
 
@@ -324,7 +346,6 @@ func isAlreadyExistsErr(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
-	// CF.RESERVE on existing key: "ERR item exists" / "Filter already exists" etc.
 	return strings.Contains(s, "item exists") ||
 		strings.Contains(s, "already exists") ||
 		strings.Contains(s, "busykey")
@@ -340,7 +361,7 @@ func isNotExistErr(err error) bool {
 		errors.Is(err, redis.Nil)
 }
 
-// redisTruthy 将 CF.EXISTS / CF.ADD 等返回值规范为 bool。
+// redisTruthy 规范化 CF.EXISTS 等返回值（RESP2 0/1 或 RESP3 bool）。
 func redisTruthy(v interface{}) bool {
 	switch x := v.(type) {
 	case bool:
@@ -359,7 +380,7 @@ func redisTruthy(v interface{}) bool {
 	}
 }
 
-// parseCFInfo 将 CF.INFO 返回的 [k1 v1 k2 v2 ...] 或 map 解析为 map[string]int64。
+// parseCFInfo 解析 CF.INFO 返回结构（运维用，非算法实现）。
 func parseCFInfo(val interface{}) map[string]int64 {
 	out := make(map[string]int64)
 	switch arr := val.(type) {

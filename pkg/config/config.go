@@ -435,8 +435,8 @@ type KnowPostDetailCacheConfig struct {
 	TTLLow       int `yaml:"ttl_low"`
 	TTLMedium    int `yaml:"ttl_medium"`
 	TTLHigh      int `yaml:"ttl_high"`
-	// Bloom/Cuckoo 与空值缓存叠加：前置拦截「一定不存在」的 ID，减少扫号打穿。
-	// 实现为 RedisBloom 模块 CF.*（配置键名保留 bloom_* 兼容）。
+	// 存在性过滤：第三方 RedisBloom（CF.*）+ 空值缓存叠加，前置拦扫号 ID。
+	// 算法在 Redis 模块；本服务仅配置容量/键名。配置键名保留 bloom_* 兼容。
 	BloomEnabled           *bool   `yaml:"bloom_enabled"`
 	BloomExpectedItems     uint64  `yaml:"bloom_expected_items"`
 	BloomFalsePositiveRate float64 `yaml:"bloom_false_positive_rate"`
@@ -515,7 +515,7 @@ func (c *Config) ApplyDefaults() {
 		c.KnowPost.DetailCache.BloomFalsePositiveRate = 0.01
 	}
 	if c.KnowPost.DetailCache.BloomKey == "" {
-		// 默认 cf: 前缀，避免与历史自研 Bloom/Cuckoo 键混用。
+		// 默认 cf: 前缀，标明第三方 RedisBloom CF 键（非历史进程内过滤器键）。
 		c.KnowPost.DetailCache.BloomKey = "cf:knowpost:ids"
 	}
 

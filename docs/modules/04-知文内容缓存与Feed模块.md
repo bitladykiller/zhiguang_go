@@ -126,19 +126,27 @@ flowchart TD
 
 这里有几个关键细节：
 
-### 3.2.0 RedisBloom Cuckoo（CF.*）+ 空值缓存（叠加，默认开启）
+### 3.2.0 第三方 RedisBloom（Cuckoo CF.*）+ 空值缓存（叠加，默认开启）
 
-实现：`internal/cache/bloom.go` 的 `RedisBloom`（类型名兼容；底层为 **RedisBloom 模块** `CF.*`）。
+**定位（面试务必说清）：**
 
-| 能力 | 命令 |
-|------|------|
+| 层次 | 谁实现 | 说明 |
+|------|--------|------|
+| 过滤算法 / 数据结构 | **第三方** Redis 模块 RedisBloom | Cuckoo Filter，命令 `CF.*`，随 `redis-stack-server` |
+| 业务适配 | 本仓库 `internal/cache/bloom.go` | 薄客户端：配置映射、ADD/DEL/EXISTS、fail-open；**不自研**哈希/踢出/扩容 |
+| 读路径编排 | `knowpost.GetDetail` | CF 前置 + L1/L2/NULL/DB |
+
+配置键仍叫 `bloom_*`、类型名仍叫 `RedisBloom`，仅为历史兼容；叙述应说「第三方 RedisBloom，业务只写适配层」。
+
+| 能力 | 第三方命令 |
+|------|------------|
 | 预留容量 | `CF.RESERVE`（capacity / BUCKETSIZE / MAXITERATIONS / EXPANSION） |
 | 插入 | `CF.ADD` |
 | 删除 | `CF.DEL` |
 | 查询 | `CF.EXISTS` |
-| 运维 | `CF.INFO`（代码侧 `Info`）；模块另有 INSERT/COUNT/SCANDUMP 等可扩展 |
+| 运维 | `CF.INFO`（适配层 `Info`） |
 
-**依赖**：Docker Redis 使用 `redis/redis-stack-server`（内置 RedisBloom）。标准 `redis:alpine` **无** `CF.*`，会 fail-open 到仅 NULL 路径。
+**依赖**：Docker Redis 使用 `redis/redis-stack-server`（内置 RedisBloom）。标准 `redis:alpine` **无** `CF.*`，适配层 fail-open 到仅 NULL 路径。
 
 配置（`knowpost.detail_cache`，键名保留 `bloom_*`）：
 
@@ -606,7 +614,7 @@ flowchart LR
 | `internal/knowpost/detail_service.go` | 详情读 | `GetDetail` / `getDetailUnderLock` |
 | `internal/knowpost/feed_service.go` | Feed 读与失效 | `GetPublicFeed` / `InvalidateAfterPostMutation` |
 | `internal/knowpost/cache.go` | 版本失效 Lua | `invalidateCache` |
-| `internal/cache/bloom.go` | RedisBloom CF.* | `RedisBloom` / `WarmDetailBloom` / `Delete` / `Info` |
+| `internal/cache/bloom.go` | 第三方 RedisBloom CF 客户端薄封装 | `RedisBloom` / `WarmDetailBloom` / `Delete` / `Info` |
 | `internal/bootstrap/init_knowpost.go` | 装配与异步预热 | `initKnowPost` |
 
 ## A2. 详情完整读路径（中文流程图）
