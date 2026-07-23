@@ -314,6 +314,10 @@ func (s *KnowPostService) UpdateVisibility(ctx context.Context, creatorID, id ui
 }
 
 // Delete 对知文执行软删除。
+//
+// 事务成功后：
+//  1. 从 Cuckoo 过滤器 Delete（避免软删 ID 仍被 MightContain 放行）
+//  2. 失效详情 / Feed 缓存（版本号 + NULL 仍作兜底）
 func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) error {
 	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostDeleted, func(txRepo Repo) error {
 		affected, err := txRepo.SoftDelete(ctx, id, creatorID)
@@ -328,6 +332,9 @@ func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) erro
 		return err
 	}
 
+	if s.bloom != nil {
+		s.bloom.DeleteUint64(ctx, id)
+	}
 	s.invalidateCache(ctx, id)
 	s.invalidateFeedCaches(ctx, id, creatorID)
 	return nil

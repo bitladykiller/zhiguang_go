@@ -435,7 +435,8 @@ type KnowPostDetailCacheConfig struct {
 	TTLLow       int `yaml:"ttl_low"`
 	TTLMedium    int `yaml:"ttl_medium"`
 	TTLHigh      int `yaml:"ttl_high"`
-	// Bloom 与空值缓存叠加：前置拦截「一定不存在」的 ID，减少扫号打穿。
+	// Bloom/Cuckoo 与空值缓存叠加：前置拦截「一定不存在」的 ID，减少扫号打穿。
+	// 实现为可删除的 Cuckoo Filter（配置键名保留 bloom_* 兼容）。
 	BloomEnabled           *bool   `yaml:"bloom_enabled"`
 	BloomExpectedItems     uint64  `yaml:"bloom_expected_items"`
 	BloomFalsePositiveRate float64 `yaml:"bloom_false_positive_rate"`
@@ -514,7 +515,8 @@ func (c *Config) ApplyDefaults() {
 		c.KnowPost.DetailCache.BloomFalsePositiveRate = 0.01
 	}
 	if c.KnowPost.DetailCache.BloomKey == "" {
-		c.KnowPost.DetailCache.BloomKey = "bloom:knowpost:ids"
+		// 默认 cuckoo: 前缀，避免与历史经典 Bloom 位图键混用。
+		c.KnowPost.DetailCache.BloomKey = "cuckoo:knowpost:ids"
 	}
 
 	// Feed defaults
