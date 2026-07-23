@@ -1,6 +1,9 @@
 package bootstrap
 
 import (
+	"context"
+	"time"
+
 	"github.com/coocood/freecache"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
@@ -44,6 +47,15 @@ func initKnowPost(
 	feedSvc := knowpost.NewKnowPostFeedService(knowpost.NewKnowPostRepository(db), redisClient, feedPublicCache, feedMineCache, hotKeyDetector, counter, logger, &cfg.KnowPost.FeedCache)
 	kpSvc := knowpost.NewKnowPostService(db, idGen, redisClient, detailCache, hotKeyDetector, &cfg.OSS, counter, feedSvc, logger, nil, &cfg.KnowPost)
 	kpHandler := knowpost.NewKnowPostHandler(kpSvc, kpSvc, feedSvc)
+
+	// 异步预热详情 Bloom：与空值缓存叠加，冷启动期间 fail-open 不误拦。
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := kpSvc.WarmDetailBloom(ctx); err != nil {
+			logger.Warn("warm detail bloom failed", zap.Error(err))
+		}
+	}()
 
 	return kpHandler, kpSvc, feedSvc
 }

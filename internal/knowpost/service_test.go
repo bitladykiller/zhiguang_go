@@ -462,6 +462,9 @@ func (r *captureDraftRepo) ListFeedPublic(ctx context.Context, limit, offset int
 func (r *captureDraftRepo) ListMyPublished(ctx context.Context, userID uint64, limit, offset int) ([]KnowPostFeedRow, error) {
 	return nil, nil
 }
+func (r *captureDraftRepo) ListIDsForBloom(ctx context.Context, lastID uint64, limit int) ([]uint64, error) {
+	return nil, nil
+}
 func (r *captureDraftRepo) FindByIDs(ctx context.Context, ids []uint64) ([]KnowPostFeedRow, error) {
 	return nil, nil
 }
@@ -630,6 +633,9 @@ func (r *slowInsertRepo) ListFeedPublic(ctx context.Context, limit, offset int) 
 }
 func (r *slowInsertRepo) ListMyPublished(ctx context.Context, userID uint64, limit, offset int) ([]KnowPostFeedRow, error) {
 	return r.inner.ListMyPublished(ctx, userID, limit, offset)
+}
+func (r *slowInsertRepo) ListIDsForBloom(ctx context.Context, lastID uint64, limit int) ([]uint64, error) {
+	return r.inner.ListIDsForBloom(ctx, lastID, limit)
 }
 func (r *slowInsertRepo) FindByIDs(ctx context.Context, ids []uint64) ([]KnowPostFeedRow, error) {
 	return r.inner.FindByIDs(ctx, ids)

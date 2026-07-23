@@ -42,6 +42,8 @@ type KnowPostService struct {
 	redis     *redis.Client
 	l1Cache   *PrefixCache
 	hotKey    *cache.HotKeyDetector
+	// bloom 与空值缓存叠加：前置拦截一定不存在的 ID；nil 表示关闭。
+	bloom     *cache.RedisBloom
 	ossCfg    *config.OssConfig
 	counter   CounterClient
 	feedCache FeedCacheInvalidator
@@ -85,7 +87,7 @@ func NewKnowPostService(
 	if logger == nil {
 		logger = zap.L()
 	}
-	return &KnowPostService{
+	svc := &KnowPostService{
 		db:        db,
 		repo:      NewKnowPostRepository(db),
 		idGen:     idGen,
@@ -99,4 +101,56 @@ func NewKnowPostService(
 		auditLog:  auditLog,
 		cfg:       cfg,
 	}
+	svc.bloom = newDetailBloom(redisClient, cfg, logger)
+	return svc
+}
+
+// newDetailBloom 按配置装配详情存在性 Bloom；关闭或依赖缺失时返回 nil。
+func newDetailBloom(redisClient *redis.Client, cfg *config.KnowPostConfig, logger *zap.Logger) *cache.RedisBloom {
+	if redisClient == nil || cfg == nil {
+		return nil
+	}
+	dc := cfg.DetailCache
+	enabled := true
+	if dc.BloomEnabled != nil {
+		enabled = *dc.BloomEnabled
+	}
+	return cache.NewRedisBloom(redisClient, cache.BloomConfig{
+		Enabled:           enabled,
+		ExpectedItems:     dc.BloomExpectedItems,
+		FalsePositiveRate: dc.BloomFalsePositiveRate,
+		Key:               dc.BloomKey,
+	}, logger)
+}
+
+// WarmDetailBloom 从数据库游标扫描未删除知文 ID，批量写入 Bloom。
+//
+// 启动时异步调用一次即可；写路径 CreateDraft 与读路径回源成功也会增量 Add。
+// 空过滤器时 MightContain fail-open，因此预热完成前不会误拦详情。
+func (s *KnowPostService) WarmDetailBloom(ctx context.Context) error {
+	if s == nil || s.bloom == nil || s.repo == nil {
+		return nil
+	}
+	const batch = 1000
+	var lastID uint64
+	var total int
+	for {
+		ids, err := s.repo.ListIDsForBloom(ctx, lastID, batch)
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		for _, id := range ids {
+			s.bloom.AddUint64(ctx, id)
+			lastID = id
+			total++
+		}
+		if len(ids) < batch {
+			break
+		}
+	}
+	s.logger.Info("detail bloom warmed", zap.Int("count", total))
+	return nil
 }

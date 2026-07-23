@@ -100,8 +100,16 @@ func (s *KnowPostService) CreateDraft(ctx context.Context, creatorID uint64, ide
 		if err := s.redis.Set(ctx, idemKey, id, draftIdemTTL).Err(); err != nil {
 			// 写库已成功：幂等键失败不应导致客户端重试再插一条。
 			// 返回成功 id；后续重放可能因 key 缺失再创建（短窗口风险），依赖 TTL 与重试概率。
+			if s.bloom != nil {
+				s.bloom.AddUint64(ctx, id)
+			}
 			return id, nil
 		}
+	}
+
+	// 草稿创建成功即加入 Bloom：作者随后读详情不会被「一定不存在」误拦。
+	if s.bloom != nil {
+		s.bloom.AddUint64(ctx, id)
 	}
 
 	return id, nil

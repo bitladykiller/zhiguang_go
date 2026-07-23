@@ -19,6 +19,8 @@ type Repo interface {
 	ListFeedPublic(ctx context.Context, limit, offset int) ([]KnowPostFeedRow, error)
 	ListMyPublished(ctx context.Context, userID uint64, limit, offset int) ([]KnowPostFeedRow, error)
 	FindByIDs(ctx context.Context, ids []uint64) ([]KnowPostFeedRow, error)
+	// ListIDsForBloom 按 id 游标扫描未删除知文，供详情 Bloom 预热。
+	ListIDsForBloom(ctx context.Context, lastID uint64, limit int) ([]uint64, error)
 	WithDB(db sqlx.ExtContext) Repo
 }
 

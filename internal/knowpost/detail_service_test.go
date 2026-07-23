@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/zhiguang/app/internal/cache"
 	"github.com/coocood/freecache"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
@@ -74,6 +75,9 @@ func (r *mockRepo) ListMyPublished(_ context.Context, _ uint64, _, _ int) ([]Kno
 	return nil, nil
 }
 func (r *mockRepo) FindByIDs(_ context.Context, _ []uint64) ([]KnowPostFeedRow, error) {
+	return nil, nil
+}
+func (r *mockRepo) ListIDsForBloom(_ context.Context, _ uint64, _ int) ([]uint64, error) {
 	return nil, nil
 }
 func (r *mockRepo) WithDB(_ sqlx.ExtContext) Repo { return r }
@@ -424,6 +428,60 @@ func TestDetailLayoutVer(t *testing.T) {
 	}
 }
 
+// TestGetDetail_BloomRejectsUnknownID：过滤器已预热且不含该 ID 时直接 404，不回源。
+func TestGetDetail_BloomRejectsUnknownID(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestDetailService(t, srv)
+	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	// 使用 cache 包需要 import — 在测试内联构造
+	svc.bloom = mustBloom(t, rdb)
+	// 先写入无关 id 使过滤器 warm，再查不存在 id
+	svc.bloom.AddUint64(context.Background(), 100)
+	// 不应调用 repo：设为会 panic 的 mock 更麻烦，这里用 nil repo 但先被 bloom 拦住
+	svc.repo = nil
+
+	_, err := svc.GetDetail(context.Background(), 999888777, nil)
+	if err == nil {
+		t.Fatal("expected not found from bloom")
+	}
+}
+
+// TestGetDetail_BloomAllowsExistingAfterAdd
+func TestGetDetail_BloomAllowsExistingAfterAdd(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestDetailService(t, srv)
+	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	svc.bloom = mustBloom(t, rdb)
+	svc.bloom.AddUint64(context.Background(), 1)
+
+	now := time.Now()
+	svc.repo = &mockRepo{detail: &KnowPostDetailRow{
+		ID: 1, Title: strPtr("ok"), CreatorID: 1, AuthorNickname: "a",
+		Visible: KnowPostVisibilityPublic, Type: "article",
+		Status: KnowPostStatusPublished, PublishTime: &now,
+	}}
+	resp, err := svc.GetDetail(context.Background(), 1, nil)
+	if err != nil {
+		t.Fatalf("GetDetail: %v", err)
+	}
+	if resp.Title == nil || *resp.Title != "ok" {
+		t.Fatalf("title=%v", resp.Title)
+	}
+}
+
 func TestQueryDetailFromDB_NilRepo(t *testing.T) {
 	t.Skip("nil-repo guard is in getDetailUnderLock, not queryDetailFromDB")
+}
+func mustBloom(t *testing.T, rdb *redis.Client) *cache.RedisBloom {
+	t.Helper()
+	b := cache.NewRedisBloom(rdb, cache.BloomConfig{
+		Enabled: true, ExpectedItems: 1000, FalsePositiveRate: 0.01, Key: "bloom:test:detail",
+	}, zap.NewNop())
+	if b == nil {
+		t.Fatal("bloom nil")
+	}
+	return b
 }

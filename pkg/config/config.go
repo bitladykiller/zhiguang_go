@@ -435,6 +435,11 @@ type KnowPostDetailCacheConfig struct {
 	TTLLow       int `yaml:"ttl_low"`
 	TTLMedium    int `yaml:"ttl_medium"`
 	TTLHigh      int `yaml:"ttl_high"`
+	// Bloom 与空值缓存叠加：前置拦截「一定不存在」的 ID，减少扫号打穿。
+	BloomEnabled           *bool   `yaml:"bloom_enabled"`
+	BloomExpectedItems     uint64  `yaml:"bloom_expected_items"`
+	BloomFalsePositiveRate float64 `yaml:"bloom_false_positive_rate"`
+	BloomKey               string  `yaml:"bloom_key"`
 }
 
 // KnowPostFeedCacheConfig 配置知文 Feed 缓存。
@@ -497,6 +502,19 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.KnowPost.DetailCache.TTLHigh <= 0 {
 		c.KnowPost.DetailCache.TTLHigh = 300
+	}
+	if c.KnowPost.DetailCache.BloomEnabled == nil {
+		enabled := true
+		c.KnowPost.DetailCache.BloomEnabled = &enabled
+	}
+	if c.KnowPost.DetailCache.BloomExpectedItems == 0 {
+		c.KnowPost.DetailCache.BloomExpectedItems = 1_000_000
+	}
+	if c.KnowPost.DetailCache.BloomFalsePositiveRate <= 0 || c.KnowPost.DetailCache.BloomFalsePositiveRate >= 1 {
+		c.KnowPost.DetailCache.BloomFalsePositiveRate = 0.01
+	}
+	if c.KnowPost.DetailCache.BloomKey == "" {
+		c.KnowPost.DetailCache.BloomKey = "bloom:knowpost:ids"
 	}
 
 	// Feed defaults
