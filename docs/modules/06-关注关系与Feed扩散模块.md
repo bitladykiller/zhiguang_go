@@ -19,36 +19,52 @@
 
 关系模块以 MySQL 的 `following` / `follower` 双表作为真值源，写路径通过事务 outbox 保证关系变更和异步事件不丢，读路径则对列表查询做了 L1 + Redis ZSet + DB 的分层缓存；同时针对大 V 用户增加 L1 头部缓存，但单条关系判断仍然坚持直接查库，避免把一致性问题引入最细粒度路径。
 
-## 3. 核心数据模型
+## 3. 核心数据模型（教学拆解：双表设计与访问模式匹配）
 
-## 3.1 双表真值模型
+> **💡 现实工程场景痛点：**
+> 在大型社交社区中，存在两类天然对立的高频查询：
+> 1. **正向查询**：“我关注了哪些人？”（查询条件：`WHERE from_user_id = ?`）
+> 2. **反向查询**：“谁关注了我（粉丝列表）？”（查询条件：`WHERE to_user_id = ?`）
+> 
+> 如果只设计一张 `user_relations(from_user_id, to_user_id)` 单表：
+> - 无论怎么建联合索引，在海量数据（如亿级关系链）下，索引页碎裂严重，粉丝列表查询会导致严重的慢 SQL；
+> - 无法针对粉丝列表做独立的分库分表分片策略（Hash Key 不同）。
+
+```mermaid
+flowchart TD
+    subgraph 写入事务["同一 MySQL 数据库事务"]
+      A[Follow / Unfollow 动作] --> B[写 user_followings 表<br/>以 from_user_id 为主索引]
+      A --> C[写 user_followers 表<br/>以 to_user_id 为主索引]
+      A --> D[同事务写 outbox 发件箱表]
+    end
+    D --> E[Canal binlog 异步桥接] --> F[Kafka canal-outbox]
+    F --> G[更新 Redis ZSet 列表缓存]
+    F --> H[HIncrBy 实时递增用户关注数/粉丝数 SDS]
+```
+
+### 3.1 双表真值模型
 
 关系真值不是只存一张 `following` 表，而是同时维护：
 
-1. `following`
-   - `from_user_id -> to_user_id`
-2. `follower`
-   - `to_user_id -> from_user_id`
+1. **正向表 `user_followings`**：
+   - 聚簇索引 / 主键：`(from_user_id, to_user_id)`
+   - 专门服务于“获取用户的关注列表”、“判断我是否关注了某人”。
+2. **反向表 `user_followers`**：
+   - 聚簇索引 / 主键：`(to_user_id, from_user_id)`
+   - 专门服务于“获取用户的粉丝列表”。
 
-这么做的原因很现实：
+**教学结论**：通过在写路径上牺牲少量存储空间（多写一张表），换取了正向和反向两条读路径都能够在主键索引/覆盖索引上以 $O(\log N)$ 极速定位，彻底消除了慢 SQL 的隐患。
 
-- 查询“我关注了谁”和“谁关注了我”是两种访问模式
-- 各自可以有各自更适合的索引
-- 后续扩展复杂筛选或排序时更灵活
+### 3.2 Redis 列表投影模型
 
-## 3.2 Redis 投影模型
+Redis 不承担关系真值，仅仅是面向读路径的列表快照：
 
-Redis 不是关系真值，只是列表投影缓存：
+- `z:following:{userID}`：按时间倒序排列的关注 ZSet；
+- `z:followers:{userID}`：按时间倒序排列的粉丝 ZSet；
+- Score 采用 `created_at` 毫秒级时间戳，Member 为对端用户 ID。
 
-- `z:following:{userID}`
-- `z:followers:{userID}`
-
-score 用的是 `created_at` 毫秒时间戳，member 是对端用户 ID。
-
-另外还有一层大 V L1：
-
-- `l1:following:{userID}`
-- `l1:followers:{userID}`
+另外针对关注数超大的大 V 用户，设置了额外的进程内 L1 头部缓存：
+- `l1:following:{userID}` / `l1:followers:{userID}`（仅缓存前 50 条最新粉丝）。
 
 ## 4. 核心流程
 

@@ -89,52 +89,61 @@ flowchart TD
 
 创建草稿 / 确认正文上传是更轻的写路径：草稿主要是雪花 ID + MySQL 插入 + `CF.ADD`；确认正文是 OSS 元数据回写 + 详情缓存失效，不必然写 outbox。
 
-## 3.2 详情读路径流程
+## 3.2 详情读路径流程（教学深度拆解）
 
-详情页是这个模块最有技术含量的部分之一。
+知文详情页是整个系统中吞吐量最高、面对网络攻击与高并发压力最大的入口之一。为了同时解决“缓存穿透（查不存在的数据）”、“缓存击穿（热点 Key 突然过期）”和“多实例本地缓存脏数据”三大工程难题，本项目设计了**四道递进式防护体系**。
 
-读链路是：
+### 3.2.0 四道防线全景解析
 
-0. **Redis 布隆过滤器前置**（默认开启，与空值缓存叠加）
-1. 再查本地 L1 `freecache`
-2. 再查 Redis L2（含 `NULL` 哨兵）
-3. 再在分布式锁保护下回源 MySQL
-4. 再补充：
-   - like/fav count
-   - 当前用户是否已点赞/已收藏
+> **💡 现实工程场景：**
+> 如果某个恶意黑客使用自动化脚本，以每秒 5000 次的频率轮询随机生成的废 ID（如 `99999999`），如果没有前置过滤器和空值哨兵，这些请求会全部打穿缓存直奔 MySQL，瞬间导致数据库 CPU 满载、连接池枯竭，引发整站崩溃。
 
 ```mermaid
 flowchart TD
-    A[详情请求] --> B{CF.EXISTS}
-    B -->|一定不存在| Z[404 不打缓存/DB]
-    B -->|可能存在 / fail-open| C[L1 freecache]
-    C -->|命中| U[补充用户态 like/fav]
-    C -->|未命中| D[Redis L2]
-    D -->|NULL 哨兵| Z
-    D -->|命中详情| U
-    D -->|miss| E[抢分布式锁]
-    E -->|未抢到| F[短暂等待后重查 L2]
-    F --> D
-    E -->|抢到| G[double check L2]
-    G -->|仍 miss| H[回源 MySQL]
-    H -->|存在| I[回填 L1/L2 + CF.ADD]
-    H -->|不存在| J[写 NULL 短 TTL]
-    I --> U
-    J --> Z
-    U --> R[返回详情]
+    A[详情读请求] --> B[防线 1: RedisBloom CF.* 存在性过滤]
+    B -->|MightContain=false| Z1[100% 确定不存在 -> 直接 404]
+    B -->|MightContain=true / fail-open| C[防线 2: L1 FreeCache 本地内存缓存]
+    C -->|命中 50ns| U[补充用户态 like/fav -> 返回]
+    C -->|miss| D[防线 3: L2 Redis 共享缓存]
+    D -->|命中 NULL 哨兵| Z2[确认不存在 -> 直接 404]
+    D -->|命中详情 json| C2[回填 L1] --> U
+    D -->|miss| E[防线 4: L3 DB + 看门狗分布式锁回源]
+    E -->|未抢到锁| F[休眠 10ms -> 重查 L2] --> D
+    E -->|抢到锁| G[double check L2 -> 回源 MySQL]
+    G -->|DB 存在| H[回填 L1/L2 + CF.ADD] --> U
+    G -->|DB 不存在| I[写 NULL 哨兵短 TTL] --> Z2
 ```
 
-这里有几个关键细节：
+#### Step-by-Step 四道防线工作机制：
 
-### 3.2.0 第三方 RedisBloom（Cuckoo CF.*）+ 空值缓存（叠加，默认开启）
+1. **防线 1：第三方 RedisBloom Cuckoo Filter (`CF.*`) 前置**
+   - **原理**：在请求接触自由内存与 Redis 缓存之前，先通过 RedisBloom 的布隆/布谷鸟过滤器检查 ID 是否存在。
+   - **教学结论**：如果 `CF.EXISTS` 返回 `false`（即 `MightContain=false`），在数学上可以 **100% 保证该知文从未存在过**，系统直接返回 `404`，连本地内存与 Redis L2 都不必读取。
+   - **优点**：能够以几 KB 的极小内存消耗，把 99% 以上的盲目扫号攻击隔绝在最外层。
 
-**定位（面试务必说清）：**
+2. **防线 2：L1 FreeCache 进程内内存缓存**
+   - **原理**：基于 Go 进程内内存（FreeCache）实现，响应时间仅需大约 50 纳秒（ns）。
+   - **教学结论**：热点文章在被频繁访问时，99.9% 的流量在单个 API 节点的内存中就被直接消化，极大地减轻了 Redis 的网络与单线程命令处理压力。
 
-| 层次 | 谁实现 | 说明 |
-|------|--------|------|
-| 过滤算法 / 数据结构 | **第三方** Redis 模块 RedisBloom | Cuckoo Filter，命令 `CF.*`，随 `redis-stack-server` |
-| 业务适配 | 本仓库 `internal/cache/bloom.go` | 薄客户端：配置映射、ADD/DEL/EXISTS、fail-open；**不自研**哈希/踢出/扩容 |
-| 读路径编排 | `knowpost.GetDetail` | CF 前置 + L1/L2/NULL/DB |
+3. **防线 3：L2 Redis 共享缓存 + NULL 空值哨兵**
+   - **原理**：跨 API 实例共享的二级缓存。如果回源 MySQL 后发现资源真的不存在，绝不静默丢弃，而是在 Redis 中写入一个特殊的 `"NULL"` 哨兵字符串，并赋予 30s~60s 的随机短 TTL。
+   - **教学结论**：NULL 哨兵专门吸收 Cuckoo Filter 的假阳性（False Positive）、删除残留或过滤器尚未完成预热时的真实 miss 请求，是防止穿透的第二道保险。
+
+4. **防线 4：L3 DB 回源 + Redis看门狗（Watchdog）分布式锁**
+   - **原理**：当 L1/L2 均未命中时，系统不会允许所有并发协程同时冲向 MySQL（即缓存击穿），而是通过 Redis `SET NX PX` 争抢独占回源锁。
+   - **教学结论**：抢到锁的协程开启本地看门狗（每 `TTL/3` 时间自动续期），防止数据库长查询导致锁超时释放；未抢到锁的协程休眠等待后重新读取 Redis L2，直接复用前者的回填结果。
+
+---
+
+### 3.2.0.1 第三方 RedisBloom（Cuckoo CF.*）适配层
+
+**定位与职责划分：**
+
+| 层次 | 谁实现 | 职责说明 |
+|------|--------|----------|
+| 过滤算法 / 数据结构 | **第三方** Redis 模块 RedisBloom | Cuckoo Filter，命令 `CF.*`，随 `redis-stack-server` 镜像交付 |
+| 业务适配层 | 本仓库 `internal/cache/bloom.go` | 薄客户端：负责参数映射、ADD/DEL/EXISTS 命令封装与 fail-open 降级；**不自研**哈希/踢出/扩容算法 |
+| 读路径编排 | `knowpost.GetDetail` | 负责 CF 前置校验 + L1/L2/NULL/DB 串联 |
 
 配置键仍叫 `bloom_*`、类型名仍叫 `RedisBloom`，仅为历史兼容；叙述应说「第三方 RedisBloom，业务只写适配层」。
 

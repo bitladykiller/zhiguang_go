@@ -22,47 +22,62 @@
 
 这个项目采用“事务 outbox + Canal 订阅 binlog + Kafka 分发 + 消费端重试 / 死信 / 业务幂等”的组合，把业务主库写入和异步派生链路解耦开来：业务事务只保证主数据和 outbox 同时提交，后续由 Canal 把 outbox 变更桥到 `canal-outbox`；search / relation 两个 consumer group 各自投影。搜索用同 ID 覆盖写保持幂等；关系用 Redis 去重键 + ZSet 幂等写，并在消费端直接改用户 following/follower SDS。like/fav 的 `counter-events` 与写扩散 `fanout` 都是**旁路**，不要讲成同一条 canal-outbox 流水线。
 
-## 3. 核心流程
+## 3. 核心流程（教学深挖：双写一致性与 Outbox + Canal 机制）
 
-## 3.1 事务 outbox 写入
-
-业务模块在主事务内做两件事：
-
-1. 写主表
-2. 写 outbox 表
-
-只有两者一起提交成功，事务才真正完成。
-
-```mermaid
-flowchart TD
-    A[业务写请求] --> B[BEGIN]
-    B --> C[写主表]
-    C --> D[写 outbox 表]
-    D --> E{COMMIT}
-    E -->|失败| F[全部回滚]
-    E -->|成功| G[binlog 可见]
-```
-
-## 3.2 Canal 监听 binlog
-
-Canal 做的是：
-
-1. 监听 MySQL outbox 表 binlog
-2. 解析 INSERT / UPDATE row event
-3. 提取：
-   - aggregate_type
-   - aggregate_id
-   - type
-   - payload
-4. 包装成统一 JSON Envelope
+> **💡 现实工程场景痛点：双写一致性灾难**
+> 在绝大多数初学者项目中，常见代码如下：
+> ```go
+> err := db.CreatePost(post) // Step 1: 写数据库
+> err = kafka.SendEvent(event) // Step 2: 发消息驱动搜索与关系
+> ```
+> 这种简单写法在生产环境下存在两个致命盲区：
+> 1. **盲区 1（DB 成功，MQ 失败）**：数据库记录已创建，但此时 Kafka 网络发生瞬间抖动抛出 Error。结果是主库有文章，但 ES 索引未创建，用户搜不到刚发布的内容。
+> 2. **盲区 2（MQ 成功，DB 回滚）**：消息已经成功打入 Kafka，但在随后的 `tx.Commit()` 阶段因为数据库锁超时导致事务被强制回滚。结果是搜索引擎搜出了文章，点击却报 `404 Not Found`。
+> 
+> **Outbox 模式的核心解法**：不直接在应用层向 MQ 发消息，而是把消息作为一条记录写进 MySQL 内部的 `outbox`（发件箱）表，**利用数据库自身的本地事务 ACID 特性**，保证业务数据与 Outbox 事件绝对原子的同进退！
 
 ```mermaid
 flowchart TD
-    A[MySQL binlog] --> B[Canal]
-    B --> C[解析 INSERT/UPDATE]
-    C --> D[提取 aggregate/type/payload]
-    D --> E[JSON Envelope]
+    subgraph 阶段1_本地事务绑定["阶段 1: 本地事务绑定 (强一致)"]
+      A[业务写请求] --> B[BEGIN 数据库事务]
+      B --> C[写 know_posts / user_followings 主表]
+      C --> D[同事务写 outbox 表]
+      D --> E{tx.Commit?}
+      E -->|失败| F[全部回滚: 无主数据, 无Outbox行]
+      E -->|成功| G[主数据与Outbox行同时落盘 -> 产生 Binlog]
+    end
+
+    subgraph 阶段2_CDC变更捕获["阶段 2: CDC 变更捕获与桥接 (Canal)"]
+      G --> H[Canal 伪装成 Slave 监听 Binlog]
+      H --> I[过滤出 outbox 表的 INSERT/UPDATE 行变更]
+      I --> J[封装为标准 JSON Envelope 包]
+      J --> K[发送到 Kafka canal-outbox 主题]
+    end
+
+    subgraph 阶段3_下游消费投影["阶段 3: 下游消费与最终一致 (Consumers)"]
+      K --> L1[search.OutboxConsumer -> 重查 DB -> 幂等覆盖写 ES]
+      K --> L2[relation.OutboxConsumer -> SETNX 去重 -> 幂等写 ZSet]
+    end
 ```
+
+### 3.1 事务 outbox 写入 Step-by-Step
+
+业务模块在 `runKnowPostTx()` 或 `runRelationTx()` 内做两件事：
+
+1. **写业务主表**（如 `know_posts` 或 `user_followings` / `user_followers`）；
+2. **同事务写 `outbox` 表**（写入 JSON 格式的 `payload`、`aggregate_type` 与 `type`）。
+
+只有当两者在同一事务中成功 Commit 时，事务才算完成；若发生任何错误，整个事务完全回滚，`outbox` 绝不会留存垃圾记录。
+
+### 3.2 Canal 监听 Binlog 原理
+
+本架构引入了 **Canal（Change Data Capture, 变更数据捕获）** 桥接组件：
+
+1. **Slave 协议模拟**：Canal 伪装成 MySQL 数据库的一个 Read-Only Slave 节点，挂载到 MySQL Master 上实时接收 binlog 二进制日志。
+2. **行变更解析**：Canal 只关心 `outbox` 表的 `INSERT` 或 `UPDATE` 事件，将二进制日志还原为带有旧值与新值的 Row Event。
+3. **Envelope 统一封装**：提取 `aggregate_type`（如 post、relation）、`aggregate_id` 与 `payload`，包装成统一格式的 JSON Envelope。
+
+**教学结论**：通过 Canal，应用层彻底免去了“读出 outbox 记录 -> 发送到 Kafka -> 更新 outbox 状态为已发送”的繁重轮询任务，所有的消息捕获都是基于 MySQL 底层成熟的日志流，高效且对应用层零侵入！
 
 ## 3.3 Kafka 分发
 
