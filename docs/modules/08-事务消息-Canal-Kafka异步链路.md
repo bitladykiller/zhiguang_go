@@ -18,6 +18,22 @@
 
 如果没有 outbox 链路，系统会退化成大量手工双写。跨模块总图见 [`docs/跨模块流程图.md`](../跨模块流程图.md)。
 
+---
+
+### 🎓 教学导学板块
+
+> **🎯 学习目标**
+> 1. 理解分布式环境下**“双写一致性”**（DB 成功但 MQ 失败 / MQ 成功但 DB 回滚）的工程痛点与终极解法。
+> 2. 掌握 **Transactional Outbox (事务发件箱模式)** 的设计原理：利用数据库本地事务绑定业务数据与事件行。
+> 3. 掌握 **CDC (Change Data Capture)** 技术与 Canal 伪装成 MySQL Slave 节点解析 binlog 的底层流转机制。
+> 4. 理解消费端的**幂等控制 (Idempotency)**（ES 同 ID 覆盖写、Redis `SETNX` 窗口去重）与**坏消息隔离跳过 (Poison Message Handling)**。
+> 
+> **📚 前置概念预习**
+> - **CDC (变更数据捕获)**：通过读取数据库底层的 Redo/Binlog 日志直接捕获数据变更，对业务应用代码零侵入。
+> - **Envelope (消息信封)**：将不同业务实体的变更统一下发格式，包含 `aggregate_type`、`aggregate_id`、`type` 与 `payload`。
+
+---
+
 ## 2. 一句话介绍
 
 这个项目采用“事务 outbox + Canal 订阅 binlog + Kafka 分发 + 消费端重试 / 死信 / 业务幂等”的组合，把业务主库写入和异步派生链路解耦开来：业务事务只保证主数据和 outbox 同时提交，后续由 Canal 把 outbox 变更桥到 `canal-outbox`；search / relation 两个 consumer group 各自投影。搜索用同 ID 覆盖写保持幂等；关系用 Redis 去重键 + ZSet 幂等写，并在消费端直接改用户 following/follower SDS。like/fav 的 `counter-events` 与写扩散 `fanout` 都是**旁路**，不要讲成同一条 canal-outbox 流水线。
@@ -497,4 +513,27 @@ flowchart TD
 
 ## B8. 2 分钟展开回答
 
-> 这条异步链路解决的是双写一致性。业务服务不直接同时写 MySQL 和 ES/Redis/Kafka，而是在同一个 MySQL 事务里写主表和 outbox。事务提交后，Canal 订阅 outbox 的 binlog，把事件桥接到 Kafka 的 `canal-outbox` topic。下游 search 与 relation 两个 consumer group 各自处理：搜索回查 MySQL 后写 ES；关系更新 ZSet，并对 following/follower 做 HIncrBy。通用 outbox consumer 负责拉消息、解析、重试、失败记录和 commit 跳过，但不替业务保证副作用只执行一次。like/fav 计数是另一条 `counter-events`（Bitmap + 水位 + AggregationConsumer 内 dirty repair）；写扩散是 topic `fanout`，当前生产端未闭环。
+> 这条异步链路解决的是双写一致性。业务服务不直接同时写 MySQL 和 ES/Redis/Kafka，而是在同一个 MySQL 事务里写主表和 outbox。事务提交后，Canal 订阅 outbox 的 binlog，把事件桥接到 Kafka 的 `canal-outbox` topic。下游 search 与 relation 两个 consumer group 各自投影：搜索回查 MySQL 后写 ES；关系更新 ZSet，并对 following/follower 做 HIncrBy。通用 outbox consumer 负责拉消息、解析、重试、失败记录和 commit 跳过，但不替业务保证副作用只执行一次。like/fav 计数是另一条 `counter-events`（Bitmap + 水位 + AggregationConsumer 内 dirty repair）；写扩散是 topic `fanout`，当前生产端未闭环。
+
+---
+
+## 📌 避坑指南与自测思考题
+
+### ⚠️ 生产避坑指南（新手最易踩的坑）
+
+1. **切忌直接使用 Outbox 消息中的 Payload 数据构建 ES 复杂索引**：
+   - 错误做法：收到 outbox 消息后，直接使用 payload 里反序列化出的 JSON 字段推送到 ES。
+   - 后果：若由于网络延迟导致 Kafka 消息乱序（如先收到更新标题消息，后收到发布消息），直接使用 Payload 数据覆盖会导致 ES 索引出现脏数据。
+   - 正确做法：将 Outbox 消息仅看作一个“增量通知”，`Search.OutboxConsumer` 在收到通知后，根据 `post_id` 重新查 MySQL 数据库最新的真值主数据，再覆盖构建 ES 索引。
+
+2. **不能让单条坏消息（Poison Message）死锁整条 Kafka Partition**：
+   - 错误做法：发生 Payload 畸形解析失败时，Consumer 永远卡住重试不 Commit Offset。
+   - 后果：导致该 Partition 的所有后续正常消息全部积压受阻！
+   - 正确做法：重试 3 次耗尽后，记录失败告警表，主动 `Commit` 掉该 Offset，跳过坏消息。
+
+### 🧐 巩固自测思考题
+
+- **思考题 1**：如果线上的 Canal 桥接组件宕机维护了 2 个小时，期间 Outbox 表积累了 5 万条新记录，系统会丢消息吗？
+  - *提示*：不会。Outbox 表保存在 MySQL 磁盘上，Canal 恢复后会自动从上次中断的 Binlog Position 点位继续顺序读取，数据具备百分之百的可追溯性。
+- **思考题 2**：`canal.enabled=false` 时，为什么系统不会自动切换为定时轮询 Outbox 表（DirectPoll）？
+  - *提示*：架构遵循“显式开关”原则，避免在未配置扫描频率与分区竞争锁时隐式自启 Worker，降低运维非预期行锁隐患。
