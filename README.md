@@ -78,41 +78,73 @@
 
 ### 前置条件
 
-- Go 1.21+
+- Go 1.25.0+（与 `go.mod` 一致）
 - Docker Desktop 或可用的 Docker daemon
 - `openssl`
 
-### 1. 启动 Docker 服务
+### 两种启动模式
 
-仓库自带 `docker-compose.yml`，当前已经更偏向单机生产部署：
+| 模式 | 命令 | 适用场景 |
+|------|------|----------|
+| **模式 A：全 Docker 跑前后端** | `make dev-up` | 完整体验，一键启动 |
+| **模式 B：Docker 跑中间件 + 本机跑 Go 服务** | `docker compose up -d mysql redis kafka kafka2 kafka3 zookeeper kafka-init elasticsearch canal` + `make run` | 开发调试，热重载，断点调试 |
 
-- 对外只暴露前端 `80` 端口
-- MySQL / Redis / Kafka / Zookeeper / Elasticsearch 都只走容器内网
-- JWT 密钥通过 Docker `secrets` 注入
-- 持久化数据全部使用 Docker 命名卷
+两种模式共用同一份 `docker-compose.yml`，区别仅在于是否构建 Go 应用镜像和前端镜像。
+
+---
+
+### 模式 A：全 Docker 跑前后端
+
+#### 1. 启动 Docker 服务
 
 ```bash
 make dev-up
 ```
 
-会启动这些服务：
+会启动所有服务：
 
-- Frontend(Nginx, `http://localhost`)
-- Go API Server(`http://localhost:8080`)
-
+- Frontend（Nginx, `http://localhost`）
+- Go API Server（`http://localhost:8080`）
 - MySQL 8.0.30
 - Redis Stack（`redis/redis-stack-server`，含 RedisBloom `CF.*` 供知文存在性过滤）
-- Kafka(3 brokers) + Zookeeper
+- Kafka（3 brokers）+ Zookeeper
 - Canal Server
 - Elasticsearch 8.5.0
 
-### 2. 初始化数据库
+#### 2. 初始化数据库
 
 ```bash
 make db-init
 ```
 
-### 3. 生成本地 JWT 密钥
+#### 3. 访问
+
+- 前端页面：`http://localhost`
+- 前端健康检查：`http://localhost/health`
+- 前端代理 API：`http://localhost/api/v1/...`
+
+---
+
+### 模式 B：Docker 跑中间件 + 本机跑 Go 服务（推荐开发）
+
+#### 1. 启动中间件
+
+```bash
+docker compose up -d mysql redis kafka kafka2 kafka3 zookeeper kafka-init elasticsearch canal
+```
+
+> 如果不需要异步投影能力，可以跳过 Canal：
+> ```bash
+> docker compose up -d mysql redis kafka kafka2 kafka3 zookeeper kafka-init elasticsearch
+> ```
+
+#### 2. 初始化数据库
+
+```bash
+make db-init
+```
+
+#### 3. 生成本地 JWT 密钥
 
 ```bash
 make gen-jwt-keys
@@ -123,11 +155,19 @@ make gen-jwt-keys
 - `config/keys/private.pem`
 - `config/keys/public.pem`
 
-### 4. 创建本地配置
+#### 4. 创建本地配置
 
 ```bash
 cp config/config-local.yaml.example config/config-local.yaml
 ```
+
+> **配置对齐说明**：
+>
+> 1. **`${...}` 变量不会自动展开**：Go 应用的 `yaml.Unmarshal` **不会**展开 `${DB_PASSWORD:-root123}` 这类 shell 变量。`config/config-docker.yaml` 中的 `${...}` 语法仅供 Docker Compose 的 `environment` 字段使用。**本机运行必须使用 `config/config-local.yaml`**，其中密码直接写明文。
+>
+> 2. **Canal 配置校验**：`canal.enabled=true` 时，配置校验要求 `canal.username` 和 `canal.password` 均非空（见 `pkg/config/config.go:629`）。如果不需要 Canal 异步投影，请将 `canal.enabled` 设为 `false`。
+>
+> 3. **Elasticsearch 配置**：即使 `canal.enabled=false`，`elasticsearch.uris` 也必须配置（至少一个地址），否则校验失败。搜索查询接口会返回 `503` 但不会阻塞启动。
 
 默认本地配置已经指向本机开发环境暴露的端口：
 
@@ -136,15 +176,7 @@ cp config/config-local.yaml.example config/config-local.yaml
 - Kafka: `localhost:9092,9093,9094`
 - Elasticsearch: `localhost:9200`
 
-### 5. 运行服务
-
-如果你只使用 Docker Compose，那么 `make dev-up` 后即可直接访问：
-
-- 前端页面：`http://localhost`
-- 前端健康检查：`http://localhost/health`
-- 前端代理 API：`http://localhost/api/v1/...`
-
-如果你希望后端继续在本机运行而不是容器里运行，也可以单独执行：
+#### 5. 运行 Go 服务
 
 ```bash
 make run
@@ -156,16 +188,25 @@ make run
 env GOCACHE=$(pwd)/.gocache go run ./cmd/server -config config/config-local.yaml
 ```
 
-### 6. 常用命令
+#### 6. 访问
+
+- API 服务：`http://localhost:8080`
+- 健康检查：`http://localhost:8080/health`
+- 就绪检查：`http://localhost:8080/ready`
+- 如需前端，可单独启动前端开发服务器（见 `frontend/` 目录）
+
+---
+
+### 常用命令
 
 ```bash
-make test
-make lint
-make dev-logs
-make dev-down
+make test       # 运行全部测试
+make lint       # 运行 golangci-lint
+make dev-logs   # 跟踪 Docker Compose 日志
+make dev-down   # 停止全部 Docker 服务
 ```
 
-### 7. Docker 构建说明
+### Docker 构建说明
 
 如果你使用：
 
@@ -198,62 +239,123 @@ docker compose build
 - 第二次及之后的构建会明显更快
 - 如果再次出现长时间卡在 `apk add`，通常是 Docker Desktop 网络或镜像源连通性问题，不是 Go 编译本身的问题
 
-## 可选能力说明
+## 可选能力降级说明
 
-### 搜索
+以下能力在配置不完整时不会阻塞服务启动，对应接口会返回 `503`。
 
-当 `elasticsearch.uris` 和 `elasticsearch.index_name` 配置完整时：
+| 能力 | 必要配置项 | 降级接口 | 启动影响 |
+|------|-----------|----------|---------|
+| **搜索** | `elasticsearch.uris`、`elasticsearch.index_name` | `GET /api/v1/search?q=xxx`、`GET /api/v1/search/suggest?prefix=xxx` | 不阻塞，ES 查询接口返回 503 |
+| **LLM / RAG** | `llm.deepseek.api_key`、`llm.deepseek.base_url`、`llm.deepseek.model`、`llm.openai.api_key`、`llm.openai.base_url`、`elasticsearch.uris` | `POST /api/v1/knowposts/:id/description/suggest`、`POST /api/v1/knowposts/:id/rag/query` | 不阻塞，LLM 接口返回 503 |
+| **OSS 存储** | `oss.endpoint`、`oss.access_key_id`、`oss.access_key_secret`、`oss.bucket` | `POST /api/v1/storage/presign` | 不阻塞，存储接口返回 503 |
 
-- `GET /api/v1/search?q=xxx`
-- `GET /api/v1/search/suggest?prefix=xxx`
+> 注意：`elasticsearch.uris` 在配置校验层是必填项（至少一个地址），但 ES 初始化失败后搜索/LLM 接口会降级为 503，主服务仍可启动。
 
-会启用真实搜索能力。
+## 后台 Runner 启动条件
 
-当 Elasticsearch 配置缺失或初始化失败时，这两个接口会返回 `503`，主服务仍可启动。
+| Runner | 启动条件 | 职责 |
+|--------|----------|------|
+| `AggregationConsumer` | **始终启动**（依赖 Kafka reader） | 消费 `counter-events` 主题，内嵌 **dirty repairLoop** 从 Bitmap 修复 SDS |
+| `hotKeyRunner` | **始终启动** | HotKeyDetector 后台 flush 本地计数到 Redis |
+| `FanoutConsumer` | Kafka brokers 非空时启动 | 消费 `fanout` 主题（**生产端未闭环**，通常无消息） |
+| `canal.Bridge` | `canal.enabled=true` | 订阅 MySQL binlog，将 outbox 变更写入 `canal-outbox` topic |
+| `relationOutboxConsumer` | `canal.enabled=true` | 消费 `canal-outbox` 中关系类事件，投影 Redis ZSet + HIncrBy 用户计数 |
+| `searchOutboxConsumer` | `canal.enabled=true` 且 ES 可用 | 消费 `canal-outbox` 中知文类事件，回查 MySQL + 补计数后写入 ES |
+
+**不存在的独立 Runner**：
+- `CounterFailureWorker`（失败表无周期自动重放；有 `ReplayFailedMessages` 方法但 bootstrap 未挂周期任务）
+- outbox `DirectPoll` / `PollConsumer`（`canal.enabled=false` 时 **不会** 自动启用）
+
+## API 路由速查表
+
+所有业务路由均挂载在 `/api/v1` 前缀下。全局中间件链：Trace → Logger → ErrorLog → CORS → Recovery → OptionalAuth（可选鉴权，不拒绝未登录请求）。
+
+### Auth 鉴权
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| POST | `/api/v1/auth/send-code` | 发送验证码 | 公开 |
+| POST | `/api/v1/auth/register` | 注册 | 公开 |
+| POST | `/api/v1/auth/login` | 登录 | 公开 |
+| POST | `/api/v1/auth/refresh` | 刷新令牌 | 公开 |
+| POST | `/api/v1/auth/logout` | 登出 | 公开 |
+| POST | `/api/v1/auth/reset-password` | 重置密码 | 公开 |
+| GET | `/api/v1/auth/me` | 当前用户信息 | 需登录 |
+
+### KnowPost 知文
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| POST | `/api/v1/knowposts/draft` | 创建草稿 | 需登录 |
+| PUT | `/api/v1/knowposts/:id/content` | 确认正文 | 需登录 |
+| PUT | `/api/v1/knowposts/:id/metadata` | 编辑元数据 | 需登录 |
+| POST | `/api/v1/knowposts/:id/publish` | 发布知文 | 需登录 |
+| PUT | `/api/v1/knowposts/:id/top` | 置顶/取消置顶 | 需登录 |
+| PUT | `/api/v1/knowposts/:id/visibility` | 修改可见性 | 需登录 |
+| DELETE | `/api/v1/knowposts/:id` | 删除知文 | 需登录 |
+| GET | `/api/v1/knowposts/:id` | 知文详情 | 可选登录 |
+| GET | `/api/v1/knowposts/feed/public` | 公共 Feed | 可选登录 |
+| GET | `/api/v1/knowposts/feed/mine` | 我的发布 | 需登录 |
+
+### Counter 计数
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| POST | `/api/v1/counter/like` | 点赞 | 需登录 |
+| POST | `/api/v1/counter/unlike` | 取消点赞 | 需登录 |
+| POST | `/api/v1/counter/fav` | 收藏 | 需登录 |
+| POST | `/api/v1/counter/unfav` | 取消收藏 | 需登录 |
+| GET | `/api/v1/counter/counts` | 获取计数 | 需登录 |
+| GET | `/api/v1/counter/status` | 点赞/收藏状态 | 需登录 |
+| GET | `/api/v1/counter/likers` | 点赞人列表 | 需登录 |
+
+### Relation 关注关系
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| POST | `/api/v1/relations/follow` | 关注 | 需登录 |
+| POST | `/api/v1/relations/unfollow` | 取关 | 需登录 |
+| GET | `/api/v1/relations/status` | 关系状态 | 需登录 |
+| GET | `/api/v1/relations/following` | 关注列表 | 需登录 |
+| GET | `/api/v1/relations/followers` | 粉丝列表 | 需登录 |
+| GET | `/api/v1/relations/following/cursor` | 关注列表（游标） | 需登录 |
+| GET | `/api/v1/relations/followers/cursor` | 粉丝列表（游标） | 需登录 |
+
+### Search 搜索
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| GET | `/api/v1/search` | 全文搜索 | 可选登录 |
+| GET | `/api/v1/search/suggest` | 自动补全 | 可选登录 |
+
+### Profile 用户资料
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| GET | `/api/v1/profiles/:id` | 获取用户资料 | 公开 |
+| PATCH | `/api/v1/profiles/:id` | 更新用户资料 | 需登录（仅本人） |
+
+### Storage 对象存储
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| POST | `/api/v1/storage/presign` | 获取预签名 URL | 需登录 |
 
 ### LLM / RAG
 
-当下列配置完整时才启用：
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| POST | `/api/v1/knowposts/:id/description/suggest` | 摘要建议 | 需登录 |
+| POST | `/api/v1/knowposts/:id/rag/query` | RAG 查询 | 需登录 |
 
-- `llm.deepseek.api_key`
-- `llm.deepseek.base_url`
-- `llm.deepseek.model`
-- `llm.openai.api_key`
-- `llm.openai.base_url`
-- `elasticsearch.uris`
+### 非业务端点
 
-如果配置不完整：
-
-- `POST /api/v1/knowposts/:id/description/suggest`
-- `POST /api/v1/knowposts/:id/rag/query`
-
-会返回 `503`，不会出现空指针或越界 panic。
-
-### OSS 存储
-
-当 `oss.endpoint / access_key_id / access_key_secret / bucket` 配置完整时才启用。
-
-否则：
-
-- `POST /api/v1/storage/presign`
-
-会返回 `503`。
-
-## API 说明
-
-关键端点：
-
-- `POST /api/v1/auth/register`
-- `POST /api/v1/auth/login`
-- `POST /api/v1/auth/refresh`
-- `GET /api/v1/auth/me`
-- `POST /api/v1/knowposts/draft`
-- `GET /api/v1/knowposts/:id`
-- `GET /api/v1/knowposts/feed/public`
-- `POST /api/v1/counter/like`
-- `POST /api/v1/relations/follow`
-- `GET /api/v1/search?q=xxx`
-- `GET /api/v1/search/suggest?prefix=xxx`
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 存活检查（DB + Redis） |
+| GET | `/ready` | 就绪检查（DB + Redis） |
+| GET | `/metrics` | Prometheus 指标（需配置开启） |
+| GET | `/debug/pprof/...` | pprof 调试（仅 debug 模式） |
 
 ## 已修复的本地运行问题
 
