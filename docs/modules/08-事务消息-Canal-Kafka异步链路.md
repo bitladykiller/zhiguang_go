@@ -57,7 +57,7 @@ Canal 做的是：
 4. 包装成统一 JSON Envelope
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[MySQL binlog] --> B[Canal]
     B --> C[解析 INSERT/UPDATE]
     C --> D[提取 aggregate/type/payload]

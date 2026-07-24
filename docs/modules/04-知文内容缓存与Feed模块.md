@@ -316,13 +316,13 @@ flowchart TD
 这样新请求自然切换到新 key，不需要暴力清全量分页缓存。
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[写后失效] --> B[删 item 碎片]
     A --> C[公共 feed version++]
     A --> D[作者 mine feed version++]
-    C --> E[新请求自然用新 key]
+    B --> E[新请求自然用新 key]
+    C --> E
     D --> E
-    B --> E
 ```
 
 ## 4. 设计亮点

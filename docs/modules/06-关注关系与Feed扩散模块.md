@@ -115,7 +115,7 @@ flowchart TD
 所以直接查库是合理的。
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[IsFollowing<br/>低成本高一致] --> B[(MySQL 直查)]
     B --> C[true/false]
 ```
@@ -171,7 +171,7 @@ flowchart TD
 注意：第 3 步 **不经过** `counter-events` Kafka，也没有 partition 水位；与 like/fav 的异步聚合是两条语义。
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[(MySQL outbox)] --> B[Canal]
     B --> C[Kafka canal-outbox]
     C --> D[relation.OutboxConsumer]
