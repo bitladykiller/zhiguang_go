@@ -9,9 +9,9 @@ import (
 // initProfile 创建资料模块的完整服务栈。
 //
 // 创建顺序：
-//   1. ProfileRepository（MySQL users 表 CRUD）
-//   2. ProfileService（资料查询 + 编辑 + 权限校验）
-//   3. ProfileHandler（HTTP 请求适配）
+//  1. ProfileRepository（MySQL users 表 CRUD）
+//  2. ProfileService（资料查询 + 编辑 + 权限校验）
+//  3. ProfileHandler（HTTP 请求适配）
 //
 // 返回：
 //   - *profile.ProfileHandler: HTTP handler

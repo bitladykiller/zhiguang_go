@@ -88,15 +88,17 @@ func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorI
 //   - Feed 条目碎片缓存（feed:item:{id}）
 //
 // 设计意图：
-//   热点条目被大量用户频繁访问。如果不延长 TTL，这些条目会在每个 TTL 周期结束后
-//   引发大量缓存回源查询。通过 HotKeyDetector 的识别和 TTL 延长，
-//   热点条目在缓存中停留时间更长，有效降低数据库负载。
+//
+//	热点条目被大量用户频繁访问。如果不延长 TTL，这些条目会在每个 TTL 周期结束后
+//	引发大量缓存回源查询。通过 HotKeyDetector 的识别和 TTL 延长，
+//	热点条目在缓存中停留时间更长，有效降低数据库负载。
 //
 // TTL 延长使用 Lua 脚本保证只增不减：
-//   多实例并发延长同一 key 时，Lua 脚本在 Redis 中原子执行，
-//   先读当前 TTL，只有当前 TTL < 目标 TTL 时才 EXPIRE。
-//   不存在竞态条件导致 TTL 被缩短的问题。
-//   兼容 Redis 6.x（比 EXPIRE GT 要求 7.0+ 更通用）。
+//
+//	多实例并发延长同一 key 时，Lua 脚本在 Redis 中原子执行，
+//	先读当前 TTL，只有当前 TTL < 目标 TTL 时才 EXPIRE。
+//	不存在竞态条件导致 TTL 被缩短的问题。
+//	兼容 Redis 6.x（比 EXPIRE GT 要求 7.0+ 更通用）。
 //
 // 边界情况：
 //   - key 已过期（不存在）：Lua 脚本中 TTL 返回 -2，条件不满足，不操作。
@@ -109,16 +111,17 @@ func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorI
 //   - pageKey: string，详情页的缓存键名。
 //
 // HotKeyDetector 的工作原理：
-//   cache.HotKeyDetector 使用本地 map 记录每个 key 在 6 秒窗口内的访问计数，
-//   每 6 秒批量 flush 到 Redis Hash 进行跨实例聚合。当某个 key 在 60 秒窗口内的
-//   全局访问计数超过配置阈值时，被认为是一个"热点 key"。
+//
+//	cache.HotKeyDetector 使用本地 map 记录每个 key 在 6 秒窗口内的访问计数，
+//	每 6 秒批量 flush 到 Redis Hash 进行跨实例聚合。当某个 key 在 60 秒窗口内的
+//	全局访问计数超过配置阈值时，被认为是一个"热点 key"。
+//
 // recordHotKeyAndExtendTTL 记录热点并延长缓存 TTL。
 func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint64, pageKey string) {
 	hotKeyID := fmt.Sprintf("knowpost:%d", id)
 	s.hotKey.Record(hotKeyID)
 
-	_, _, _, _, _, _, ttlMedium, _ := s.detailCacheTTLValues()
-	baseTTL := ttlMedium
+	baseTTL := s.detailCacheTTLValues().ttlMedium
 	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 
 	itemKey := fmt.Sprintf("feed:item:%d", id)
@@ -126,28 +129,6 @@ func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint6
 		s.logger.Warn("extend dual ttl failed", zap.Uint64("id", id), zap.Error(err))
 	}
 }
-
-// extendTTLScript 是 Redis Lua 脚本，原子性地延长缓存 TTL（只增不减）。
-//
-// 逻辑：只有当 key 存在且当前 TTL 小于目标 TTL 时，才执行 EXPIRE。
-// 在 Redis 中 Lua 脚本是原子执行的，不存在 TTL 查询和 EXPIRE 之间的竞态窗口。
-// 多实例并发调用时，每个实例都只会在当前 TTL < targetSeconds 时更新，
-// 不会把其他实例刚延长的 TTL 缩短。
-//
-// 参数：
-//   KEYS[1]   = 缓存键名
-//   ARGV[1]   = 目标 TTL（秒）
-//
-// 返回值：
-//   1 = TTL 已延长
-//   0 = 未延长（key 不存在或当前 TTL >= 目标 TTL）
-var extendTTLScript = redis.NewScript(`
-local current = redis.call('TTL', KEYS[1])
-if current > 0 and current < tonumber(ARGV[1]) then
-    return redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-return 0
-`)
 
 // extendTTLDualScript 是双 key 版本的延长 TTL 脚本，同时延长 pageKey 和 itemKey。
 var extendTTLDualScript = redis.NewScript(`
@@ -161,31 +142,3 @@ if current > 0 and current < tonumber(ARGV[1]) then
 end
 return 1
 `)
-
-// extendTTL 使用 Redis Lua 脚本原子性地延长缓存 TTL。
-//
-// 相比 EXPIRE GT 命令（需要 Redis 7.0+），Lua 脚本在 Redis 6.x 也能运行，
-// 且行为完全一致：只有当新 TTL 大于当前 TTL 时才更新。
-// Lua 脚本在 Redis 中原子执行，不存在 TTL 查询和 EXPIRE 之间的竞态窗口。
-//
-// 参数：
-//   - ctx: context.Context
-//   - client: Redis 客户端
-//   - key: 缓存键
-//   - targetSeconds: 目标 TTL（秒）
-//
-// 返回值：
-//   true  = TTL 已延长
-//   false = 未延长（key 不存在或当前 TTL >= 目标 TTL）
-//
-// 边界情况：
-//   - key 不存在（TTL 返回 -2）：条件不满足，不操作
-//   - key 永不过期（TTL 返回 -1）：条件不满足（-1 < targetSeconds 为 false），不操作
-//   - 当前 TTL >= 目标 TTL：不操作，保持原值
-func extendTTL(ctx context.Context, client *redis.Client, key string, targetSeconds int) bool {
-	result, err := extendTTLScript.Run(ctx, client, []string{key}, targetSeconds).Int()
-	if err != nil {
-		return false
-	}
-	return result == 1
-}

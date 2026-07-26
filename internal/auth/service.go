@@ -9,11 +9,12 @@ import (
 	"unicode"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/redislock"
-	"go.uber.org/zap"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var (

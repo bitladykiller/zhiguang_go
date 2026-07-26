@@ -7,8 +7,9 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
-	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/config"
 )
 
 func newTestRedisVerification(t *testing.T) (*miniredis.Miniredis, *VerificationService) {
@@ -17,11 +18,11 @@ func newTestRedisVerification(t *testing.T) (*miniredis.Miniredis, *Verification
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 
 	cfg := &config.VerificationConfig{
-		CodeLength:        6,
-		TTL:               5 * time.Minute,
-		MaxAttempts:       3,
-		SendInterval:      60 * time.Second,
-		DailyLimit:        5,
+		CodeLength:         6,
+		TTL:                5 * time.Minute,
+		MaxAttempts:        3,
+		SendInterval:       60 * time.Second,
+		DailyLimit:         5,
 		OperationTimeoutMs: 0,
 	}
 	svc := NewVerificationService(rdb, cfg, zap.NewNop())

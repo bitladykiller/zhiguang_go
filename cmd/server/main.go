@@ -9,7 +9,8 @@
 //   - 装配逻辑集中在 bootstrap.InitializeApp，便于测试时替换完整依赖图。
 //
 // 使用方式：
-//   go run ./cmd/server -config config/config-local.yaml
+//
+//	go run ./cmd/server -config config/config-local.yaml
 package main
 
 import (

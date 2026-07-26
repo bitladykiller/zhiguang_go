@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/config"
 )
 
 // BackgroundRunner 表示会伴随 HTTP 服务一起启动的长生命周期后台任务。

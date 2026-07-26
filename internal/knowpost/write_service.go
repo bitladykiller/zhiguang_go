@@ -198,7 +198,7 @@ func (s *KnowPostService) ConfirmContent(ctx context.Context, creatorID, id uint
 		return errcode.ErrNotFound.WithMsg("draft not found or permission denied")
 	}
 
-s.invalidateCache(ctx, id)
+	s.invalidateCache(ctx, id)
 	s.invalidateFeedCaches(ctx, id, creatorID)
 
 	if s.auditLog != nil {

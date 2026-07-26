@@ -27,4 +27,3 @@ func knowPostLockOptions() redislock.Options {
 		OpTimeout:        knowPostLockOpTimeout,
 	}
 }
-

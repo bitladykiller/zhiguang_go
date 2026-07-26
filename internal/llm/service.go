@@ -10,8 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/config"
 )
 
 type KnowPostDescriptionService struct {

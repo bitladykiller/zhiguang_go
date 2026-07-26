@@ -31,11 +31,12 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"go.uber.org/zap"
+
 	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/internal/model"
 	"github.com/zhiguang/app/pkg/contextutil"
 	"github.com/zhiguang/app/pkg/jsonutil"
-	"go.uber.org/zap"
 )
 
 // SearchIndexDoc 是知文内容在 ES 中的文档结构。
@@ -79,6 +80,7 @@ func (s *SearchService) readESError(res *esapi.Response, opName string) error {
 	}
 	return fmt.Errorf("%s failed: %s", opName, string(body))
 }
+
 type SuggestField struct {
 	Input  []string `json:"input"`
 	Weight int      `json:"weight,omitempty"`
@@ -231,10 +233,11 @@ func (s *SearchService) EnsureIndex() error {
 // ensureCompatibleMappings 为旧版本索引补齐新查询路径依赖的字段映射。
 //
 // 设计原因:
-//   本地开发环境可能保留了旧版本 schema 的索引（如 tag_id 字段未定义），
-//   如果不补齐 mapping，按 tag_id 等字段搜索会一直静默失效。
-//   此函数通过 ES Indices.PutMapping API 向已有索引追加新字段定义，
-//   属于幂等操作——字段已存在时 ES 会忽略相同的映射定义。
+//
+//	本地开发环境可能保留了旧版本 schema 的索引（如 tag_id 字段未定义），
+//	如果不补齐 mapping，按 tag_id 等字段搜索会一直静默失效。
+//	此函数通过 ES Indices.PutMapping API 向已有索引追加新字段定义，
+//	属于幂等操作——字段已存在时 ES 会忽略相同的映射定义。
 //
 // 补齐的字段:
 //   - tag_id (long): 按分类标签筛选
@@ -279,9 +282,9 @@ func (s *SearchService) ensureCompatibleMappings() error {
 }
 
 const (
-	defaultSearchSize     = 20
-	defaultSuggestSize    = 10
-	defaultEnsureRetries  = 3
+	defaultSearchSize    = 20
+	defaultSuggestSize   = 10
+	defaultEnsureRetries = 3
 )
 
 // Search 执行全文检索，使用 function_score 融合 BM25 和相关指标权重，并通过 search_after 游标分页。
@@ -318,7 +321,7 @@ func (s *SearchService) Search(ctx context.Context, keyword string, size int, ta
 // buildSearchQuery 构造 ES 搜索请求体 JSON。
 func (s *SearchService) buildSearchQuery(keyword string, tags []string, afterValues []interface{}, size int) ([]byte, error) {
 	body := &esSearchBody{
-		Size: size,
+		Size:  size,
 		Track: &esTrackTotalHits{TrackTotalHits: true},
 	}
 
@@ -548,15 +551,17 @@ func (s *SearchService) buildCursor(hits []searchHit, size int) (*string, bool) 
 //   - error: ES 搜索失败或 JSON 编解码错误时返回
 //
 // 实现说明:
-//   使用 ES 的 completion suggester 而非 edge_ngram，
-//   原因如下:
-//   - completion suggester 基于 FST（有限状态转换器）实现，查询复杂度为 O(prefix_length)
-//   - 支持权重控制（SuggestField.Weight 字段）以调整建议排序
-//   - 无需定义额外的索引分析器，与 suggest 字段的 completion 类型映射配合使用
+//
+//	使用 ES 的 completion suggester 而非 edge_ngram，
+//	原因如下:
+//	- completion suggester 基于 FST（有限状态转换器）实现，查询复杂度为 O(prefix_length)
+//	- 支持权重控制（SuggestField.Weight 字段）以调整建议排序
+//	- 无需定义额外的索引分析器，与 suggest 字段的 completion 类型映射配合使用
 //
 // 去重逻辑:
-//   响应的 options 中可能包含重复文本（标题和标签可能相同），
-//   使用 map[string]struct{} 进行内存去重，按返回顺序保留首次出现的实例。
+//
+//	响应的 options 中可能包含重复文本（标题和标签可能相同），
+//	使用 map[string]struct{} 进行内存去重，按返回顺序保留首次出现的实例。
 //
 // 边界情况:
 //   - prefix 为空时 ES 会返回 "completion suggester requires a prefix" 错误
@@ -782,7 +787,6 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
-
 // IndexDocument 将搜索文档索引到 Elasticsearch 中（创建或全量替换）。
 //
 // 参数:
@@ -865,12 +869,12 @@ func (s *SearchService) DeleteDocument(ctx context.Context, id string) error {
 
 // ES 查询结构体，替代嵌套 map[string]interface{}
 type esSearchBody struct {
-	Query   *esBoolQuery         `json:"query,omitempty"`
-	Size    int                  `json:"size,omitempty"`
-	From    int                  `json:"from,omitempty"`
-	Sort    []esSortField        `json:"sort,omitempty"`
-	Suggest *esSuggest           `json:"suggest,omitempty"`
-	Track   *esTrackTotalHits    `json:"track_total_hits,omitempty"`
+	Query   *esBoolQuery      `json:"query,omitempty"`
+	Size    int               `json:"size,omitempty"`
+	From    int               `json:"from,omitempty"`
+	Sort    []esSortField     `json:"sort,omitempty"`
+	Suggest *esSuggest        `json:"suggest,omitempty"`
+	Track   *esTrackTotalHits `json:"track_total_hits,omitempty"`
 }
 
 type esBoolQuery struct {
@@ -878,9 +882,9 @@ type esBoolQuery struct {
 }
 
 type esBoolClauses struct {
-	Must    []interface{} `json:"must,omitempty"`
-	Filter  []interface{} `json:"filter,omitempty"`
-	Should  []interface{} `json:"should,omitempty"`
+	Must   []interface{} `json:"must,omitempty"`
+	Filter []interface{} `json:"filter,omitempty"`
+	Should []interface{} `json:"should,omitempty"`
 }
 
 type esSortField struct {
@@ -899,8 +903,8 @@ type esSuggest struct {
 }
 
 type esSuggestConfig struct {
-	Prefix     string              `json:"prefix"`
-	Completion *esCompletionField  `json:"completion"`
+	Prefix     string             `json:"prefix"`
+	Completion *esCompletionField `json:"completion"`
 }
 
 type esCompletionField struct {
@@ -937,14 +941,14 @@ type esFunctionScoreQuery struct {
 }
 
 type esFunctionScore struct {
-	Query     interface{}   `json:"query"`
+	Query     interface{}  `json:"query"`
 	Functions []esFunction `json:"functions,omitempty"`
 	ScoreMode string       `json:"score_mode"`
 }
 
 type esFunction struct {
-	Filter      interface{}   `json:"filter,omitempty"`
-	Weight      *int          `json:"weight,omitempty"`
+	Filter      interface{}    `json:"filter,omitempty"`
+	Weight      *int           `json:"weight,omitempty"`
 	ScriptScore *esScriptScore `json:"script_score,omitempty"`
 }
 

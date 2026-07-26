@@ -64,11 +64,11 @@ const (
 
 // ServerConfig 控制 HTTP 服务监听配置。
 type ServerConfig struct {
-	Port                 int             `yaml:"port"`                 // default: 8080
-	Mode                 string          `yaml:"mode"`                 // "debug", "release", or "test"
-	RequestTimeoutMs     int             `yaml:"request_timeout_ms"`   // default: 30000
-	CorsAllowedOrigins   []string        `yaml:"cors_allowed_origins"` // CORS 允许的来源，空时默认 ["*"]
-	RateLimit            RateLimitConfig `yaml:"rate_limit"`
+	Port               int             `yaml:"port"`                 // default: 8080
+	Mode               string          `yaml:"mode"`                 // "debug", "release", or "test"
+	RequestTimeoutMs   int             `yaml:"request_timeout_ms"`   // default: 30000
+	CorsAllowedOrigins []string        `yaml:"cors_allowed_origins"` // CORS 允许的来源，空时默认 ["*"]
+	RateLimit          RateLimitConfig `yaml:"rate_limit"`
 }
 
 // HTTPRequestTimeout 返回全局 HTTP 请求超时；未配置或非法时使用默认值。
@@ -93,7 +93,7 @@ type DatabaseConfig struct {
 	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"` // 空闲连接最大生命周期（秒）
 	DialTimeoutMs   int    `yaml:"dial_timeout_ms"`    // 连接超时（毫秒）
 	ReadTimeoutMs   int    `yaml:"read_timeout_ms"`    // 读超时（毫秒）
-	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`    // 写超时（毫秒）
+	WriteTimeoutMs  int    `yaml:"write_timeout_ms"`   // 写超时（毫秒）
 }
 
 // DSN 根据配置字段拼装 MySQL 的数据源连接串。
@@ -158,7 +158,7 @@ type KafkaTopicsConfig struct {
 
 // ElasticsearchConfig 配置 Elasticsearch 集群连接信息。
 type ElasticsearchConfig struct {
-	Enabled    *bool    `yaml:"enabled"`     // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled    *bool    `yaml:"enabled"` // 显式功能开关，nil 表示跟随配置完整性判断
 	URIs       []string `yaml:"uris"`
 	IndexName  string   `yaml:"index_name"`  // primary search index
 	MaxRetries int      `yaml:"max_retries"` // 最大重试次数
@@ -184,13 +184,13 @@ type JwtConfig struct {
 
 // VerificationConfig 控制验证码相关行为。
 type VerificationConfig struct {
-	CodeLength        int            `yaml:"code_length"`
-	TTL               time.Duration  `yaml:"ttl"`
-	MaxAttempts       int            `yaml:"max_attempts"`
-	SendInterval      time.Duration  `yaml:"send_interval"`
-	DailyLimit        int            `yaml:"daily_limit"`
-	OperationTimeoutMs int           `yaml:"operation_timeout_ms"`
-	Lock              AuthLockConfig `yaml:"lock"`
+	CodeLength         int            `yaml:"code_length"`
+	TTL                time.Duration  `yaml:"ttl"`
+	MaxAttempts        int            `yaml:"max_attempts"`
+	SendInterval       time.Duration  `yaml:"send_interval"`
+	DailyLimit         int            `yaml:"daily_limit"`
+	OperationTimeoutMs int            `yaml:"operation_timeout_ms"`
+	Lock               AuthLockConfig `yaml:"lock"`
 }
 
 // PasswordConfig 约束密码强度策略。
@@ -214,7 +214,7 @@ type AuthLockConfig struct {
 
 // OssConfig 配置阿里云 OSS 对象存储。
 type OssConfig struct {
-	Enabled         *bool  `yaml:"enabled"`          // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled         *bool  `yaml:"enabled"` // 显式功能开关，nil 表示跟随配置完整性判断
 	Endpoint        string `yaml:"endpoint"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	AccessKeySecret string `yaml:"access_key_secret"`
@@ -308,8 +308,8 @@ type L2CacheConfig struct {
 
 // CacheItemConfig 定义单个缓存实例的 TTL 和最大容量。
 type CacheItemConfig struct {
-	TTLSeconds        int `yaml:"ttl_seconds"`
-	MaxSize           int `yaml:"max_size"`
+	TTLSeconds         int `yaml:"ttl_seconds"`
+	MaxSize            int `yaml:"max_size"`
 	FreeCacheDefaultMB int `yaml:"free_cache_default_mb"`
 }
 
@@ -322,29 +322,29 @@ type CacheItemConfig struct {
 // Redis Hash 的 field 是 6 秒窗口编号，value 是窗口内访问次数。
 // 判断 hotkey 时，HGETALL 该哈希并累加最近 BucketCount 个窗口的值。
 type HotKeyConfig struct {
-	BucketSizeSeconds    int `yaml:"bucket_size_seconds"`     // 每个时间窗口的秒数（建议 6）
-	BucketCount          int `yaml:"bucket_count"`            // 窗口数量（建议 10，总窗口 = 6×10=60s）
-	FlushIntervalSeconds int `yaml:"flush_interval_seconds"`  // flush 到 Redis 的间隔（建议 6）
-	StatTTLSeconds       int `yaml:"stat_ttl_seconds"`        // Redis Hash 的 TTL（建议 120）
-	LevelLow             int `yaml:"level_low"`               // LOW 热度阈值
-	LevelMedium          int `yaml:"level_medium"`            // MEDIUM 热度阈值
-	LevelHigh            int `yaml:"level_high"`              // HIGH 热度阈值
-	ExtendLowSeconds     int `yaml:"extend_low_seconds"`      // LOW 等级 TTL 延长量（秒）
-	ExtendMediumSeconds  int `yaml:"extend_medium_seconds"`   // MEDIUM 等级 TTL 延长量（秒）
-	ExtendHighSeconds    int `yaml:"extend_high_seconds"`     // HIGH 等级 TTL 延长量（秒）
-	HotMarkTTLSeconds    int `yaml:"hot_mark_ttl_seconds"`    // hotkey:active 标记的 TTL（建议 60）
-	MaxLocalKeys         int `yaml:"max_local_keys"`          // 本地 map 最大键数限制，0 表示使用默认值 100000
+	BucketSizeSeconds    int `yaml:"bucket_size_seconds"`    // 每个时间窗口的秒数（建议 6）
+	BucketCount          int `yaml:"bucket_count"`           // 窗口数量（建议 10，总窗口 = 6×10=60s）
+	FlushIntervalSeconds int `yaml:"flush_interval_seconds"` // flush 到 Redis 的间隔（建议 6）
+	StatTTLSeconds       int `yaml:"stat_ttl_seconds"`       // Redis Hash 的 TTL（建议 120）
+	LevelLow             int `yaml:"level_low"`              // LOW 热度阈值
+	LevelMedium          int `yaml:"level_medium"`           // MEDIUM 热度阈值
+	LevelHigh            int `yaml:"level_high"`             // HIGH 热度阈值
+	ExtendLowSeconds     int `yaml:"extend_low_seconds"`     // LOW 等级 TTL 延长量（秒）
+	ExtendMediumSeconds  int `yaml:"extend_medium_seconds"`  // MEDIUM 等级 TTL 延长量（秒）
+	ExtendHighSeconds    int `yaml:"extend_high_seconds"`    // HIGH 等级 TTL 延长量（秒）
+	HotMarkTTLSeconds    int `yaml:"hot_mark_ttl_seconds"`   // hotkey:active 标记的 TTL（建议 60）
+	MaxLocalKeys         int `yaml:"max_local_keys"`         // 本地 map 最大键数限制，0 表示使用默认值 100000
 }
 
 // LLMConfig 配置 AI 模型连接信息。
 type LLMConfig struct {
-	Enabled       *bool          `yaml:"enabled"`     // 显式功能开关，nil 表示跟随配置完整性判断
+	Enabled       *bool          `yaml:"enabled"` // 显式功能开关，nil 表示跟随配置完整性判断
 	DeepSeek      DeepSeekConfig `yaml:"deepseek"`
 	OpenAI        OpenAIConfig   `yaml:"openai"`
 	TimeoutMs     int            `yaml:"timeout_ms"`      // HTTP 客户端超时（毫秒），默认 30000
-	MaxContentLen int            `yaml:"max_content_len"`  // 内容截断长度，默认 2000
-	MaxTokens     int            `yaml:"max_tokens"`       // 生成最大 token 数，默认 100
-	SystemPrompt  string         `yaml:"system_prompt"`    // 系统提示词
+	MaxContentLen int            `yaml:"max_content_len"` // 内容截断长度，默认 2000
+	MaxTokens     int            `yaml:"max_tokens"`      // 生成最大 token 数，默认 100
+	SystemPrompt  string         `yaml:"system_prompt"`   // 系统提示词
 }
 
 // DeepSeekConfig 配置 DeepSeek 对话模型 API。
@@ -365,22 +365,22 @@ type OpenAIConfig struct {
 
 // RelationConfig 配置关系服务。
 type RelationConfig struct {
-	BigVThreshold int                              `yaml:"big_v_threshold"`
-	TokenBucket   RelationTokenBucketConfig        `yaml:"token_bucket"`
-	CacheTTL      int                              `yaml:"cache_ttl"`
-	ZSetWarmLimit int                              `yaml:"zset_warm_limit"`
-	CacheLock     RelationCacheLockConfig           `yaml:"cache_lock"`
-	InvalidateLock RelationInvalidateLockConfig    `yaml:"invalidate_lock"`
-	L1Cache       RelationL1CacheConfig            `yaml:"l1_cache"`
-	Fallback      RelationFallbackConfig           `yaml:"fallback"`
-	MaxOffset     int                              `yaml:"max_offset"`
+	BigVThreshold  int                          `yaml:"big_v_threshold"`
+	TokenBucket    RelationTokenBucketConfig    `yaml:"token_bucket"`
+	CacheTTL       int                          `yaml:"cache_ttl"`
+	ZSetWarmLimit  int                          `yaml:"zset_warm_limit"`
+	CacheLock      RelationCacheLockConfig      `yaml:"cache_lock"`
+	InvalidateLock RelationInvalidateLockConfig `yaml:"invalidate_lock"`
+	L1Cache        RelationL1CacheConfig        `yaml:"l1_cache"`
+	Fallback       RelationFallbackConfig       `yaml:"fallback"`
+	MaxOffset      int                          `yaml:"max_offset"`
 }
 
 // RelationTokenBucketConfig 配置令牌桶限流。
 type RelationTokenBucketConfig struct {
-	Capacity   int `yaml:"capacity"`
-	Rate       int `yaml:"rate"`
-	PExpireMs  int `yaml:"pexpire_ms"`
+	Capacity  int `yaml:"capacity"`
+	Rate      int `yaml:"rate"`
+	PExpireMs int `yaml:"pexpire_ms"`
 }
 
 // RelationCacheLockConfig 配置关系列表缓存锁参数。

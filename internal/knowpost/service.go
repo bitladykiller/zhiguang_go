@@ -36,15 +36,15 @@ type AuditLogger interface {
 
 // KnowPostService 负责 knowpost 的写路径、详情读取编排以及缓存协同。
 type KnowPostService struct {
-	db        *sqlx.DB
-	repo      Repo
-	idGen     *SnowflakeIdGenerator
-	redis     *redis.Client
-	l1Cache   *PrefixCache
-	hotKey    *cache.HotKeyDetector
+	db      *sqlx.DB
+	repo    Repo
+	idGen   *SnowflakeIdGenerator
+	redis   *redis.Client
+	l1Cache *PrefixCache
+	hotKey  *cache.HotKeyDetector
 	// bloom：第三方 RedisBloom（CF.*）客户端薄封装 + 空值缓存叠加；nil 表示关闭。
 	// 过滤器算法由 Redis 模块提供，本服务只做 ADD/DEL/EXISTS 与 fail-open。
-	bloom *cache.RedisBloom
+	bloom     *cache.RedisBloom
 	ossCfg    *config.OssConfig
 	counter   CounterClient
 	feedCache FeedCacheInvalidator

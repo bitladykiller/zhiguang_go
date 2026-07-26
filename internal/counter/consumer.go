@@ -23,14 +23,14 @@ var errLockNotAcquired = errors.New("repair lock not acquired")
 const counterRepairLeaderLockKey = "lock:counter:repair"
 
 const (
-	defaultConsumerBatchSize        = 100
-	defaultConsumerFlushInterval    = time.Second
-	defaultRepairInterval           = time.Minute
-	defaultCounterFlushMaxAttempts  = 3
-	defaultCounterFlushRetryDelay   = time.Second
-	defaultCounterFlushWorkers      = 2
-	defaultExpireExtendInterval     = 10 * time.Second
-	defaultRebuildMarkerTTL         = 30 * time.Second
+	defaultConsumerBatchSize       = 100
+	defaultConsumerFlushInterval   = time.Second
+	defaultRepairInterval          = time.Minute
+	defaultCounterFlushMaxAttempts = 3
+	defaultCounterFlushRetryDelay  = time.Second
+	defaultCounterFlushWorkers     = 2
+	defaultExpireExtendInterval    = 10 * time.Second
+	defaultRebuildMarkerTTL        = 30 * time.Second
 )
 
 // AggregationConsumer 消费 counter-events，并按批次把增量直接折叠到 cnt:*。
@@ -55,7 +55,7 @@ type AggregationConsumer struct {
 	repairInterval   time.Duration
 	repairBatch      int
 
-	partitionMask   uint8
+	partitionMask uint8
 
 	flushCh   chan *counterBatch
 	closeOnce sync.Once

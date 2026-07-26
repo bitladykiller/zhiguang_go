@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/zhiguang/app/pkg/errcode"
 )
 
@@ -593,7 +594,7 @@ func TestGetDetail_Success(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var resp struct {
-		Code int                      `json:"code"`
+		Code int                    `json:"code"`
 		Data KnowPostDetailResponse `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {

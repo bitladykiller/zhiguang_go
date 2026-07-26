@@ -25,8 +25,8 @@ type KnowPostDetailResponse struct {
 	AuthorTagJson  *string    `json:"author_tag_json"`
 	LikeCount      int64      `json:"like_count"`
 	FavoriteCount  int64      `json:"favorite_count"`
-	Liked          *bool      `json:"liked,omitempty"`    // 当前用户是否已点赞（动态补齐，不入缓存）
-	Faved          *bool      `json:"faved,omitempty"`    // 当前用户是否已收藏（动态补齐，不入缓存）
+	Liked          *bool      `json:"liked,omitempty"` // 当前用户是否已点赞（动态补齐，不入缓存）
+	Faved          *bool      `json:"faved,omitempty"` // 当前用户是否已收藏（动态补齐，不入缓存）
 	IsTop          bool       `json:"is_top"`
 	Visible        string     `json:"visible"`
 	Type           string     `json:"type"`
@@ -46,9 +46,9 @@ type FeedItemResponse struct {
 	TagJson        *string  `json:"tag_json"`
 	LikeCount      int64    `json:"like_count"`
 	FavoriteCount  int64    `json:"favorite_count"`
-	Liked          *bool    `json:"liked,omitempty"`     // 当前用户是否点赞（动态补齐）
-	Faved          *bool    `json:"faved,omitempty"`     // 当前用户是否收藏（动态补齐）
-	IsTop          *bool    `json:"is_top,omitempty"`    // 仅"我的已发布"列表包含此字段
+	Liked          *bool    `json:"liked,omitempty"`  // 当前用户是否点赞（动态补齐）
+	Faved          *bool    `json:"faved,omitempty"`  // 当前用户是否收藏（动态补齐）
+	IsTop          *bool    `json:"is_top,omitempty"` // 仅"我的已发布"列表包含此字段
 }
 
 // FeedPageResponse 表示带分页信息的 feed 列表。
@@ -71,13 +71,13 @@ type KnowPostContentConfirmRequest struct {
 }
 
 type KnowPostPatchRequest struct {
-	Title       *string            `json:"title"`
-	TagID       *uint64            `json:"tag_id"`
-	Tags        []string           `json:"tags"`
-	ImgUrls     []string           `json:"img_urls"`
+	Title       *string             `json:"title"`
+	TagID       *uint64             `json:"tag_id"`
+	Tags        []string            `json:"tags"`
+	ImgUrls     []string            `json:"img_urls"`
 	Visible     *KnowPostVisibility `json:"visible"`
-	IsTop       *bool              `json:"is_top"`
-	Description *string            `json:"description"`
+	IsTop       *bool               `json:"is_top"`
+	Description *string             `json:"description"`
 }
 
 type KnowPostVisibilityPatchRequest struct {

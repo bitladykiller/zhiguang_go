@@ -6,14 +6,14 @@ import "fmt"
 type ErrorCode int
 
 const (
-	CodeSuccess                ErrorCode = 0
-	CodeBadRequest             ErrorCode = 400
-	CodeUnauthorized           ErrorCode = 401
-	CodeForbidden              ErrorCode = 403
-	CodeNotFound               ErrorCode = 404
-	CodeConflict               ErrorCode = 409
-	CodeTooManyRequests        ErrorCode = 429
-	CodeInternalError          ErrorCode = 500
+	CodeSuccess         ErrorCode = 0
+	CodeBadRequest      ErrorCode = 400
+	CodeUnauthorized    ErrorCode = 401
+	CodeForbidden       ErrorCode = 403
+	CodeNotFound        ErrorCode = 404
+	CodeConflict        ErrorCode = 409
+	CodeTooManyRequests ErrorCode = 429
+	CodeInternalError   ErrorCode = 500
 
 	ErrCodeIdentifierExists            ErrorCode = 40901
 	ErrCodeIdentifierNotFound          ErrorCode = 40401
@@ -33,19 +33,19 @@ const (
 
 // codeMessages 存储错误码对应的中文消息。
 var codeMessages = map[ErrorCode]string{
-	CodeSuccess:                "成功",
-	CodeBadRequest:             "请求参数错误",
-	CodeUnauthorized:           "未授权",
-	CodeForbidden:              "无权操作",
-	CodeNotFound:               "资源不存在",
-	CodeConflict:               "资源冲突",
-	CodeTooManyRequests:        "请求过于频繁",
-	CodeInternalError:          "服务器内部错误",
-	ErrCodeIdentifierExists:    "标识已存在",
-	ErrCodeIdentifierNotFound:  "标识不存在",
-	ErrCodeInvalidCredentials:  "凭证无效",
-	ErrCodeRefreshTokenInvalid: "刷新令牌无效",
-	ErrCodeTermsNotAccepted:    "未接受条款",
+	CodeSuccess:                        "成功",
+	CodeBadRequest:                     "请求参数错误",
+	CodeUnauthorized:                   "未授权",
+	CodeForbidden:                      "无权操作",
+	CodeNotFound:                       "资源不存在",
+	CodeConflict:                       "资源冲突",
+	CodeTooManyRequests:                "请求过于频繁",
+	CodeInternalError:                  "服务器内部错误",
+	ErrCodeIdentifierExists:            "标识已存在",
+	ErrCodeIdentifierNotFound:          "标识不存在",
+	ErrCodeInvalidCredentials:          "凭证无效",
+	ErrCodeRefreshTokenInvalid:         "刷新令牌无效",
+	ErrCodeTermsNotAccepted:            "未接受条款",
 	ErrCodeVerificationNotFound:        "验证码不存在",
 	ErrCodeVerificationMismatch:        "验证码不匹配",
 	ErrCodeVerificationTooManyAttempts: "验证尝试次数过多",
@@ -80,13 +80,13 @@ func (e *AppError) Msg() string {
 }
 
 var (
-	ErrBadRequest      = &AppError{Code: CodeBadRequest, Message: "bad request"}
-	ErrUnauthorized    = &AppError{Code: CodeUnauthorized, Message: "unauthorized"}
-	ErrForbidden       = &AppError{Code: CodeForbidden, Message: "forbidden"}
-	ErrNotFound        = &AppError{Code: CodeNotFound, Message: "not found"}
-	ErrInternal        = &AppError{Code: CodeInternalError, Message: "internal server error"}
-	ErrConflict        = &AppError{Code: CodeConflict, Message: "conflict"}
-	ErrTooManyRequests = &AppError{Code: CodeTooManyRequests, Message: "too many requests"}
+	ErrBadRequest         = &AppError{Code: CodeBadRequest, Message: "bad request"}
+	ErrUnauthorized       = &AppError{Code: CodeUnauthorized, Message: "unauthorized"}
+	ErrForbidden          = &AppError{Code: CodeForbidden, Message: "forbidden"}
+	ErrNotFound           = &AppError{Code: CodeNotFound, Message: "not found"}
+	ErrInternal           = &AppError{Code: CodeInternalError, Message: "internal server error"}
+	ErrConflict           = &AppError{Code: CodeConflict, Message: "conflict"}
+	ErrTooManyRequests    = &AppError{Code: CodeTooManyRequests, Message: "too many requests"}
 	ErrServiceUnavailable = &AppError{Code: ErrCodeServiceUnavailable, Message: "service unavailable"}
 
 	ErrIdentifierExists            = &AppError{Code: ErrCodeIdentifierExists, Message: "identifier already exists"}

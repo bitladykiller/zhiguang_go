@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/pkg/config"
 )

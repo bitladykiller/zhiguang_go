@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"go.uber.org/zap"
+
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
-	"go.uber.org/zap"
 )
 
 func TestValidateIdentifier_Phone(t *testing.T) {
@@ -129,8 +130,6 @@ func TestIdentifierExists_UnknownType(t *testing.T) {
 		t.Fatal("expected false for unknown identifier type")
 	}
 }
-
-
 
 func TestEnsureVerificationSuccess_UnknownStatus(t *testing.T) {
 	err := ensureVerificationSuccess(&VerificationCheckResult{Success: false, Status: "UNKNOWN"})

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
@@ -36,8 +37,9 @@ type SearchHandler struct {
 //   - *SearchHandler: handler 实例
 //
 // 说明：
-//   svc 可为 nil（当 ES 配置不完整时），此时所有端点返回 503 Service Unavailable。
-//   这种设计防止 ES 不可用导致启动失败，使其他模块可以正常工作。
+//
+//	svc 可为 nil（当 ES 配置不完整时），此时所有端点返回 503 Service Unavailable。
+//	这种设计防止 ES 不可用导致启动失败，使其他模块可以正常工作。
 func NewSearchHandler(svc SearchServiceInterface) *SearchHandler {
 	return &SearchHandler{svc: svc}
 }
@@ -52,8 +54,9 @@ func NewSearchHandler(svc SearchServiceInterface) *SearchHandler {
 //   - GET /search/suggest: 自动补全建议（Suggest）
 //
 // 说明：
-//   所有搜索端点使用 GET 方法，符合 RESTful 查询语义。
-//   搜索参数（关键字、标签、游标）通过查询字符串传递。
+//
+//	所有搜索端点使用 GET 方法，符合 RESTful 查询语义。
+//	搜索参数（关键字、标签、游标）通过查询字符串传递。
 func (h *SearchHandler) RegisterRoutes(r *gin.RouterGroup) {
 	sr := r.Group("/search")
 	{
@@ -75,8 +78,9 @@ func (h *SearchHandler) RegisterRoutes(r *gin.RouterGroup) {
 //   - 失败: HTTP 400（缺少 q 参数）、HTTP 500（内部搜索错误）、HTTP 503（服务不可用）
 //
 // 认证：
-//   搜索端点不需要登录，但会尝试从上下文中获取用户信息。
-//   如果用户已登录，搜索结果会包含每条结果的点赞/收藏状态。
+//
+//	搜索端点不需要登录，但会尝试从上下文中获取用户信息。
+//	如果用户已登录，搜索结果会包含每条结果的点赞/收藏状态。
 //
 // 边界情况：
 //   - 当 svc 为 nil 时返回 503（ES 配置缺失或连接失败）
@@ -122,8 +126,9 @@ func (h *SearchHandler) Search(c *gin.Context) {
 //   - 失败: HTTP 500（内部搜索错误）、HTTP 503（服务不可用）
 //
 // 说明：
-//   建议来自知文标题和标签，
-//   使用 ES completion suggester 基于 FST 数据结构进行前缀匹配。
+//
+//	建议来自知文标题和标签，
+//	使用 ES completion suggester 基于 FST 数据结构进行前缀匹配。
 //
 // 边界情况：
 //   - 当 svc 为 nil 时返回 503

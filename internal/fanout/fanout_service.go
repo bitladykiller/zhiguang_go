@@ -8,8 +8,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/zhiguang/app/internal/model"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/internal/model"
 )
 
 type FollowerLister interface {
@@ -33,10 +34,10 @@ func DefaultConfig() Config {
 }
 
 type Service struct {
-	redisClient   redis.UniversalClient
+	redisClient    redis.UniversalClient
 	followerLister FollowerLister
-	logger        *zap.Logger
-	cfg           Config
+	logger         *zap.Logger
+	cfg            Config
 }
 
 func NewService(redisClient redis.UniversalClient, fl FollowerLister, logger *zap.Logger, cfg Config) *Service {

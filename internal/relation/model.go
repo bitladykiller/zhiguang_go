@@ -43,8 +43,8 @@ type Outbox struct {
 	ID            uint64    `db:"id" json:"id"`
 	AggregateType string    `db:"aggregate_type" json:"aggregate_type"`
 	AggregateID   *uint64   `db:"aggregate_id" json:"aggregate_id,omitempty"`
-	Type          string    `db:"type" json:"type"`         // 事件类型标识
-	Payload       string    `db:"payload" json:"payload"`   // 事件内容的 JSON 序列化
+	Type          string    `db:"type" json:"type"`       // 事件类型标识
+	Payload       string    `db:"payload" json:"payload"` // 事件内容的 JSON 序列化
 	CreatedAt     time.Time `db:"created_at" json:"created_at"`
 }
 

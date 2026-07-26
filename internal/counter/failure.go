@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
-	"github.com/zhiguang/app/pkg/redislock"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/redislock"
 )
 
 func (s *CounterService) publishCounterEvent(ctx context.Context, event *CounterEvent) {

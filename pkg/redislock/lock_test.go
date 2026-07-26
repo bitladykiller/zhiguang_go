@@ -1,4 +1,4 @@
-﻿package redislock
+package redislock
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
 	"github.com/zhiguang/app/pkg/testutil"
 )
 
@@ -165,6 +166,3 @@ func TestOptions_Normalized(t *testing.T) {
 		t.Fatalf("expected default op timeout %v, got %v", defaultOpTimeout, opts.OpTimeout)
 	}
 }
-
-
-

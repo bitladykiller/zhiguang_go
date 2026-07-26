@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/zhiguang/app/internal/model"
 )
 
@@ -17,8 +18,8 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockSearchService struct {
-	searchFunc   func(ctx context.Context, keyword string, size int, tagsCSV, after string, currentUserID *uint64) (*SearchResponse, error)
-	suggestFunc  func(ctx context.Context, prefix string, size int) ([]string, error)
+	searchFunc  func(ctx context.Context, keyword string, size int, tagsCSV, after string, currentUserID *uint64) (*SearchResponse, error)
+	suggestFunc func(ctx context.Context, prefix string, size int) ([]string, error)
 }
 
 func (m *mockSearchService) Search(ctx context.Context, keyword string, size int, tagsCSV, after string, currentUserID *uint64) (*SearchResponse, error) {
@@ -110,9 +111,9 @@ func TestSearchHandler_Success(t *testing.T) {
 	}
 
 	var body struct {
-		Code    int              `json:"code"`
-		Message string           `json:"message"`
-		Data    *SearchResponse  `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    *SearchResponse `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("json unmarshal error = %v", err)

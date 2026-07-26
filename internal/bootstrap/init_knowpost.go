@@ -18,9 +18,9 @@ import (
 // initKnowPost 创建知文模块的完整服务栈。
 //
 // 创建顺序：
-//   1. KnowPostFeedService（先创建，注入 counter）
-//   2. KnowPostService（写操作 + 详情读取 + 缓存管理，注入 counter 和 feedSvc）
-//   3. KnowPostHandler（HTTP 请求适配）
+//  1. KnowPostFeedService（先创建，注入 counter）
+//  2. KnowPostService（写操作 + 详情读取 + 缓存管理，注入 counter 和 feedSvc）
+//  3. KnowPostHandler（HTTP 请求适配）
 //
 // 参数：
 //   - l1Cache: 统一的 freecache 实例，通过 key 前缀区分不同用途

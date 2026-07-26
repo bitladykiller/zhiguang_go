@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/config"
 )
 
 type testRunner struct {

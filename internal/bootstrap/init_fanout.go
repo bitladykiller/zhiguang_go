@@ -2,12 +2,13 @@ package bootstrap
 
 import (
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+
 	"github.com/zhiguang/app/internal/fanout"
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/internal/relation"
 	"github.com/zhiguang/app/internal/server"
 	"github.com/zhiguang/app/pkg/config"
-	"go.uber.org/zap"
 )
 
 // initFanout 初始化写扩散模块的消费者。

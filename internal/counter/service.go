@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/redislock"
-	"go.uber.org/zap"
 )
 
 const defaultMaxChunk = uint64(128)
@@ -148,7 +149,6 @@ func (s *CounterService) scanBitmapForLikers(ctx context.Context, entityType str
 	items := make([]LikerItem, 0)
 	maxChunk := defaultMaxChunk
 	var batchKeys []string
-	var batchUserIDs []uint64
 
 	for chunk := uint64(0); chunk < maxChunk; chunk++ {
 		bmKey := fmt.Sprintf("bm:%s:%s:%d:%d", prefix, entityType, entityID, chunk)
@@ -171,7 +171,6 @@ func (s *CounterService) scanBitmapForLikers(ctx context.Context, entityType str
 
 				timeKey := fmt.Sprintf("liker_time:%s:%d:%d", entityType, entityID, userID)
 				batchKeys = append(batchKeys, timeKey)
-				batchUserIDs = append(batchUserIDs, userID)
 				items = append(items, LikerItem{UserID: userID})
 
 				if len(items) >= limit+1 {

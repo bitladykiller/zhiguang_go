@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/coocood/freecache"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
+	"github.com/zhiguang/app/internal/cache"
 	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/pkg/config"
 )
@@ -43,7 +46,7 @@ func mustMarshal(t *testing.T, v interface{}) []byte {
 }
 
 // ============================================================================
-// clamp / max / boolToStr
+// clamp / boolToStr
 // ============================================================================
 
 func TestClamp(t *testing.T) {
@@ -58,18 +61,6 @@ func TestClamp(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("clamp(%d,%d,%d) = %d, want %d", tc.v, tc.lo, tc.hi, got, tc.want)
 		}
-	}
-}
-
-func TestMax(t *testing.T) {
-	if got := max(3, 5); got != 5 {
-		t.Errorf("max(3,5) = %d, want 5", got)
-	}
-	if got := max(5, 3); got != 5 {
-		t.Errorf("max(5,3) = %d, want 5", got)
-	}
-	if got := max(-1, 0); got != 0 {
-		t.Errorf("max(-1,0) = %d, want 0", got)
 	}
 }
 
@@ -288,13 +279,14 @@ func TestMapRowsToItems_WithCounter(t *testing.T) {
 }
 
 // ============================================================================
-// recordItemHotKey (nil logger should not panic)
+// recordItemHotKeys（零值 service 不得 panic）
 // ============================================================================
 
-func TestRecordItemHotKey_NilLogger(t *testing.T) {
+func TestRecordItemHotKeys_NilDeps(t *testing.T) {
 	svc := &KnowPostFeedService{}
-	// should not panic even with nil hotkey
-	svc.recordItemHotKey(context.Background(), "1")
+	// hotKey / redis / logger 均为 nil 时应静默返回而非 panic
+	svc.recordItemHotKeys(context.Background(), []FeedItemResponse{{ID: "1"}})
+	svc.recordItemHotKeys(context.Background(), nil)
 }
 
 // ============================================================================
@@ -449,7 +441,7 @@ func TestGetPublicFeedL1_Hit(t *testing.T) {
 	data := mustMarshal(t, resp)
 	svc.l1Public.Set([]byte("feed:test:key"), data, 60)
 
-	got := svc.getPublicFeedL1(context.Background(), "feed:test:key", 1, 10, nil)
+	got := svc.getPublicFeedL1(context.Background(), "feed:test:key", nil)
 	if got == nil {
 		t.Fatal("expected hit")
 	}
@@ -462,7 +454,7 @@ func TestGetPublicFeedL1_Miss(t *testing.T) {
 	svc := &KnowPostFeedService{
 		l1Public: &PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "p:"},
 	}
-	got := svc.getPublicFeedL1(context.Background(), "feed:test:nonexist", 1, 10, nil)
+	got := svc.getPublicFeedL1(context.Background(), "feed:test:nonexist", nil)
 	if got != nil {
 		t.Error("expected nil for cache miss")
 	}
@@ -586,7 +578,7 @@ func TestEnrichItems_CounterReturnsNil(t *testing.T) {
 func TestAssembleFromCache_NoIDs(t *testing.T) {
 	srv := miniredis.RunT(t)
 	svc := newTestFeedService(t, srv)
-	resp := svc.assembleFromCache(context.Background(), "feed:test:ids", "feed:test:hasMore", 1, 10, nil)
+	resp := svc.assembleFromCache(context.Background(), "feed:test:ids", "feed:test:hasMore", 1, 10)
 	if resp != nil {
 		t.Error("expected nil when no IDs in cache")
 	}
@@ -712,5 +704,256 @@ func TestGetPublicFeed_PartialCacheHit(t *testing.T) {
 	// 但我们验证不 panic，且正确 fallthrough
 	if err == nil {
 		t.Log("partial cache hit fell through to DB (expected to fail because repo is nil)")
+	}
+}
+
+// ============================================================================
+// 公共 Feed 的 L1 整页缓存不得携带用户维度状态
+// ============================================================================
+
+// stubCounterPerUser 按用户 ID 返回不同的点赞/收藏状态。
+type stubCounterPerUser struct{}
+
+func (s *stubCounterPerUser) GetCounts(_ context.Context, _, _ string, _ []string) (map[string]int32, error) {
+	return nil, nil
+}
+func (s *stubCounterPerUser) GetCountsBatch(_ context.Context, _ string, _, _ []string) (map[string]map[string]int32, error) {
+	return nil, nil
+}
+func (s *stubCounterPerUser) IsLiked(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterPerUser) IsFaved(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+
+// BatchIsLiked：用户 1 全部已赞，其余用户全部未赞。
+func (s *stubCounterPerUser) BatchIsLiked(_ context.Context, userID uint64, _ string, ids []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[id] = userID == 1
+	}
+	return out, nil
+}
+
+// BatchIsFaved：用户 1 全部已收藏，其余用户全部未收藏。
+func (s *stubCounterPerUser) BatchIsFaved(_ context.Context, userID uint64, _ string, ids []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[id] = userID == 1
+	}
+	return out, nil
+}
+func (s *stubCounterPerUser) Fav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterPerUser) Unfav(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterPerUser) Like(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterPerUser) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
+	return false, nil
+}
+func (s *stubCounterPerUser) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+	return nil, nil
+}
+func (s *stubCounterPerUser) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
+	return false, false, nil
+}
+
+// TestPublicFeedL1_DoesNotLeakUserStateAcrossUsers 回归测试：
+// 公共 Feed 的 L1 整页缓存键不含用户 ID，是全体用户共享的一份数据。
+// 历史缺陷：L2 组装路径把已叠加当前用户 Liked/Faved 的响应直接写进了这份共享缓存，
+// 后续命中 L1 的其他用户会读到前一个用户的点赞收藏状态。
+func TestPublicFeedL1_DoesNotLeakUserStateAcrossUsers(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestFeedService(t, srv)
+	svc.counter = &stubCounterPerUser{}
+
+	const idsKey = "feed:public:ids:test"
+	const hasMoreKey = idsKey + ":hasMore"
+	const localPageKey = "feed:public:10:1:v1:1"
+
+	srv.Lpush(idsKey, "100")
+	srv.Set("feed:item:100", `{"id":"100","title":"t"}`)
+	srv.Set(hasMoreKey, "0")
+
+	// 用户 1 走 L2 组装路径，顺带把整页写入共享的 L1。
+	userOne := uint64(1)
+	respOne := svc.getPublicFeedL2(context.Background(), idsKey, hasMoreKey, 1, 10, &userOne, localPageKey)
+	if respOne == nil || len(respOne.Items) != 1 {
+		t.Fatalf("user 1: unexpected response %+v", respOne)
+	}
+	if respOne.Items[0].Liked == nil || !*respOne.Items[0].Liked {
+		t.Fatal("user 1 should see Liked=true")
+	}
+
+	// 落盘到 L1 的必须是不含用户状态的公共视图。
+	raw, err := svc.l1Public.Get([]byte(localPageKey))
+	if err != nil {
+		t.Fatalf("expected page cached in L1: %v", err)
+	}
+	var cached FeedPageResponse
+	if err := json.Unmarshal(raw, &cached); err != nil {
+		t.Fatalf("unmarshal L1 payload: %v", err)
+	}
+	if cached.Items[0].Liked != nil || cached.Items[0].Faved != nil {
+		t.Errorf("L1 payload must not carry per-user state, got Liked=%v Faved=%v",
+			cached.Items[0].Liked, cached.Items[0].Faved)
+	}
+
+	// 用户 2 命中同一份 L1，必须看到属于自己的状态。
+	userTwo := uint64(2)
+	respTwo := svc.getPublicFeedL1(context.Background(), localPageKey, &userTwo)
+	if respTwo == nil || len(respTwo.Items) != 1 {
+		t.Fatalf("user 2: unexpected response %+v", respTwo)
+	}
+	if respTwo.Items[0].Liked == nil || *respTwo.Items[0].Liked {
+		t.Errorf("user 2 should see Liked=false, got %v", respTwo.Items[0].Liked)
+	}
+	if respTwo.Items[0].Faved == nil || *respTwo.Items[0].Faved {
+		t.Errorf("user 2 should see Faved=false, got %v", respTwo.Items[0].Faved)
+	}
+
+	// 匿名访问不应带任何用户状态。
+	respAnon := svc.getPublicFeedL1(context.Background(), localPageKey, nil)
+	if respAnon == nil || len(respAnon.Items) != 1 {
+		t.Fatalf("anonymous: unexpected response %+v", respAnon)
+	}
+	if respAnon.Items[0].Liked != nil || respAnon.Items[0].Faved != nil {
+		t.Error("anonymous request must not carry Liked/Faved")
+	}
+}
+
+// ============================================================================
+// recordItemHotKeys：批量热度探测与 TTL 延长
+// ============================================================================
+
+func newTestHotKeyDetector(rdb *redis.Client) *cache.HotKeyDetector {
+	return cache.NewHotKeyDetector(&config.HotKeyConfig{
+		BucketSizeSeconds:    6,
+		BucketCount:          10,
+		FlushIntervalSeconds: 6,
+		StatTTLSeconds:       120,
+		LevelLow:             5,
+		LevelMedium:          20,
+		LevelHigh:            50,
+		ExtendLowSeconds:     20,
+		ExtendMediumSeconds:  60,
+		ExtendHighSeconds:    120,
+		HotMarkTTLSeconds:    60,
+	}, rdb, zap.NewNop())
+}
+
+// TestRecordItemHotKeys_ExtendsOnlyHotItems 验证只有热点条目的碎片缓存 TTL 被延长。
+//
+// 冷条目必须完全跳过 TTL 延长：这正是把逐条 Redis 往返压缩掉的关键——
+// 一页里通常只有极少数是热点，为冷条目发起的 EXPIRE 全是无效开销。
+func TestRecordItemHotKeys_ExtendsOnlyHotItems(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestFeedService(t, srv)
+	svc.hotKey = newTestHotKeyDetector(svc.redis)
+
+	ctx := context.Background()
+
+	// item 100 被标记为热点，item 200 是冷键
+	srv.Set("hotkey:active:knowpost:100", "1")
+	srv.Set("feed:item:100", `{"id":"100"}`)
+	srv.Set("feed:item:200", `{"id":"200"}`)
+	srv.SetTTL("feed:item:100", 30*time.Second)
+	srv.SetTTL("feed:item:200", 30*time.Second)
+
+	svc.recordItemHotKeys(ctx, []FeedItemResponse{{ID: "100"}, {ID: "200"}})
+
+	// extendBase 默认 60，MEDIUM 追加 60 → 目标 120s，应从 30s 被抬高
+	if got := srv.TTL("feed:item:100"); got != 120*time.Second {
+		t.Errorf("hot item TTL = %v, want 120s", got)
+	}
+	// 冷键的 TTL 必须原样不动
+	if got := srv.TTL("feed:item:200"); got != 30*time.Second {
+		t.Errorf("cold item TTL = %v, want 30s (untouched)", got)
+	}
+}
+
+// TestRecordItemHotKeys_AllColdSkipsRedis 验证整页无热点时不产生任何 Redis 写入。
+func TestRecordItemHotKeys_AllColdSkipsRedis(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestFeedService(t, srv)
+	svc.hotKey = newTestHotKeyDetector(svc.redis)
+
+	srv.Set("feed:item:1", `{"id":"1"}`)
+	srv.SetTTL("feed:item:1", 10*time.Second)
+
+	svc.recordItemHotKeys(context.Background(), []FeedItemResponse{{ID: "1"}, {ID: "2"}, {ID: "3"}})
+
+	if got := srv.TTL("feed:item:1"); got != 10*time.Second {
+		t.Errorf("cold item TTL = %v, want 10s (untouched)", got)
+	}
+}
+
+// TestRecordItemHotKeys_NoHotKeyDetector 验证未装配探测器时直接返回。
+func TestRecordItemHotKeys_NoHotKeyDetector(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestFeedService(t, srv)
+
+	srv.Set("feed:item:1", `{"id":"1"}`)
+	srv.SetTTL("feed:item:1", 10*time.Second)
+
+	svc.recordItemHotKeys(context.Background(), []FeedItemResponse{{ID: "1"}})
+
+	if got := srv.TTL("feed:item:1"); got != 10*time.Second {
+		t.Errorf("TTL = %v, want 10s (untouched when detector is absent)", got)
+	}
+}
+
+// ============================================================================
+// SetOrWarn：L1 写入失败不得被静默吞掉
+// ============================================================================
+
+func TestPrefixCache_SetOrWarn_LogsOversizedEntry(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	logger := zap.New(core)
+
+	// freecache 最小容量 512KB，单条上限为容量的 1/1024 = 512 字节。
+	pc := &PrefixCache{Cache: freecache.NewCache(512 * 1024), Prefix: "d:"}
+
+	pc.SetOrWarn(logger, []byte("small"), []byte("ok"), 60)
+	if logs.Len() != 0 {
+		t.Fatalf("small entry should not warn, got %d logs", logs.Len())
+	}
+
+	pc.SetOrWarn(logger, []byte("big"), make([]byte, 4096), 60)
+	if logs.Len() != 1 {
+		t.Fatalf("oversized entry should warn once, got %d logs", logs.Len())
+	}
+	if msg := logs.All()[0].Message; msg != "l1 cache set failed" {
+		t.Errorf("log message = %q", msg)
+	}
+
+	// logger 为 nil 时不得 panic
+	pc.SetOrWarn(nil, []byte("big2"), make([]byte, 4096), 60)
+}
+
+// TestDetailCacheTTLValues_FromConfig 覆盖 cfg 非 nil 分支。
+func TestDetailCacheTTLValues_FromConfig(t *testing.T) {
+	svc := &KnowPostService{
+		cfg: &config.KnowPostConfig{
+			DetailCache: config.KnowPostDetailCacheConfig{
+				L1TTLSeconds: 11, NullTTLBase: 22, NullJitter: 33,
+				L2TTLBase: 44, L2Jitter: 55,
+				TTLLow: 66, TTLMedium: 77, TTLHigh: 88,
+			},
+		},
+	}
+	got := svc.detailCacheTTLValues()
+	want := detailCacheParams{
+		l1TTL: 11, nullBase: 22, nullJitter: 33,
+		l2Base: 44, l2Jitter: 55,
+		ttlLow: 66, ttlMedium: 77, ttlHigh: 88,
+	}
+	if got != want {
+		t.Errorf("detailCacheTTLValues() = %+v, want %+v", got, want)
 	}
 }
