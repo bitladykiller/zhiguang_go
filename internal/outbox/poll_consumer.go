@@ -27,12 +27,12 @@ import (
 //     若删除失败，下次轮询会再次读取并处理同一行（至少一次语义，需要业务幂等）。
 //   - 每次轮询都是独立事务，不跨行持有锁。
 type PollConsumer struct {
-	db          *sqlx.DB
-	topic       string
-	handler     RowHandler
-	logger      *zap.Logger
-	pollDelay   time.Duration
-	batchSize   int
+	db        *sqlx.DB
+	topic     string
+	handler   RowHandler
+	logger    *zap.Logger
+	pollDelay time.Duration
+	batchSize int
 }
 
 // NewPollConsumer 创建 outbox 轮询消费者实例。

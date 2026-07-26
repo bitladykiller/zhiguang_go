@@ -5,21 +5,56 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"strconv"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/jsonutil"
-	"go.uber.org/zap"
 )
 
-func (s *KnowPostService) detailCacheTTLValues() (l1TTL, nullBase, nullJitter, l2Base, l2Jitter, ttlLow, ttlMedium, ttlHigh int) {
+// detailCacheParams 是知文详情缓存的运行时参数快照。
+//
+// WHY 用具名结构体而非多返回值：
+//
+//	此前该函数返回 8 个同类型的匿名 int，调用方只能靠位置取值，
+//	写出 `_, _, _, _, _, _, ttlMedium, _ := s.detailCacheTTLValues()` 这样的代码——
+//	读者无法在不跳转函数定义的情况下判断取到的是哪个参数，
+//	而且一旦调整返回顺序，所有调用方都会**静默**取错值（类型相同，编译器无法报错）。
+//	改为结构体后取值即自解释，增删字段也不会破坏既有调用点。
+type detailCacheParams struct {
+	l1TTL      int // L1（freecache）TTL，秒
+	nullBase   int // 空值缓存 TTL 基准，秒
+	nullJitter int // 空值缓存 TTL 抖动上限，秒
+	l2Base     int // L2（Redis）TTL 基准，秒
+	l2Jitter   int // L2（Redis）TTL 抖动上限，秒
+	ttlLow     int // LOW 热度对应的 TTL，秒
+	ttlMedium  int // MEDIUM 热度对应的 TTL，秒
+	ttlHigh    int // HIGH 热度对应的 TTL，秒
+}
+
+// detailCacheTTLValues 返回详情缓存参数。
+// cfg 为 nil 时回退到与 ApplyDefaults 一致的默认值，保证零配置单测可跑。
+func (s *KnowPostService) detailCacheTTLValues() detailCacheParams {
 	if s.cfg != nil {
 		dc := s.cfg.DetailCache
-		return dc.L1TTLSeconds, dc.NullTTLBase, dc.NullJitter, dc.L2TTLBase, dc.L2Jitter, dc.TTLLow, dc.TTLMedium, dc.TTLHigh
+		return detailCacheParams{
+			l1TTL:      dc.L1TTLSeconds,
+			nullBase:   dc.NullTTLBase,
+			nullJitter: dc.NullJitter,
+			l2Base:     dc.L2TTLBase,
+			l2Jitter:   dc.L2Jitter,
+			ttlLow:     dc.TTLLow,
+			ttlMedium:  dc.TTLMedium,
+			ttlHigh:    dc.TTLHigh,
+		}
 	}
-	return 60, 30, 31, 60, 31, 30, 60, 300
+	return detailCacheParams{
+		l1TTL: 60, nullBase: 30, nullJitter: 31,
+		l2Base: 60, l2Jitter: 31,
+		ttlLow: 30, ttlMedium: 60, ttlHigh: 300,
+	}
 }
 
 // --- [详情读取链路] --- //
@@ -99,7 +134,7 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 
 	pageKey := s.detailCacheKey(ctx, id)
 
-	l1TTL, _, _, _, _, _, _, _ := s.detailCacheTTLValues()
+	l1TTL := s.detailCacheTTLValues().l1TTL
 
 	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {
 		if s.hotKey != nil {
@@ -116,7 +151,7 @@ func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserI
 		if cached == "NULL" {
 			return nil, errcode.ErrNotFound.WithMsg("content not found")
 		}
-		s.l1Cache.Set([]byte(pageKey), []byte(cached), l1TTL)
+		s.l1Cache.SetOrWarn(s.logger, []byte(pageKey), []byte(cached), l1TTL)
 		if s.hotKey != nil {
 			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 		}
@@ -193,7 +228,7 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 	lockKey := "lock:" + pageKey
 	return cacheReadThrough(ctx, s.redis, lockKey,
 		func(ctx context.Context) (*KnowPostDetailResponse, bool, error) {
-			l1TTL, _, _, _, _, _, _, _ := s.detailCacheTTLValues()
+			l1TTL := s.detailCacheTTLValues().l1TTL
 			cached, _ := s.redis.Get(ctx, pageKey).Result()
 			if cached == "NULL" {
 				return nil, false, errcode.ErrNotFound.WithMsg("content not found")
@@ -201,24 +236,25 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			if cached != "" {
 				resp, parseErr := s.parseDetail([]byte(cached))
 				if parseErr == nil {
-					s.l1Cache.Set([]byte(pageKey), []byte(cached), l1TTL)
+					s.l1Cache.SetOrWarn(s.logger, []byte(pageKey), []byte(cached), l1TTL)
 					return s.enrichDetail(ctx, resp, currentUserID, true), true, nil
 				}
 			}
 			return nil, false, nil
 		},
 		func(ctx context.Context) (*KnowPostDetailResponse, error) {
-			l1TTL, nullBase, nullJitter, l2Base, l2Jitter, _, _, _ := s.detailCacheTTLValues()
+			p := s.detailCacheTTLValues()
+			nullTTL := func() time.Duration {
+				return time.Duration(p.nullBase+jitterN(p.nullJitter)) * time.Second
+			}
 			if s.repo == nil {
-				ttl := time.Duration(nullBase+rand.Intn(nullJitter)) * time.Second
-				s.redis.Set(ctx, pageKey, "NULL", ttl)
+				s.redis.Set(ctx, pageKey, "NULL", nullTTL())
 				return nil, errcode.ErrNotFound.WithMsg("content not found")
 			}
 			resp, err := s.queryDetailFromDB(ctx, id, currentUserID)
 			if err != nil {
 				if errors.Is(err, errcode.ErrNotFound) {
-					ttl := time.Duration(nullBase+rand.Intn(nullJitter)) * time.Second
-					s.redis.Set(ctx, pageKey, "NULL", ttl)
+					s.redis.Set(ctx, pageKey, "NULL", nullTTL())
 				}
 				return nil, err
 			}
@@ -244,15 +280,14 @@ func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pag
 			if err != nil {
 				return s.enrichDetail(ctx, resp, currentUserID, false), nil
 			}
-			baseTTL := l2Base + rand.Intn(l2Jitter)
-			hotKeyID := fmt.Sprintf("knowpost:%s", idStr)
+			baseTTL := p.l2Base + jitterN(p.l2Jitter)
+			hotKeyID := "knowpost:" + idStr
 			targetTTL := baseTTL
 			if s.hotKey != nil {
 				targetTTL = s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 			}
 			s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
-			l1CacheTtl := l1TTL
-			s.l1Cache.Set([]byte(pageKey), jsonBytes, l1CacheTtl)
+			s.l1Cache.SetOrWarn(s.logger, []byte(pageKey), jsonBytes, p.l1TTL)
 			if s.hotKey != nil {
 				s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 			}

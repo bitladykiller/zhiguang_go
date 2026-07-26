@@ -9,10 +9,10 @@
 //   - 获取对象元数据（ETag、文件大小），用于确认上传完成后的文件完整性校验。
 //
 // 使用流程：
-//   1. 客户端请求 POST /storage/presign
-//   2. 服务端返回预签名 PUT URL + objectKey + publicURL
-//   3. 客户端用预签名 URL 直接 PUT 文件到 OSS
-//   4. 客户端调用 POST /knowposts/:id/content 传入 objectKey 完成业务关联
+//  1. 客户端请求 POST /storage/presign
+//  2. 服务端返回预签名 PUT URL + objectKey + publicURL
+//  3. 客户端用预签名 URL 直接 PUT 文件到 OSS
+//  4. 客户端调用 POST /knowposts/:id/content 传入 objectKey 完成业务关联
 package storage
 
 import "time"

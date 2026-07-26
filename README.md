@@ -200,11 +200,14 @@ env GOCACHE=$(pwd)/.gocache go run ./cmd/server -config config/config-local.yaml
 ### 常用命令
 
 ```bash
-make test       # 运行全部测试
+make test       # 运行全部测试（含覆盖率）
+make test-short # 快速测试，跳过依赖外部服务的用例
 make lint       # 运行 golangci-lint
 make dev-logs   # 跟踪 Docker Compose 日志
 make dev-down   # 停止全部 Docker 服务
 ```
+
+**关于测试对外部依赖的要求**：绝大多数用例使用 `miniredis` / `go-sqlmock` 就地起桩，无需外部服务。少数限流集成用例（`pkg/middleware/tests`）需要真实 Redis 的 `TIME` 与 ZSET 语义，会连接 `localhost:6379`；连不上时这些用例**自动 skip 而非失败**，因此本机没起 Redis 也能跑通 `make test`。若要完整验证限流行为，先 `docker compose up -d redis`。
 
 ### Docker 构建说明
 
@@ -268,7 +271,16 @@ docker compose build
 
 ## API 路由速查表
 
-所有业务路由均挂载在 `/api/v1` 前缀下。全局中间件链：Trace → Logger → ErrorLog → CORS → Recovery → OptionalAuth（可选鉴权，不拒绝未登录请求）。
+所有业务路由均挂载在 `/api/v1` 前缀下。全局中间件链（按执行顺序）：
+
+`Recovery → Trace → Logger → ErrorLog → Metrics → RateLimit → CORS → OptionalAuth`
+
+其中：
+
+- **Recovery 排在首位**。Gin 中间件按注册顺序形成调用链，`gin.Recovery()` 只能兜住排在它**之后**的环节。此前它被放在链尾，Trace / Logger / Metrics / RateLimit / CORS 任一处 panic 都不会被捕获。
+- **Metrics** 仅在 `prometheus.enabled=true` 时挂载。
+- **RateLimit** 仅在装配了 `handlers.RateLimiter` 时挂载。
+- **OptionalAuth** 是可选鉴权，不拒绝未登录请求；真正受保护的接口在各自 handler 内显式校验。
 
 ### Auth 鉴权
 
@@ -426,22 +438,43 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
 
 ### 热 Key 检测
 
-知文缓存系统（`knowpost` 模块）采用两级缓存 + 热 Key 自动延长机制：
+知文缓存系统（`knowpost` 模块）采用三级缓存 + 热 Key 自动延长机制：
 
-| 缓存层级 | 实现 | 默认 TTL |
+| 缓存层级 | 实现 | 默认 TTL（可在 `knowpost.feed_cache` / `knowpost.detail_cache` 调整） |
 |---------|------|---------|
-| L1 | freecache（进程内，约 50ns 响应） | 取决于 HotKeyDetector |
-| L2 | Redis | 15s（公共）/ 10s（个人） |
+| L1 | freecache（进程内，约 50ns 响应） | 公共 Feed 15s，我的 Feed 30s，详情 60s |
+| L2 | Redis（Feed 为碎片缓存，详情为整页） | ID 列表 60s+jitter，条目碎片 60s+jitter，详情 60s+jitter |
+| L3 | MySQL（权威数据源） | — |
+
+**L1 公共 Feed 缓存只存「公共视图」**：`feed:public:{size}:{page}:v{layout}:{version}` 这个键不含用户 ID，是全体用户共享的一份数据。因此缓存中**不得**包含 `liked` / `faved` 这类用户维度字段——它们由 `withUserState` 在每次读出后即时叠加。若把某个用户的状态写进共享缓存，后续命中该键的其他用户就会读到别人的点赞收藏状态。
 
 **HotKeyDetector 工作原理**（`internal/cache/hotkey.go`）：
 
-- 每个请求计数写入本地滑动窗口计数器（进程内 map）
-- 每隔一定时间将本地计数汇总到 Redis Hash（键：`hotkey:counts:{window}`）
-- Redis 中设置三级阈值：
-  - **Threshold 1** (默认 50)：热 Key，延长缓存 TTL 到 5 分钟
-  - **Threshold 2** (默认 200)：高热度 Key，延长缓存 TTL 到 10 分钟
-  - **Threshold 3** (默认 500)：极高热度 Key，延长缓存 TTL 到 30 分钟
-- 热点衰减后自动恢复默认 TTL，无需人工干预
+- 每次访问只递增**进程内**计数（零 Redis IO），按 `bucket_size_seconds`（默认 6s）分桶。
+- 每 `flush_interval_seconds`（默认 6s）批量汇总到 Redis Hash `hotwin:{cacheKey}`，field 为桶编号、value 为该桶计数，实现跨实例聚合。
+- 定级时对最近 `bucket_count`（默认 10，即 60s 窗口）个桶求和，按三级阈值判定，并把达标的键写入标记 `hotkey:active:{cacheKey}`（TTL `hot_mark_ttl_seconds`）：
+
+  | 等级 | 阈值配置 | TTL 增量配置 |
+  |------|---------|-------------|
+  | LOW | `level_low` | `extend_low_seconds` |
+  | MEDIUM | `level_medium` | `extend_medium_seconds` |
+  | HIGH | `level_high` | `extend_high_seconds` |
+
+  注意增量是**在基准 TTL 之上相加**（`baseTTL + extendXxxSeconds`），不是「延长到某个固定值」。
+
+- TTL 延长统一走 Lua 脚本，语义为**只增不减**（仅当键存在且当前 TTL 小于目标值才 EXPIRE），多实例并发延长不会互相把 TTL 改短。
+- 热度等级缓存（`levels`）**按窗口整体重建**而非累加：每轮 flush 用本轮观测结果整体替换，本轮无流量则清空。这样既让降温的键自动退出热点集合，也使其规模始终受 `max_local_keys` 约束，不会随内容总量无上界增长。
+- 列表场景使用 `TtlForPublicBatch` 批量定级：本地等级缓存未命中的键合并为**一次** MGET，TTL 延长合并为**一次** EVAL，整页无热点时零 Redis 往返。避免逐条 `EXISTS + EVAL` 在 L1 命中路径上产生上百次串行往返。
+
+### 限流（`pkg/middleware/ratelimit.go`）
+
+按客户端 IP 的 Redis ZSET 滑动窗口限流，配置见 `rate_limit`：
+
+- ZSET 的 **score** 取自 Redis 服务端 `TIME`，而非应用进程时钟——多实例部署时进程时钟有偏差，用本地时间会让窗口边界抖动。
+- ZSET 的 **member 逐请求唯一**（进程随机前缀 + 进程内原子自增）。这一点是限流能否成立的关键：`ZADD` 对相同 member 只更新 score 而不新增元素，若把时间戳同时当作 score 和 member，同一毫秒内的并发请求会互相覆盖，`ZCARD` 永远只记 1，突发流量可以完全绕过限流。
+- 响应头 `X-RateLimit-Limit` / `X-RateLimit-Remaining` 反映真实余量；被拒时额外返回 `Retry-After`。
+- 超限后若 `ban_duration_ms > 0`，该 IP 进入封禁名单 `ratelimit:ban:{ip}`。
+- Redis 故障时 **fail-open**（放行并告警），避免限流组件自身的可用性问题演变成整站不可用。
 
 ## 面试版项目细节扩写
 
@@ -470,6 +503,7 @@ flowchart TB
     A[客户端 / 前端] --> B[Nginx 反向代理]
     B --> C[Go HTTP API]
     C --> D[全局中间件]
+    D --> D0[Recovery 兜底]
     D --> D1[Trace ID]
     D --> D2[请求日志]
     D --> D3[限流]

@@ -7,8 +7,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/zhiguang/app/pkg/errcode"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/errcode"
 )
 
 func TestErrorLogMiddleware_NoErrors(t *testing.T) {

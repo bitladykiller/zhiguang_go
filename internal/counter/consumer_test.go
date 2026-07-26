@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
+
 	"github.com/zhiguang/app/pkg/testutil"
 )
 
@@ -242,7 +243,7 @@ func TestNextBatchDeadline_WithBatch(t *testing.T) {
 // AggregationConsumer 核心逻辑测试（使用 mock reader）
 // ============================================================================
 
-	func newTestSvc(rdb *redis.Client) *CounterService {
+func newTestSvc(rdb *redis.Client) *CounterService {
 	return NewCounterService(rdb, nil, nil, nil, "", nil, nil, nil)
 }
 
@@ -483,7 +484,7 @@ func TestTakeExpiredBatch_ClearsEmptyBatches(t *testing.T) {
 		flushInterval: time.Minute,
 		batches:       make(map[int]*counterBatch),
 	}
-	consumer.batches[0] = newCounterBatch(10)                                 // 空
+	consumer.batches[0] = newCounterBatch(10)                                              // 空
 	consumer.batches[1] = &counterBatch{partition: -1, messages: make([]kafka.Message, 0)} // 空
 
 	batch := consumer.takeExpiredBatch(context.Background())
@@ -537,11 +538,11 @@ func TestSkipMalformedMessage(t *testing.T) {
 	svc := newTestSvc(rdb)
 	commit := &stubCommitFn{}
 	consumer := &AggregationConsumer{
-		service:   svc,
-		commitFn:  commit.commit,
-		groupID:   "test-group",
-		topic:     "test-topic",
-		batches:   make(map[int]*counterBatch),
+		service:  svc,
+		commitFn: commit.commit,
+		groupID:  "test-group",
+		topic:    "test-topic",
+		batches:  make(map[int]*counterBatch),
 	}
 
 	msg := makeMalformedMessage(1, 5)

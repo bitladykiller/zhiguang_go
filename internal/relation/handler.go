@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
@@ -80,7 +81,8 @@ func (h *RelationHandler) Follow(c *gin.Context) {
 //
 // 请求: {"to_user_id": 12345}
 // 响应: 200 {"code": 0, "data": {"success": true, "changed": true}}
-//   changed=true 表示取关成功；changed=false 表示已经取消关注。
+//
+//	changed=true 表示取关成功；changed=false 表示已经取消关注。
 func (h *RelationHandler) Unfollow(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {

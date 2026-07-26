@@ -68,12 +68,12 @@ type FailedMessageRecorder interface {
 //	consumer.SetFailedMessageRecorder(recorder)
 //	go consumer.Start(ctx)
 type Consumer struct {
-	reader             *kafka.Reader
-	handler            RowHandler
-	logger             *zap.Logger
-	failureRecorder    FailedMessageRecorder
-	maxRetries         int
-	retryDelay         time.Duration
+	reader          *kafka.Reader
+	handler         RowHandler
+	logger          *zap.Logger
+	failureRecorder FailedMessageRecorder
+	maxRetries      int
+	retryDelay      time.Duration
 }
 
 // NewConsumer 创建 outbox 消费者实例。

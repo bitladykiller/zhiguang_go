@@ -19,10 +19,11 @@ import (
 	"github.com/withlin/canal-go/client"
 	"go.uber.org/zap"
 
+	pbe "github.com/withlin/canal-go/protocol/entry"
+
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/contextutil"
-	pbe "github.com/withlin/canal-go/protocol/entry"
 )
 
 const (
@@ -304,4 +305,3 @@ func rollbackOrPanic(connector client.CanalConnector, batchID int64, logger *zap
 		panic(fmt.Sprintf("canal rollback batch %d failed: %v", batchID, err))
 	}
 }
-

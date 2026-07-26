@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/config"
 )
 
 // ============================================================================

@@ -18,8 +18,9 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
-	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/config"
 )
 
 // NewDB 根据传入的 DatabaseConfig 创建带连接池配置的 sqlx 数据库连接。
@@ -81,10 +82,10 @@ func NewDB(cfg *config.DatabaseConfig, logger *zap.Logger) (*sqlx.DB, error) {
 // 函数调用说明：
 //   - redis.NewClient(&redis.Options{...}):
 //     go-redis 库的客户端构造函数。Options 中的主要字段：
-//     - Addr: Redis 地址（host:port 格式），由 cfg.Addr() 拼接
-//     - Password: 认证密码（无密码时为空字符串）
-//     - DB: 数据库编号（0-15），不同业务可以隔离到不同 db
-//     - PoolSize: 连接池大小，默认 10/CPU
+//   - Addr: Redis 地址（host:port 格式），由 cfg.Addr() 拼接
+//   - Password: 认证密码（无密码时为空字符串）
+//   - DB: 数据库编号（0-15），不同业务可以隔离到不同 db
+//   - PoolSize: 连接池大小，默认 10/CPU
 //     注意：NewClient 不会立即连接 Redis，而是在首次操作时懒加载建立连接。
 //
 // 超时配置：

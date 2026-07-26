@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jmoiron/sqlx"
+
 	"github.com/zhiguang/app/pkg/errcode"
 )
 

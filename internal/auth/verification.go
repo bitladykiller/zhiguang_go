@@ -6,9 +6,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/redislock"
-	"go.uber.org/zap"
 )
 
 // 验证码相关 Redis 键前缀。
@@ -128,7 +129,7 @@ func (s *VerificationService) SendCode(ctx context.Context, scene VerificationSc
 	if err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("发送验证码: 获取日计数: %w", err)
 	}
-		if dailyCount >= s.config.DailyLimit {
+	if dailyCount >= s.config.DailyLimit {
 		return nil, fmt.Errorf("daily limit exceeded")
 	}
 

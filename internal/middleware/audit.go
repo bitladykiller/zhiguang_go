@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"github.com/gin-gonic/gin"
+
 	"github.com/zhiguang/app/pkg/audit"
 	pkgmw "github.com/zhiguang/app/pkg/middleware"
 )

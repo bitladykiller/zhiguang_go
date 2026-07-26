@@ -518,7 +518,7 @@ func TestRagQueryService_ConcurrentQueries(t *testing.T) {
 
 func TestDefaultTimeout_ZeroMs(t *testing.T) {
 	svc, err := NewKnowPostDescriptionService(&config.LLMConfig{
-		DeepSeek: config.DeepSeekConfig{BaseURL: "http://localhost:1"},
+		DeepSeek:  config.DeepSeekConfig{BaseURL: "http://localhost:1"},
 		TimeoutMs: 0,
 	}, nil)
 	if err != nil {
@@ -533,7 +533,7 @@ func TestDefaultTimeout_ZeroMs(t *testing.T) {
 
 func TestDefaultTimeout_PositiveMs(t *testing.T) {
 	svc, err := NewKnowPostDescriptionService(&config.LLMConfig{
-		DeepSeek: config.DeepSeekConfig{BaseURL: "http://localhost:1"},
+		DeepSeek:  config.DeepSeekConfig{BaseURL: "http://localhost:1"},
 		TimeoutMs: 100,
 	}, nil)
 	if err != nil {

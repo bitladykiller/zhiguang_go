@@ -14,14 +14,14 @@ import (
 
 // stubService 实现 RelationServiceInterface，用于 handler 测试。
 type stubService struct {
-	followFn           func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
-	unfollowFn         func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
-	followingFn        func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
-	followersFn        func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
-	followingCursorFn  func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
-	followersCursorFn  func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
-	relationStatusFn   func(ctx context.Context, fromUserID, toUserID uint64) (string, error)
-	isFollowingFn      func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
+	followFn          func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
+	unfollowFn        func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
+	followingFn       func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
+	followersFn       func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
+	followingCursorFn func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	followersCursorFn func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	relationStatusFn  func(ctx context.Context, fromUserID, toUserID uint64) (string, error)
+	isFollowingFn     func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
 }
 
 func (s *stubService) Follow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {

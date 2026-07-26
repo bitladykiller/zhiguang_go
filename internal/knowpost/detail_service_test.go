@@ -11,8 +11,9 @@ import (
 	"github.com/coocood/freecache"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
-	"github.com/zhiguang/app/internal/cache"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/internal/cache"
 )
 
 // ============================================================================

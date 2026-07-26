@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
@@ -41,7 +42,8 @@ func NewStorageHandler(svc StorageServiceInterface) *StorageHandler {
 //   - POST /storage/presign：生成供客户端直传 OSS 的预签名 URL
 //
 // 说明：
-//   所有存储接口都需要 JWT 登录认证。
+//
+//	所有存储接口都需要 JWT 登录认证。
 func (h *StorageHandler) RegisterRoutes(r *gin.RouterGroup) {
 	st := r.Group("/storage")
 	{

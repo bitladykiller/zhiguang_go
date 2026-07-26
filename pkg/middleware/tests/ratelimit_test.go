@@ -3,14 +3,16 @@ package middleware_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/middleware"
-	"go.uber.org/zap"
 )
 
 func TestRateLimiter_Disabled(t *testing.T) {
@@ -289,5 +291,85 @@ func TestRateLimiter_XRateLimitRemainingHeader(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+// TestRateLimiter_SameMillisecondBurst_IsCounted 回归测试：同一毫秒内的突发请求必须逐条计数。
+//
+// 历史缺陷：限流 Lua 把毫秒时间戳同时当作 ZSET 的 score 和 member，
+// ZADD 对相同 member 只更新 score 而不新增元素，
+// 于是同一毫秒内的 N 个请求在 ZCARD 中只算 1 次，突发流量可以整体绕过限流。
+// 该用例用一个紧凑循环制造同毫秒突发，断言放行数严格等于 PerIP。
+func TestRateLimiter_SameMillisecondBurst_IsCounted(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	defer rdb.Close()
+	if err := rdb.Ping(t.Context()).Err(); err != nil {
+		t.Skip("redis not available, skipping integration test")
+	}
+
+	const perIP = 5
+	const burst = 40
+
+	cfg := config.RateLimitConfig{
+		Enabled: true, PerIP: perIP, WindowMs: 60000, BanDurationMs: 0,
+	}
+	rl := middleware.NewRateLimiter(rdb, cfg, zap.NewNop())
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(rl.Middleware())
+	r.GET("/test", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	rdb.Del(t.Context(), "ratelimit:127.0.0.9", "ratelimit:ban:127.0.0.9")
+
+	allowed := 0
+	for i := 0; i < burst; i++ {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.RemoteAddr = "127.0.0.9:12345"
+		r.ServeHTTP(w, req)
+		switch w.Code {
+		case http.StatusOK:
+			allowed++
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("request %d: unexpected status %d", i+1, w.Code)
+		}
+	}
+
+	if allowed != perIP {
+		t.Fatalf("burst of %d requests: allowed %d, want exactly %d", burst, allowed, perIP)
+	}
+}
+
+// TestRateLimiter_RemainingHeader_Decreases 断言剩余配额头反映真实余量而非常量。
+func TestRateLimiter_RemainingHeader_Decreases(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	defer rdb.Close()
+	if err := rdb.Ping(t.Context()).Err(); err != nil {
+		t.Skip("redis not available, skipping integration test")
+	}
+
+	const perIP = 3
+	cfg := config.RateLimitConfig{
+		Enabled: true, PerIP: perIP, WindowMs: 60000, BanDurationMs: 0,
+	}
+	rl := middleware.NewRateLimiter(rdb, cfg, zap.NewNop())
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(rl.Middleware())
+	r.GET("/test", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	rdb.Del(t.Context(), "ratelimit:127.0.0.10", "ratelimit:ban:127.0.0.10")
+
+	for i := 0; i < perIP; i++ {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.RemoteAddr = "127.0.0.10:12345"
+		r.ServeHTTP(w, req)
+
+		want := strconv.Itoa(perIP - i - 1)
+		if got := w.Header().Get("X-RateLimit-Remaining"); got != want {
+			t.Errorf("request %d: X-RateLimit-Remaining = %q, want %q", i+1, got, want)
+		}
 	}
 }

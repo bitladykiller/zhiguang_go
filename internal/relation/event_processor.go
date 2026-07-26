@@ -43,8 +43,9 @@ type EventProcessor struct {
 // 返回：*EventProcessor，当 redisClient 为 nil 时返回 nil（避免后续调用出现 panic）。
 //
 // 设计决策：
-//   返回 nil 而非 panic，使得调用方在事件处理器未初始化时也能安全地消费消息
-//   （配置不完整时的优雅降级）。
+//
+//	返回 nil 而非 panic，使得调用方在事件处理器未初始化时也能安全地消费消息
+//	（配置不完整时的优雅降级）。
 func NewEventProcessor(redisClient *redis.Client, counter UserCounterUpdater, logger *zap.Logger) *EventProcessor {
 	if redisClient == nil {
 		return nil

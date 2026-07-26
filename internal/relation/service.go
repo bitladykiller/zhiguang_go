@@ -10,8 +10,9 @@ import (
 	"github.com/coocood/freecache"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
-	"github.com/zhiguang/app/pkg/config"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/config"
 )
 
 // TOKEN_BUCKET_LUA 实现一个通用令牌桶限流器。
@@ -42,16 +43,16 @@ const bigVThreshold = 500
 
 // RelationService 实现带多级缓存的关注/取关能力。
 type RelationService struct {
-	db              *sqlx.DB
-	redis           *redis.Client
-	repo            Repo
-	l1              *freecache.Cache
-	idGen           IDGenerator
-	logger          *zap.Logger
-	bigVThreshold   int64
-	tokenBucketCfg  *config.RelationTokenBucketConfig
-	cfg             *config.RelationConfig
-	auditLog        AuditLogger
+	db             *sqlx.DB
+	redis          *redis.Client
+	repo           Repo
+	l1             *freecache.Cache
+	idGen          IDGenerator
+	logger         *zap.Logger
+	bigVThreshold  int64
+	tokenBucketCfg *config.RelationTokenBucketConfig
+	cfg            *config.RelationConfig
+	auditLog       AuditLogger
 }
 
 // AuditLogger 定义审计日志接口。
@@ -81,12 +82,12 @@ func NewRelationService(db *sqlx.DB, rdb *redis.Client, cacheSize int, idGen IDG
 	}
 
 	return &RelationService{
-		db:     db,
-		redis:  rdb,
-		repo:   NewRelationRepository(db),
-		l1:     freecache.NewCache(cacheSize),
-		idGen:  idGen,
-		logger: logger,
+		db:             db,
+		redis:          rdb,
+		repo:           NewRelationRepository(db),
+		l1:             freecache.NewCache(cacheSize),
+		idGen:          idGen,
+		logger:         logger,
 		tokenBucketCfg: tokenBucketCfg,
 		bigVThreshold:  bigVThresh,
 		cfg:            cfg,

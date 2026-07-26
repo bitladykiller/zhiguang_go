@@ -16,18 +16,19 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
 )
 
 type mockAuthService struct {
-	sendCodeFn         func(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, *errcode.AppError)
-	registerFn         func(ctx context.Context, req *RegisterRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError)
-	loginFn            func(ctx context.Context, req *LoginRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError)
-	refreshFn          func(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, *errcode.AppError)
-	logoutFn           func(ctx context.Context, req *TokenRefreshRequest)
-	resetPasswordFn    func(ctx context.Context, req *PasswordResetRequest) *errcode.AppError
-	currentUserFn      func(ctx context.Context, userID uint64) (AuthUserResponse, *errcode.AppError)
+	sendCodeFn      func(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, *errcode.AppError)
+	registerFn      func(ctx context.Context, req *RegisterRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError)
+	loginFn         func(ctx context.Context, req *LoginRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError)
+	refreshFn       func(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, *errcode.AppError)
+	logoutFn        func(ctx context.Context, req *TokenRefreshRequest)
+	resetPasswordFn func(ctx context.Context, req *PasswordResetRequest) *errcode.AppError
+	currentUserFn   func(ctx context.Context, userID uint64) (AuthUserResponse, *errcode.AppError)
 }
 
 func (m *mockAuthService) SendCode(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, *errcode.AppError) {

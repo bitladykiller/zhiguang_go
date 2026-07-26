@@ -6,9 +6,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
+
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/middleware"
-	"go.uber.org/zap"
 )
 
 // HandlerSet 汇总所有需要注册路由的 HTTP 处理器。
@@ -19,15 +20,15 @@ import (
 //     不会因为 nil 接口调用而 panic。
 //   - 装配阶段只需在 RegisterRoutes 调用前做 nil 检查即可。
 type HandlerSet struct {
-	Auth          RouteRegistrar
-	KnowPost      RouteRegistrar
-	Counter       RouteRegistrar
-	Relation      RouteRegistrar
-	Search        RouteRegistrar
-	LLM           RouteRegistrar
-	Storage       RouteRegistrar
-	Profile       RouteRegistrar
-	RateLimiter   *middleware.RateLimiter
+	Auth        RouteRegistrar
+	KnowPost    RouteRegistrar
+	Counter     RouteRegistrar
+	Relation    RouteRegistrar
+	Search      RouteRegistrar
+	LLM         RouteRegistrar
+	Storage     RouteRegistrar
+	Profile     RouteRegistrar
+	RateLimiter *middleware.RateLimiter
 }
 
 // RouteRegistrar 表示任何能够注册一组 HTTP 路由的组件。
@@ -39,8 +40,9 @@ type RouteRegistrar interface {
 // NewRouter 创建带全局中间件和全部 API 路由的 Gin 引擎。
 //
 // 功能：
-//   创建 Gin 引擎实例，按顺序注册全局中间件，挂载健康检查端点，
-//   并遍历 HandlerSet 中的每个处理器，将非 nil 的处理器路由注册到 /api/v1 组下。
+//
+//	创建 Gin 引擎实例，按顺序注册全局中间件，挂载健康检查端点，
+//	并遍历 HandlerSet 中的每个处理器，将非 nil 的处理器路由注册到 /api/v1 组下。
 //
 // 参数：
 //   - handlers: 汇总所有业务模块的 HTTP 处理器。每个处理器可能为 nil
@@ -53,18 +55,22 @@ type RouteRegistrar interface {
 //   - *gin.Engine: 配置完成的 Gin 引擎，可直接用于 Run()
 //
 // 全局中间件链（按执行顺序）：
-//  1. TraceMiddleware：注入 trace id + 请求超时
-//  2. LoggerMiddleware：记录请求日志（zap 结构化）
-//  3. ErrorLogMiddleware：记录 handler 层的错误
-//  4. CorsMiddleware：处理跨域请求
-//  5. gin.Recovery：捕获 panic 并返回 500，防止服务崩溃
-//  6. OptionalAuthMiddleware：尝试解析 JWT Token，但不拒绝未登录的请求
+//  1. gin.Recovery：捕获 panic 并返回 500，防止服务崩溃。
+//     必须排在最前——它只能兜住位于其后的中间件与 handler。
+//  2. TraceMiddleware：注入 trace id + 请求超时
+//  3. LoggerMiddleware：记录请求日志（zap 结构化）
+//  4. ErrorLogMiddleware：记录 handler 层的错误
+//  5. MetricsMiddleware：Prometheus 指标采集（cfg.Prometheus.Enabled 时启用）
+//  6. RateLimiter：按 IP 滑动窗口限流（handlers.RateLimiter 非 nil 时启用）
+//  7. CorsMiddleware：处理跨域请求
+//  8. OptionalAuthMiddleware：尝试解析 JWT Token，但不拒绝未登录的请求
 //
 // WHY 使用 OptionalAuthMiddleware 而非 AuthMiddleware：
-//   全局挂载可选鉴权中间件后，那些同时支持匿名访问和登录态增强的接口
-//  （如公共 feed、知文详情、搜索）也能拿到当前用户的登录身份，
-//   可在响应中补充用户维度的状态（如是否已点赞）。
-//   而真正受保护的接口依然会在各自处理器内部显式做鉴权判断。
+//
+//	 全局挂载可选鉴权中间件后，那些同时支持匿名访问和登录态增强的接口
+//	（如公共 feed、知文详情、搜索）也能拿到当前用户的登录身份，
+//	 可在响应中补充用户维度的状态（如是否已点赞）。
+//	 而真正受保护的接口依然会在各自处理器内部显式做鉴权判断。
 //
 // 函数调用说明：
 //   - gin.New():
@@ -85,21 +91,32 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 	r := gin.New()
 
 	// --- 全局中间件 ---
+	//
+	// Recovery 必须排在第一位：中间件按注册顺序形成调用链，
+	// Recovery 只能兜住排在它**之后**的环节。此前它被放在链尾，
+	// Trace / Logger / Metrics / RateLimit / Cors 任一处 panic 都不会被它捕获，
+	// 既拿不到结构化错误日志，也无法返回规范的 500 响应。
+	r.Use(gin.Recovery())
+
 	timeout := 30 * time.Second
+	var corsOrigins []string
 	if cfg != nil {
 		timeout = cfg.Server.HTTPRequestTimeout()
+		corsOrigins = cfg.Server.CorsAllowedOrigins
 	}
+
 	r.Use(middleware.TraceMiddleware(timeout))
 	r.Use(middleware.LoggerMiddleware(logger))
 	r.Use(middleware.ErrorLogMiddleware(logger))
 	if cfg != nil && cfg.Prometheus.Enabled {
 		r.Use(middleware.MetricsMiddleware())
 	}
-	if cfg != nil && handlers.RateLimiter != nil {
+	if handlers.RateLimiter != nil {
 		r.Use(handlers.RateLimiter.Middleware())
 	}
-	r.Use(middleware.CorsMiddleware(cfg.Server.CorsAllowedOrigins))
-	r.Use(gin.Recovery())
+	// 其余分支都按 cfg 可为 nil 编写，此处过去却直接解引用 cfg.Server，
+	// 导致「cfg == nil」这一被显式支持的入参组合必然空指针崩溃。
+	r.Use(middleware.CorsMiddleware(corsOrigins))
 	if tokenValidator != nil {
 		r.Use(middleware.OptionalAuthMiddleware(tokenValidator))
 	}

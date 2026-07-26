@@ -11,6 +11,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/middleware"
 )
@@ -19,8 +20,8 @@ import (
 //
 // 设计决策：
 //   - 使用 RS256（非对称签名）而非 HS256（对称签名）：
-//     + 公钥可以安全分发给其他微服务或前端 SDK 用于本地校验
-//     + 私钥仅在当前服务持有，降低了密钥泄漏的影响范围
+//   - 公钥可以安全分发给其他微服务或前端 SDK 用于本地校验
+//   - 私钥仅在当前服务持有，降低了密钥泄漏的影响范围
 //   - 双令牌模式：短期 access token + 长期 refresh token 的组合
 //   - 刷新令牌使用 Redis 白名单管理，支持主动吊销
 //   - Access Token 中嵌入用户昵称（Nickname），避免每次请求都查一次数据库

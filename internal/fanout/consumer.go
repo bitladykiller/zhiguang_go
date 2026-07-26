@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.uber.org/zap"
+
 	"github.com/zhiguang/app/internal/model"
 	"github.com/zhiguang/app/pkg/contextutil"
-	"go.uber.org/zap"
 )
 
 type FanoutConsumer struct {
@@ -25,9 +26,9 @@ func NewFanoutConsumer(brokers []string, groupID string, topic string, service *
 		logger = zap.L()
 	}
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: brokers,
-		GroupID: groupID,
-		Topic:   topic,
+		Brokers:  brokers,
+		GroupID:  groupID,
+		Topic:    topic,
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
 	})

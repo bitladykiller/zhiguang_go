@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
-	"github.com/zhiguang/app/internal/model"
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/internal/model"
 )
 
 type FanoutPublisher struct {

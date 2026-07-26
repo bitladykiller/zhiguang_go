@@ -21,7 +21,7 @@ package cache
 import (
 	"context"
 	"fmt"
-	"sort"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -130,38 +130,53 @@ func (d *HotKeyDetector) Record(key string) {
 	d.buf[key][bucket]++
 }
 
-// evictOldestLocked 在 buf 达到上限时淘汰最早访问的键。
-// 持有 mu 锁时调用。
+// evictOldestLocked 在 buf 达到上限时腾出空间。持有 mu 锁时调用。
+//
+// 淘汰依据是每个键的**最近一次**访问所在的桶（newest），而非首次访问所在的桶：
+// 按 newest 淘汰才是 LRU 语义；按 oldest 淘汰会优先干掉「持续被访问、
+// 因而首次访问时间最早」的长热点键，恰好淘汰了最不该淘汰的一批。
+//
+// 复杂度：两趟 O(N) 扫描，不做排序。
+// 该方法在 Record() 的临界区内执行，而 Record() 位于每次缓存读的热路径上，
+// 原先的 O(N log N) 全量排序（N 默认上限 10 万）会在扩容瞬间造成明显的锁等待尖刺。
 func (d *HotKeyDetector) evictOldestLocked() {
 	if len(d.buf) == 0 {
 		return
 	}
 
-	type keyBucket struct {
-		key    string
-		oldest int64
+	// 目标：至少腾出 10% 的空间。
+	target := len(d.buf) / 10
+	if target < 1 {
+		target = 1
 	}
-	entries := make([]keyBucket, 0, len(d.buf))
+
+	// 第一趟：淘汰已经完全滑出统计窗口的键——它们对任何窗口求和都不再有贡献。
+	staleBefore := d.currentBucket() - int64(d.config.BucketCount)
+	evicted := 0
 	for k, buckets := range d.buf {
-		oldest := int64(1<<63 - 1)
+		newest := int64(math.MinInt64)
 		for b := range buckets {
-			if b < oldest {
-				oldest = b
+			if b > newest {
+				newest = b
 			}
 		}
-		entries = append(entries, keyBucket{key: k, oldest: oldest})
+		if newest < staleBefore {
+			delete(d.buf, k)
+			evicted++
+		}
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].oldest < entries[j].oldest
-	})
+	if evicted >= target {
+		return
+	}
 
-	// 淘汰最旧的 10%
-	evictCount := len(entries) / 10
-	if evictCount < 1 {
-		evictCount = 1
-	}
-	for i := 0; i < evictCount && i < len(entries); i++ {
-		delete(d.buf, entries[i].key)
+	// 第二趟：窗口内的键都还“活着”，此时已无客观优劣之分，
+	// 按 Go map 的随机迭代顺序补足配额即可（O(N)，且不引入排序开销）。
+	for k := range d.buf {
+		if evicted >= target {
+			break
+		}
+		delete(d.buf, k)
+		evicted++
 	}
 }
 
@@ -195,10 +210,14 @@ func (d *HotKeyDetector) flushLoop(ctx context.Context) {
 func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 	snapshot := d.snapshotAndReset()
 	if len(snapshot) == 0 {
+		// 本轮无访问：窗口内已无热点，同步清空等级缓存，
+		// 否则流量停止后旧等级会永久残留（见 replaceLevels 注释）。
+		d.replaceLevels(nil)
 		return
 	}
 
 	nowBucket := d.currentBucket()
+	staleFields := d.staleBucketFields(nowBucket)
 
 	pipe := d.redis.Pipeline()
 	for cacheKey, buckets := range snapshot {
@@ -206,10 +225,11 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 		for bucket, count := range buckets {
 			pipe.HIncrBy(ctx, statKey, strconv.FormatInt(bucket, 10), count)
 		}
-		// 清理窗口外的旧桶：删除 nowBucket - BucketCount 之前的桶
-		cleanBefore := nowBucket - int64(d.config.BucketCount)
-		for bucketNum := nowBucket - 1; bucketNum >= cleanBefore; bucketNum-- {
-			pipe.HDel(ctx, statKey, strconv.FormatInt(bucketNum, 10))
+		if len(staleFields) > 0 {
+			// 一条 HDEL 携带全部待删字段。
+			// 原实现对每个桶单发一条 HDEL，命令数 = 键数 × BucketCount，
+			// 在万级热点键规模下每轮 flush 会产生十万级命令。
+			pipe.HDel(ctx, statKey, staleFields...)
 		}
 		pipe.Expire(ctx, statKey, d.statTTL)
 	}
@@ -252,13 +272,53 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 		}
 	}
 
-	if len(newLevels) > 0 {
-		d.levelMu.Lock()
-		for k, v := range newLevels {
-			d.levels[k] = v
-		}
-		d.levelMu.Unlock()
+	d.replaceLevels(newLevels)
+}
+
+// staleBucketFields 返回本轮应从 Redis Hash 中删除的桶字段。
+//
+// 只删「刚滑出统计窗口」的那几个桶，而不是每轮重删整个历史区间：
+// 窗口是连续向前滑动的，每个桶在其滑出的那一轮被删一次即可。
+// slack 覆盖 flush 间隔大于桶长（或某轮 flush 因 Redis 抖动失败）时一次跨过多个桶的情况；
+// 即便仍有遗漏，statKey 自带 TTL，且 sumBucketsInWindow 会按桶号过滤，
+// 残留字段既不会撑爆内存也不会污染统计结果。
+func (d *HotKeyDetector) staleBucketFields(nowBucket int64) []string {
+	newestStale := nowBucket - int64(d.config.BucketCount)
+	if newestStale < 0 {
+		return nil
 	}
+
+	slack := int64(1)
+	if bucketSecs := int64(d.bucketSize.Seconds()); bucketSecs > 0 {
+		if n := int64(d.flushInterval.Seconds()) / bucketSecs; n > slack {
+			slack = n
+		}
+	}
+
+	oldestStale := max(newestStale-slack, 0)
+	fields := make([]string, 0, newestStale-oldestStale+1)
+	for b := newestStale; b >= oldestStale; b-- {
+		fields = append(fields, strconv.FormatInt(b, 10))
+	}
+	return fields
+}
+
+// replaceLevels 用本轮窗口的统计结果整体替换等级缓存。
+//
+// WHY 整体替换而非增量合并：
+//
+//	levels 的键空间是「被访问过的缓存键」，在内容型业务里随内容总量线性增长且无上界。
+//	原实现只往里写、从不删除，长期运行等同于内存泄漏；
+//	同时，一个曾经上榜的键在降温后会永远保留旧等级，TTL 被无谓地持续延长。
+//	整体替换让 levels 的规模始终等于「上一轮窗口内实际被访问的键数」，
+//	既天然受 maxKeys 约束，也使降温的键自动退出热点集合。
+func (d *HotKeyDetector) replaceLevels(levels map[string]HotKeyLevel) {
+	if levels == nil {
+		levels = make(map[string]HotKeyLevel)
+	}
+	d.levelMu.Lock()
+	d.levels = levels
+	d.levelMu.Unlock()
 }
 
 // SetMaxKeys 设置本地 map 上限。
@@ -329,6 +389,61 @@ func (d *HotKeyDetector) TtlForPublic(ctx context.Context, baseTTL int, key stri
 	return d.ttlForLevel(baseTTL, d.getLevel(ctx, key))
 }
 
+// TtlForPublicBatch 批量返回一组键按热度调整后的 TTL，返回值下标与 keys 一一对应。
+//
+// 与逐个调用 TtlForPublic 的区别在于 Redis 访问次数：
+// 本地等级缓存未命中的键会被合并成**一次** MGET，而不是每个键一次 EXISTS。
+// 列表类场景（一页 Feed 几十个条目）由此把 N 次串行往返压缩为至多 1 次。
+func (d *HotKeyDetector) TtlForPublicBatch(ctx context.Context, baseTTL int, keys []string) []int {
+	ttls := make([]int, len(keys))
+	if len(keys) == 0 {
+		return ttls
+	}
+
+	// 第一趟：命中本地等级缓存的直接定级，其余记录下标待批量查询。
+	missIdx := make([]int, 0, len(keys))
+	markKeys := make([]string, 0, len(keys))
+	d.levelMu.RLock()
+	for i, key := range keys {
+		if level, ok := d.levels[key]; ok {
+			ttls[i] = d.ttlForLevel(baseTTL, level)
+			continue
+		}
+		missIdx = append(missIdx, i)
+		markKeys = append(markKeys, hotkeyActivePrefix+key)
+	}
+	d.levelMu.RUnlock()
+
+	if len(missIdx) == 0 {
+		return ttls
+	}
+
+	// 未命中的键默认视为冷键；MGET 失败时保持该默认值（fail-cold，不延长 TTL）。
+	for _, i := range missIdx {
+		ttls[i] = baseTTL
+	}
+
+	marks, err := d.redis.MGet(ctx, markKeys...).Result()
+	if err != nil {
+		d.logger.Warn("hotkey: redis MGet failed", zap.Int("keys", len(markKeys)), zap.Error(err))
+		return ttls
+	}
+
+	d.levelMu.Lock()
+	for n, i := range missIdx {
+		if n >= len(marks) || marks[n] == nil {
+			continue
+		}
+		ttls[i] = d.ttlForLevel(baseTTL, LevelMedium)
+		if len(d.levels) < d.maxKeys {
+			d.levels[keys[i]] = LevelMedium
+		}
+	}
+	d.levelMu.Unlock()
+
+	return ttls
+}
+
 // getLevel 根据本地 levelCache 或 Redis hotkey:active 标记判断热度等级。
 func (d *HotKeyDetector) getLevel(ctx context.Context, key string) HotKeyLevel {
 	if level, ok := d.readLevelCache(key); ok {
@@ -341,9 +456,13 @@ func (d *HotKeyDetector) getLevel(ctx context.Context, key string) HotKeyLevel {
 		return LevelCold
 	}
 	if exists > 0 {
-		// 在 Redis 写回本地缓存，避免下次再查 Redis
+		// 写回本地缓存，避免下次再查 Redis。
+		// 上限保护：levels 每轮 flush 会被整体替换（见 replaceLevels），
+		// 这里再加一道闸，防止两轮之间被大量陌生键灌爆。
 		d.levelMu.Lock()
-		d.levels[key] = LevelMedium
+		if len(d.levels) < d.maxKeys {
+			d.levels[key] = LevelMedium
+		}
 		d.levelMu.Unlock()
 		return LevelMedium
 	}

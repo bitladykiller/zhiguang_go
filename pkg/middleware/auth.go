@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/response"
 )
@@ -32,9 +33,10 @@ const (
 // AuthMiddleware 返回一个校验 JWT Bearer Token 的 Gin 中间件。
 //
 // 功能：
-//   强制要求请求携带有效的 JWT Bearer Token。
-//   校验成功后把用户 ID 和令牌类型写入 Gin 上下文。
-//   校验失败时直接中断请求并返回 401。
+//
+//	强制要求请求携带有效的 JWT Bearer Token。
+//	校验成功后把用户 ID 和令牌类型写入 Gin 上下文。
+//	校验失败时直接中断请求并返回 401。
 //
 // 参数：
 //   - validator: TokenValidator 接口实现（JWT 校验服务）
@@ -43,11 +45,12 @@ const (
 //   - gin.HandlerFunc: Gin 中间件函数
 //
 // 处理流程：
-//   Step 1: 从 Authorization 请求头提取 Bearer Token。
-//   Step 2: 如果 token 为空，返回 401（缺少认证头）。
-//   Step 3: 调用 validator.ValidateToken(token) 校验 token。
-//   Step 4: 校验失败，返回 401（无效或过期的 token）。
-//   Step 5: 校验成功，将 user_id 和 token_type 写入上下文，调用 c.Next()。
+//
+//	Step 1: 从 Authorization 请求头提取 Bearer Token。
+//	Step 2: 如果 token 为空，返回 401（缺少认证头）。
+//	Step 3: 调用 validator.ValidateToken(token) 校验 token。
+//	Step 4: 校验失败，返回 401（无效或过期的 token）。
+//	Step 5: 校验成功，将 user_id 和 token_type 写入上下文，调用 c.Next()。
 //
 // 函数调用说明：
 //   - c.AbortWithStatusJSON(code, body):
@@ -59,13 +62,15 @@ const (
 //     Gin 的方法，将控制权交给下一个中间件或最终处理器。
 //
 // 设计决策：
-//   使用接口（TokenValidator）而非具体类型，避免 middleware 包与 auth 服务包之间
-//   形成循环依赖。auth 包会导入 middleware 类型定义，而 middleware 如果不抽象出接口，
-//   就无法引用 auth 包的类型（否则循环依赖）。
+//
+//	使用接口（TokenValidator）而非具体类型，避免 middleware 包与 auth 服务包之间
+//	形成循环依赖。auth 包会导入 middleware 类型定义，而 middleware 如果不抽象出接口，
+//	就无法引用 auth 包的类型（否则循环依赖）。
 //
 // 使用场景：
-//   用于需要强制登录验证的路由组：
-//     r.Group("/api/v1/user").Use(middleware.AuthMiddleware(jwtSvc))
+//
+//	用于需要强制登录验证的路由组：
+//	  r.Group("/api/v1/user").Use(middleware.AuthMiddleware(jwtSvc))
 func AuthMiddleware(validator TokenValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractBearerToken(c)
@@ -89,8 +94,9 @@ func AuthMiddleware(validator TokenValidator) gin.HandlerFunc {
 // OptionalAuthMiddleware 与 AuthMiddleware 类似，但在缺少 token 时不会中断请求。
 //
 // 功能：
-//   提供"尽力而为"的鉴权。只有当请求携带了合法 JWT Token 时，
-//   才会把用户 ID 写入上下文；否则不做任何处理，直接放行。
+//
+//	提供"尽力而为"的鉴权。只有当请求携带了合法 JWT Token 时，
+//	才会把用户 ID 写入上下文；否则不做任何处理，直接放行。
 //
 // 参数：
 //   - validator: TokenValidator 接口实现
@@ -99,16 +105,18 @@ func AuthMiddleware(validator TokenValidator) gin.HandlerFunc {
 //   - gin.HandlerFunc: Gin 中间件函数
 //
 // 处理流程：
-//   Step 1: 从 Authorization 请求头提取 Bearer Token。
-//   Step 2: 如果 token 为空，直接调用 c.Next() 放行（匿名访问）。
-//   Step 3: 尝试校验 token，如果校验失败，也直接放行（匿名访问）。
-//   Step 4: 校验成功，将 user_id 写入上下文后继续。
+//
+//	Step 1: 从 Authorization 请求头提取 Bearer Token。
+//	Step 2: 如果 token 为空，直接调用 c.Next() 放行（匿名访问）。
+//	Step 3: 尝试校验 token，如果校验失败，也直接放行（匿名访问）。
+//	Step 4: 校验成功，将 user_id 写入上下文后继续。
 //
 // 使用场景：
-//   用于同时支持匿名访问和登录态增强的接口：
-//   - 公共 feed：未登录用户看到通用内容，已登录用户看到个性化内容
-//   - 知文详情：未登录只能看，已登录可看到已点赞状态
-//   - 搜索：未登录可以搜索，已登录搜到的结果可显示个人状态
+//
+//	用于同时支持匿名访问和登录态增强的接口：
+//	- 公共 feed：未登录用户看到通用内容，已登录用户看到个性化内容
+//	- 知文详情：未登录只能看，已登录可看到已点赞状态
+//	- 搜索：未登录可以搜索，已登录搜到的结果可显示个人状态
 func OptionalAuthMiddleware(validator TokenValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractBearerToken(c)
@@ -132,9 +140,10 @@ func OptionalAuthMiddleware(validator TokenValidator) gin.HandlerFunc {
 // GetUserID 从 Gin 上下文中提取已认证用户的 ID。
 //
 // 功能：
-//   读取 Gin 上下文中的 user_id 值，并尝试将其转换为 uint64 类型。
-//   支持多种数值类型（uint64、float64、int64、int），兼容 JSON 自动解析
-//   和 JWT 服务返回的不同数值类型。
+//
+//	读取 Gin 上下文中的 user_id 值，并尝试将其转换为 uint64 类型。
+//	支持多种数值类型（uint64、float64、int64、int），兼容 JSON 自动解析
+//	和 JWT 服务返回的不同数值类型。
 //
 // 参数：
 //   - c: Gin 上下文
@@ -150,10 +159,11 @@ func OptionalAuthMiddleware(validator TokenValidator) gin.HandlerFunc {
 //   - 不支持的类型（如 string）→ 返回 0, false
 //
 // 兼容性说明：
-//   Gin 的 Set/Get 是 interface{} 存取，不保留原始类型。
-//   如果 user_id 设置时是 uint64，直接断言成功；
-//   如果经过 JSON 编解码（如中间层 serialization），
-//   可能变成 float64，需要额外处理。
+//
+//	Gin 的 Set/Get 是 interface{} 存取，不保留原始类型。
+//	如果 user_id 设置时是 uint64，直接断言成功；
+//	如果经过 JSON 编解码（如中间层 serialization），
+//	可能变成 float64，需要额外处理。
 func GetUserID(c *gin.Context) (uint64, bool) {
 	val, exists := c.Get(string(ctxUserID))
 	if !exists {
@@ -177,8 +187,9 @@ func GetUserID(c *gin.Context) (uint64, bool) {
 // extractBearerToken 从 Authorization 请求头中提取 Token。
 //
 // 功能：
-//   解析 HTTP 请求头 "Authorization: Bearer <token>"，
-//   返回 token 部分（去掉 "Bearer " 前缀）。
+//
+//	解析 HTTP 请求头 "Authorization: Bearer <token>"，
+//	返回 token 部分（去掉 "Bearer " 前缀）。
 //
 // 参数：
 //   - c: Gin 上下文

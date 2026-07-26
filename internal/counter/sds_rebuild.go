@@ -16,10 +16,11 @@ import (
 	"sync"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/zhiguang/app/pkg/config"
-	"github.com/zhiguang/app/pkg/redislock"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/zhiguang/app/pkg/config"
+	"github.com/zhiguang/app/pkg/redislock"
 )
 
 // rebuildSds 从位图重建 SDS 计数。

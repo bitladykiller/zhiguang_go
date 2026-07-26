@@ -43,10 +43,10 @@ func initSearch(
 	if hasElasticsearchConfig(cfg) {
 		var err error
 		searchSvc, err = search.NewSearchService(ctx, search.ESConfig{
-		URIs:      cfg.Elasticsearch.URIs,
-		IndexName: cfg.Elasticsearch.IndexName,
-		MaxRetries: cfg.Elasticsearch.MaxRetries,
-	}, counterSvc, logger)
+			URIs:       cfg.Elasticsearch.URIs,
+			IndexName:  cfg.Elasticsearch.IndexName,
+			MaxRetries: cfg.Elasticsearch.MaxRetries,
+		}, counterSvc, logger)
 		if err != nil {
 			logger.Warn("初始化搜索服务失败（ES 可能不可用）", zap.Error(err))
 			searchSvc = nil

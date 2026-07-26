@@ -48,45 +48,45 @@ const (
 //   - 指针字段（*string / *uint64）：对应数据库中允许 NULL 的列。
 //   - Status 管理知文的生命周期状态：draft → published / deleted。
 type KnowPost struct {
-	ID               uint64            `db:"id" json:"id"`
-	TagID            *uint64           `db:"tag_id" json:"tag_id,omitempty"`
-	Tags             *string           `db:"tags" json:"tags,omitempty"`
-	Title            *string           `db:"title" json:"title,omitempty"`
-	Description      *string           `db:"description" json:"description,omitempty"`
-	ContentUrl       *string           `db:"content_url" json:"content_url,omitempty"`
-	ContentObjectKey *string           `db:"content_object_key" json:"content_object_key,omitempty"`
-	ContentEtag      *string           `db:"content_etag" json:"content_etag,omitempty"`
-	ContentSize      *uint64           `db:"content_size" json:"content_size,omitempty"`
-	ContentSha256    *string           `db:"content_sha256" json:"content_sha256,omitempty"`
-	CreatorID        uint64            `db:"creator_id" json:"creator_id"`
-	IsTop            bool              `db:"is_top" json:"is_top"`
-	Type             string            `db:"type" json:"type"`
+	ID               uint64             `db:"id" json:"id"`
+	TagID            *uint64            `db:"tag_id" json:"tag_id,omitempty"`
+	Tags             *string            `db:"tags" json:"tags,omitempty"`
+	Title            *string            `db:"title" json:"title,omitempty"`
+	Description      *string            `db:"description" json:"description,omitempty"`
+	ContentUrl       *string            `db:"content_url" json:"content_url,omitempty"`
+	ContentObjectKey *string            `db:"content_object_key" json:"content_object_key,omitempty"`
+	ContentEtag      *string            `db:"content_etag" json:"content_etag,omitempty"`
+	ContentSize      *uint64            `db:"content_size" json:"content_size,omitempty"`
+	ContentSha256    *string            `db:"content_sha256" json:"content_sha256,omitempty"`
+	CreatorID        uint64             `db:"creator_id" json:"creator_id"`
+	IsTop            bool               `db:"is_top" json:"is_top"`
+	Type             string             `db:"type" json:"type"`
 	Visible          KnowPostVisibility `db:"visible" json:"visible"`
-	ImgUrls          *string           `db:"img_urls" json:"img_urls,omitempty"`
-	VideoUrl         *string           `db:"video_url" json:"video_url,omitempty"`
-	Status           KnowPostStatus    `db:"status" json:"status"`
-	CreateTime       time.Time         `db:"create_time" json:"create_time"`
-	UpdateTime       time.Time         `db:"update_time" json:"update_time"`
-	PublishTime      *time.Time        `db:"publish_time" json:"publish_time,omitempty"`
+	ImgUrls          *string            `db:"img_urls" json:"img_urls,omitempty"`
+	VideoUrl         *string            `db:"video_url" json:"video_url,omitempty"`
+	Status           KnowPostStatus     `db:"status" json:"status"`
+	CreateTime       time.Time          `db:"create_time" json:"create_time"`
+	UpdateTime       time.Time          `db:"update_time" json:"update_time"`
+	PublishTime      *time.Time         `db:"publish_time" json:"publish_time,omitempty"`
 }
 
 // KnowPostDetailRow 是详情页使用的联表查询结果，额外包含作者信息。
 type KnowPostDetailRow struct {
-	ID             uint64            `db:"id" json:"id"`
-	Title          *string           `db:"title" json:"title"`
-	Description    *string           `db:"description" json:"description"`
-	ContentUrl     *string           `db:"content_url" json:"content_url"`
-	ImgUrls        *string           `db:"img_urls" json:"img_urls"`
-	Tags           *string           `db:"tags" json:"tags"`
-	CreatorID      uint64            `db:"creator_id" json:"creator_id"`
-	AuthorAvatar   *string           `db:"author_avatar" json:"author_avatar"`
-	AuthorNickname string            `db:"author_nickname" json:"author_nickname"`
-	AuthorTagJson  *string           `db:"author_tag_json" json:"author_tag_json"`
-	IsTop          bool              `db:"is_top" json:"is_top"`
+	ID             uint64             `db:"id" json:"id"`
+	Title          *string            `db:"title" json:"title"`
+	Description    *string            `db:"description" json:"description"`
+	ContentUrl     *string            `db:"content_url" json:"content_url"`
+	ImgUrls        *string            `db:"img_urls" json:"img_urls"`
+	Tags           *string            `db:"tags" json:"tags"`
+	CreatorID      uint64             `db:"creator_id" json:"creator_id"`
+	AuthorAvatar   *string            `db:"author_avatar" json:"author_avatar"`
+	AuthorNickname string             `db:"author_nickname" json:"author_nickname"`
+	AuthorTagJson  *string            `db:"author_tag_json" json:"author_tag_json"`
+	IsTop          bool               `db:"is_top" json:"is_top"`
 	Visible        KnowPostVisibility `db:"visible" json:"visible"`
-	Type           string            `db:"type" json:"type"`
-	Status         KnowPostStatus    `db:"status" json:"status"`
-	PublishTime    *time.Time        `db:"publish_time" json:"publish_time"`
+	Type           string             `db:"type" json:"type"`
+	Status         KnowPostStatus     `db:"status" json:"status"`
+	PublishTime    *time.Time         `db:"publish_time" json:"publish_time"`
 }
 
 // KnowPostFeedRow 是 feed 列表使用的轻量查询结果。
