@@ -49,8 +49,8 @@
 ```mermaid
 flowchart TD
     subgraph 写入事务["同一 MySQL 数据库事务"]
-      A[Follow / Unfollow 动作] --> B[写 user_followings 表<br/>以 from_user_id 为主索引]
-      A --> C[写 user_followers 表<br/>以 to_user_id 为主索引]
+      A[Follow / Unfollow 动作] --> B[写 following 表<br/>以 from_user_id 为查询方向]
+      A --> C[写 follower 表<br/>以 to_user_id 为查询方向]
       A --> D[同事务写 outbox 发件箱表]
     end
     D --> E[Canal binlog 异步桥接] --> F[Kafka canal-outbox]
@@ -62,11 +62,11 @@ flowchart TD
 
 关系真值不是只存一张 `following` 表，而是同时维护：
 
-1. **正向表 `user_followings`**：
-   - 聚簇索引 / 主键：`(from_user_id, to_user_id)`
+1. **正向表 `following`**：
+   - 查询方向：`from_user_id -> to_user_id`
    - 专门服务于“获取用户的关注列表”、“判断我是否关注了某人”。
-2. **反向表 `user_followers`**：
-   - 聚簇索引 / 主键：`(to_user_id, from_user_id)`
+2. **反向表 `follower`**：
+   - 查询方向：`to_user_id -> from_user_id`
    - 专门服务于“获取用户的粉丝列表”。
 
 **教学结论**：通过在写路径上牺牲少量存储空间（多写一张表），换取了正向和反向两条读路径都能够在主键索引/覆盖索引上以 $O(\log N)$ 极速定位，彻底消除了慢 SQL 的隐患。
@@ -80,7 +80,7 @@ Redis 不承担关系真值，仅仅是面向读路径的列表快照：
 - Score 采用 `created_at` 毫秒级时间戳，Member 为对端用户 ID。
 
 另外针对关注数超大的大 V 用户，设置了额外的进程内 L1 头部缓存：
-- `l1:following:{userID}` / `l1:followers:{userID}`（仅缓存前 50 条最新粉丝）。
+- `l1:following:{userID}` / `l1:followers:{userID}`；当前默认由 `relation.l1_cache.fill_limit` 控制，默认 500 条，而不是固定 50 条。
 
 ## 4. 核心流程
 
@@ -111,6 +111,8 @@ flowchart TD
     G -->|失败| R[回滚]
     G -->|成功| H[删除受影响列表缓存]
 ```
+
+注意，当前 `Follow` 使用 `INSERT ... ON DUPLICATE KEY UPDATE rel_status = 1`，不会先检查“是否已经关注”。因此它的 `false` 返回主要代表令牌桶拒绝或 Redis 限流异常，**不是**“已经关注”；重复 Follow 仍会写出新的 `FollowCreated` outbox 事件。这个语义会在异步计数处产生风险，见 6.8。
 
 ## 4.2 Unfollow 写路径
 
@@ -171,7 +173,7 @@ cursor 分页依赖 ZSet score 顺序：
 2. 使用 `ZRevRangeByScore`
 3. 取最后一个元素的 score 作为下一个 cursor
 
-这条链路的目标是避免 offset 翻页在数据变化时产生跳页和重复。
+这条链路的目标是避免 offset 翻页在数据变化时产生跳页和重复。但当前 cursor 只有毫秒时间戳、没有 `(score, member)` 复合游标；同一毫秒多个关注的场景下，下一页使用排他的 score 可能跳过同分数成员，不能把它描述成完全稳定的 cursor。
 
 ```mermaid
 flowchart TD
@@ -183,9 +185,11 @@ flowchart TD
     D -->|有数据| E[ZRevRange / ByScore]
     D -->|冷| F[预热锁 + 从 MySQL 灌 ZSet]
     F --> E
-    E -->|窗口不够| G[回退 MySQL 深分页]
+    E -->|offset 深页且窗口不够| G[回退 MySQL 深分页]
+    E -->|cursor 超出预热窗口| H[当前可能提前结束]
     E -->|足够| Z
     G --> Z
+    H --> Z
 ```
 
 ## 4.5 异步投影流程
@@ -198,9 +202,9 @@ flowchart TD
 
 1. 二次去重（`SETNX dedup:rel:*`，约 10 分钟窗口）
 2. 更新 Redis ZSet
-3. 通过 `UserCounter` **直接 `HIncrBy` 用户维度 SDS** 增减 following/follower
+3. 直接对 `cnt:user:{id}` 做 `HIncrBy`，增减 following/follower
 
-注意：第 3 步 **不经过** `counter-events` Kafka，也没有 partition 水位；与 like/fav 的异步聚合是两条语义。
+注意：第 3 步 **不经过** `counter-events` Kafka，也没有 partition 水位；与 like/fav 的异步聚合是两条语义。虽然 `EventProcessor` 构造时接收了 `UserCounterUpdater`，当前实现仅把它作为是否启用计数更新的开关，实际调用的是自身的 `pipelineIncrementUserMetrics()`，直接操作 Redis。
 
 ```mermaid
 flowchart TD
@@ -350,6 +354,24 @@ relation 更像是：
 5. 重试或重建策略
 
 也就是说，relation 的失败表更像“阶段补做 / 局部重建”，而不是把 counter 的 `delta vs 绝对修复` 模板生搬硬套过来。
+
+## 6.8 重复 Follow 会生成新事件，可能使用户计数漂移
+
+`Follow` 对关系表执行的是 upsert：已有有效关系再次 Follow 时，关系集合仍然只有一条，ZSet 的 `ZADD` 也天然去重；但服务层没有根据“是否新建/是否从取消状态恢复”决定要不要写 outbox。每次请求都会生成新 RelationID 和 `FollowCreated` 事件。
+
+去重键包含 RelationID，所以重复 Follow 不会命中前一次事件的 10 分钟 dedupe；最终会再次执行 `HINCRBY cnt:user:{id} following/follower +1`。于是“列表关系正确，但关注数/粉丝数偏大”成为可能。
+
+```mermaid
+flowchart TD
+    A[重复 Follow 同一目标] --> B[following/follower UPSERT: 关系仍有效]
+    B --> C[仍写新的 FollowCreated outbox]
+    C --> D[新 RelationID 导致 dedupe miss]
+    D --> E[ZADD 不重复]
+    D --> F[HINCRBY 再加 1]
+    F --> G[用户计数可能漂移]
+```
+
+修复应让仓储返回“是否发生 rel_status 迁移”，只有 `0 -> 1` 或首次插入才产生 FollowCreated；或者让事件处理器按关系真值/状态机幂等更新计数，不能只依赖带新 RelationID 的短 TTL 去重。
 
 ## 7. 面试官高频问题
 
