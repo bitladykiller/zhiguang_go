@@ -49,6 +49,13 @@ func NewConsumer(reader *kafka.Reader, service *Service, logger *zap.Logger) *Co
 	return &Consumer{inner: outbox.NewConsumer(reader, handler, logger)}
 }
 
+// SetFailedMessageRecorder 注入死信记录（透传给内部的 outbox.Consumer）。
+func (c *Consumer) SetFailedMessageRecorder(r outbox.FailedMessageRecorder) {
+	if c != nil && c.inner != nil {
+		c.inner.SetFailedMessageRecorder(r)
+	}
+}
+
 // Start 阻塞消费直到 ctx 取消。
 //
 // 消费循环由 outbox.Consumer 提供，它逐条拉取并提交。
@@ -102,15 +109,19 @@ func (h *publishRowHandler) HandleRow(ctx context.Context, row outbox.Row) error
 		return nil
 	}
 
-	publishedAt := p.PublishedAt
-	if publishedAt <= 0 {
-		publishedAt = nowUnix() // 兼容升级前不带该字段的历史事件
+	if p.PublishedAt <= 0 {
+		// 无发布时间的事件必然产生于本功能上线之前（新事件的载荷总带该字段）。
+		// 历史帖子不应再被扩散——早期这里用“当前时间”兜底，叠加新消费者组
+		// 默认从最早位点回放，会把陈年旧帖以“现在”的时间戳刷满所有人的收件箱。
+		h.logger.Debug("fanout: pre-feature event without published_at, skipping",
+			zap.String("aggregateID", row.AggregateID))
+		return nil
 	}
 
 	event := &model.FanoutEvent{
 		PostID:    p.ID,
 		CreatorID: p.CreatorID,
-		CreatedAt: publishedAt,
+		CreatedAt: p.PublishedAt,
 	}
 	if err := h.service.FanoutPost(ctx, event); err != nil {
 		return fmt.Errorf("fanout: handle published post %d: %w", p.ID, err)

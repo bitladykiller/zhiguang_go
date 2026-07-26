@@ -10,10 +10,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// UserCounterUpdater 定义关系事件处理所需的用户维度计数器更新接口。
+// UserCounterUpdater 是关系事件处理对计数模块的最小依赖（消费侧窄接口）。
+//
+// 计数与去重标记必须原子（见 counter.UserCounter.ApplyFollowDeltaOnce 的注释），
+// 因此这里依赖的是「带一次性语义的双向增减」，而不是两个裸的 Increment。
 type UserCounterUpdater interface {
-	IncrementFollowings(ctx context.Context, userID uint64, delta int) error
-	IncrementFollowers(ctx context.Context, userID uint64, delta int) error
+	ApplyFollowDeltaOnce(ctx context.Context, dedupeKey string, ttl time.Duration, fromUserID, toUserID uint64, delta int64) (first bool, err error)
 }
 
 // EventProcessor 处理由 canal-outbox 驱动的关系事件。
@@ -89,47 +91,68 @@ func (p *EventProcessor) Process(ctx context.Context, evt RelationEvent) error {
 		return nil
 	}
 
-	dedupeKey := fmt.Sprintf("dedup:rel:%s:%d:%d:%s", evt.EventType, evt.FromUserID, evt.ToUserID, relationIDValue(evt.RelationID))
-	first, err := p.redis.SetNX(ctx, dedupeKey, "1", 10*time.Minute).Result()
-	if err != nil {
-		return err
-	}
-	if !first {
-		return nil
-	}
-
+	var delta int64
 	switch evt.EventType {
 	case "FollowCreated":
-		now := float64(time.Now().UnixMilli())
-		pipe := p.redis.Pipeline()
-		pipe.ZAdd(ctx, followingZSetKey(evt.FromUserID), redis.Z{Score: now, Member: strconv.FormatUint(evt.ToUserID, 10)})
-		pipe.ZAdd(ctx, followersZSetKey(evt.ToUserID), redis.Z{Score: now, Member: strconv.FormatUint(evt.FromUserID, 10)})
-		pipe.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour)
-		pipe.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour)
-		if _, err := pipe.Exec(ctx); err != nil {
-			return err
-		}
-		if p.counter != nil {
-			p.pipelineIncrementUserMetrics(ctx, evt.FromUserID, "following", 1)
-			p.pipelineIncrementUserMetrics(ctx, evt.ToUserID, "follower", 1)
-		}
+		delta = 1
 	case "FollowCanceled":
-		pipe := p.redis.Pipeline()
-		pipe.ZRem(ctx, followingZSetKey(evt.FromUserID), strconv.FormatUint(evt.ToUserID, 10))
-		pipe.ZRem(ctx, followersZSetKey(evt.ToUserID), strconv.FormatUint(evt.FromUserID, 10))
-		pipe.Expire(ctx, followingZSetKey(evt.FromUserID), 2*time.Hour)
-		pipe.Expire(ctx, followersZSetKey(evt.ToUserID), 2*time.Hour)
-		if _, err := pipe.Exec(ctx); err != nil {
-			return err
-		}
-		if p.counter != nil {
-			p.pipelineIncrementUserMetrics(ctx, evt.FromUserID, "following", -1)
-			p.pipelineIncrementUserMetrics(ctx, evt.ToUserID, "follower", -1)
-		}
+		delta = -1
+	default:
+		return nil // 未知事件类型：静默跳过
 	}
 
+	// ── 幂等协议：先做可重放的操作，最后原子地「落标 + 执行不可重放的操作」 ──
+	//
+	// 早期实现的顺序是「SetNX 落标 → ZSet → 计数」。在至少一次投递语义下这是错的：
+	// 标记落下后任一后续步骤失败，Kafka 重投会命中标记被当成“已处理”跳过——
+	// 那次关注在 ZSet 与计数里**永久丢失**。
+	//
+	// 正确协议按操作性质分两类：
+	//   1. ZAdd/ZRem 天然幂等：重放无害，放在前面，失败返回错误由重投兜底。
+	//   2. HIncrBy 不幂等：与去重标记合进**同一段 Lua** 原子执行——
+	//      要么「标记+计数」都发生，要么都不发生，不存在“标记了但没数”的中间态。
+	if err := p.applyZSets(ctx, evt, delta); err != nil {
+		return err
+	}
+
+	dedupeKey := fmt.Sprintf("dedup:rel:%s:%d:%d:%s", evt.EventType, evt.FromUserID, evt.ToUserID, relationIDValue(evt.RelationID))
+	if p.counter == nil {
+		// 无计数依赖时仅落标（保持与历史一致的重复投递观测语义）。
+		_, err := p.redis.SetNX(ctx, dedupeKey, "1", dedupeTTL).Result()
+		return err
+	}
+
+	// 「落标 + 双向计数」在 counter 侧以单段 Lua 原子完成；
+	// 返回 false 表示重复投递（首次执行时计数已完成），无需处理。
+	if _, err := p.counter.ApplyFollowDeltaOnce(ctx, dedupeKey, dedupeTTL, evt.FromUserID, evt.ToUserID, delta); err != nil {
+		return fmt.Errorf("relation event mark+count: %w", err)
+	}
 	return nil
 }
+
+// applyZSets 更新关注/粉丝 ZSet 投影（幂等，可安全重放）。
+func (p *EventProcessor) applyZSets(ctx context.Context, evt RelationEvent, delta int64) error {
+	pipe := p.redis.Pipeline()
+	fromKey := followingZSetKey(evt.FromUserID)
+	toKey := followersZSetKey(evt.ToUserID)
+	if delta > 0 {
+		now := float64(time.Now().UnixMilli())
+		pipe.ZAdd(ctx, fromKey, redis.Z{Score: now, Member: strconv.FormatUint(evt.ToUserID, 10)})
+		pipe.ZAdd(ctx, toKey, redis.Z{Score: now, Member: strconv.FormatUint(evt.FromUserID, 10)})
+	} else {
+		pipe.ZRem(ctx, fromKey, strconv.FormatUint(evt.ToUserID, 10))
+		pipe.ZRem(ctx, toKey, strconv.FormatUint(evt.FromUserID, 10))
+	}
+	pipe.Expire(ctx, fromKey, 2*time.Hour)
+	pipe.Expire(ctx, toKey, 2*time.Hour)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("relation event zset update: %w", err)
+	}
+	return nil
+}
+
+// dedupeTTL 是去重标记的生存期，覆盖 Kafka 的重投窗口。
+const dedupeTTL = 10 * time.Minute
 
 // relationIDValue 将可选的关系 ID 指针转换为字符串，用于构建去重键。
 //
@@ -168,18 +191,4 @@ func followingZSetKey(userID uint64) string {
 // 返回：string，ZSet 键名。
 func followersZSetKey(userID uint64) string {
 	return fmt.Sprintf("z:followers:%d", userID)
-}
-
-// pipelineIncrementUserMetrics 通过 Pipeline 合并对同一用户的 following 和 follower 计数更新，
-// 将原本两次 HIncrBy 调用合并为一次网络往返。
-func (p *EventProcessor) pipelineIncrementUserMetrics(ctx context.Context, userID uint64, metric string, delta int) {
-	key := fmt.Sprintf("cnt:user:%d", userID)
-	if err := p.redis.HIncrBy(ctx, key, metric, int64(delta)).Err(); err != nil {
-		p.logger.Warn("failed to increment user metric via pipeline",
-			zap.Uint64("userID", userID),
-			zap.String("metric", metric),
-			zap.Int("delta", delta),
-			zap.Error(err),
-		)
-	}
 }

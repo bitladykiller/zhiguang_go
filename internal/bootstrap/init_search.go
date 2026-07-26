@@ -75,6 +75,13 @@ func initSearch(
 		logger,
 	)
 
+	// 死信注入：重试耗尽的消息落库而非只剩一行 Warn（补偿入口见 counter_failed_messages）。
+	deadLetters := outbox.NewDeadLetterRepository(db)
+	relationOutboxConsumer.SetFailedMessageRecorder(deadLetters)
+	if searchOutboxConsumer != nil {
+		searchOutboxConsumer.SetFailedMessageRecorder(deadLetters)
+	}
+
 	return searchHandler, searchOutboxConsumer, relationOutboxConsumer
 }
 

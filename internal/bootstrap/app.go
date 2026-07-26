@@ -107,7 +107,14 @@ func InitializeApp(configPath string) (*server.App, error) {
 	backgroundRunners = append(backgroundRunners, counterAggConsumer, &hotKeyRunner{d: hotKeyDetector})
 
 	if fanoutConsumer != nil {
+		fanoutConsumer.SetFailedMessageRecorder(outbox.NewDeadLetterRepository(db))
 		backgroundRunners = append(backgroundRunners, fanoutConsumer)
+	}
+
+	// outbox 表清理：标准部署下 Canal 只读 binlog、从不删行，
+	// 没有清理任务时该表只增不减（每次发帖/关注都插一行）。详见 outbox.Cleaner。
+	if cleaner := outbox.NewCleaner(db, outbox.CleanerConfig{}, logger); cleaner != nil {
+		backgroundRunners = append(backgroundRunners, cleaner)
 	}
 
 	if cfg.Canal.Enabled {
