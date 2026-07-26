@@ -192,30 +192,47 @@ flowchart TD
     H --> Z
 ```
 
-## 4.5 异步投影流程
+## 4.5 异步投影流程（幂等协议已纠序）
 
 关系变更事件会进入：
 
 `MySQL outbox -> Canal -> Kafka -> relation.OutboxConsumer -> EventProcessor`
 
-`EventProcessor` 会做三件事：
+`EventProcessor` 的处理顺序按**操作性质**分两段（这正是 15 篇第 5 条约定的出处）：
 
-1. 二次去重（`SETNX dedup:rel:*`，约 10 分钟窗口）
-2. 更新 Redis ZSet
-3. 直接对 `cnt:user:{id}` 做 `HIncrBy`，增减 following/follower
+1. **幂等段先行**：`ZAdd/ZRem` 双边 ZSet 投影——重放无害，失败即返回错误交给 Kafka 重投。
+2. **不幂等段与去重标记同一原子单元**：`counter.ApplyFollowDeltaOnce` 在**一段 Lua**里完成
+   `SET dedup NX EX` + 双向 `HINCRBY`。只有两种终态：「标记+计数都发生」或「都未发生」——
+   重投在前者被跳过、在后者重做，不存在"标记了但没数"的中间态。
 
-注意：第 3 步 **不经过** `counter-events` Kafka，也没有 partition 水位；与 like/fav 的异步聚合是两条语义。虽然 `EventProcessor` 构造时接收了 `UserCounterUpdater`，当前实现仅把它作为是否启用计数更新的开关，实际调用的是自身的 `pipelineIncrementUserMetrics()`，直接操作 Redis。
+> 早期顺序是「SetNX 落标 → ZSet → 计数」：标记先落，后续任一步失败，
+> 重投命中标记被当成已处理跳过——那次关注在计数里**永久少一**。
+> 回归测试 `TestProcess_RetryAfterCountFailureIsNotLost` 直接演练"计数失败→重投→最终计到"。
 
 ```mermaid
-flowchart TD
-    A[(MySQL outbox)] --> B[Canal]
-    B --> C[Kafka canal-outbox]
-    C --> D[relation.OutboxConsumer]
-    D --> E[EventProcessor]
-    E --> F[SETNX 去重]
-    E --> G[ZADD/ZREM 投影]
-    E --> H[HIncrBy user SDS<br/>非 counter-events]
+sequenceDiagram
+    participant K as Kafka(canal-outbox)
+    participant P as EventProcessor
+    participant R as Redis
+    participant UC as counter.ApplyFollowDeltaOnce
+
+    K->>P: FollowCreated / FollowCanceled
+    P->>R: ZAdd/ZRem z:following + z:followers（幂等）
+    alt ZSet 失败
+        P-->>K: 返回错误 → 重投（重放无害）
+    end
+    P->>UC: dedupeKey, ±1
+    UC->>R: Lua: SET NX EX + HINCRBY following + HINCRBY follower
+    alt 首次
+        R-->>P: 1（计数已完成）
+    else 重复投递
+        R-->>P: 0（跳过计数）
+    end
 ```
+
+计数键 `cnt:user:{id}` 的 schema 与这段 Lua 都归 **counter** 所有（relation 只依赖窄接口）——
+把别的模块的键格式复制进自己的脚本，布局演进时必然漏改。
+该链路**不经过** `counter-events` Kafka、没有 partition 水位，与 like/fav 的异步聚合是两条语义。
 
 ## 4.6 列表游标：复合双键（重构后）
 
@@ -365,23 +382,34 @@ relation 更像是：
 
 也就是说，relation 的失败表更像“阶段补做 / 局部重建”，而不是把 counter 的 `delta vs 绝对修复` 模板生搬硬套过来。
 
-## 6.8 重复 Follow 会生成新事件，可能使用户计数漂移
+## 6.8 重复 Follow 的计数漂移（已修复：事件只在状态迁移时发出）
 
-`Follow` 对关系表执行的是 upsert：已有有效关系再次 Follow 时，关系集合仍然只有一条，ZSet 的 `ZADD` 也天然去重；但服务层没有根据“是否新建/是否从取消状态恢复”决定要不要写 outbox。每次请求都会生成新 RelationID 和 `FollowCreated` 事件。
+`Follow` 对关系表是 upsert 语义——重复调用不会多出关系行，ZSet 的 `ZADD` 也天然去重。
+**曾经的缺陷**在事件侧：服务层不区分"是否真的发生了迁移"，每次请求都写一条带**新 RelationID**
+的 `FollowCreated`；消费端去重键包含 RelationID，拦不住这种"合法的新事件"，
+于是 `HINCRBY following/follower` 被重复执行——列表正确、计数偏大。
 
-去重键包含 RelationID，所以重复 Follow 不会命中前一次事件的 10 分钟 dedupe；最终会再次执行 `HINCRBY cnt:user:{id} following/follower +1`。于是“列表关系正确，但关注数/粉丝数偏大”成为可能。
+**现在的闸门在事务内**，依赖 MySQL affected-rows 语义（INSERT=1 / 有实际变更的 UPDATE=2 / 无变更=0）：
 
 ```mermaid
 flowchart TD
-    A[重复 Follow 同一目标] --> B[following/follower UPSERT: 关系仍有效]
-    B --> C[仍写新的 FollowCreated outbox]
-    C --> D[新 RelationID 导致 dedupe miss]
-    D --> E[ZADD 不重复]
-    D --> F[HINCRBY 再加 1]
-    F --> G[用户计数可能漂移]
+    A[Follow 请求] --> B["事务内 UpsertFollowing<br/>updated_at 仅在 rel_status 变化时更新"]
+    B -->|"affected=1 首次插入"| E[写 FollowCreated outbox → 提交]
+    B -->|"affected=2 复关注 0→1"| E
+    B -->|"affected=0 已在关注"| S["errNothingToFollow 哨兵<br/>回滚空事务, 不写事件"]
+    S --> OK["返回幂等成功<br/>无事件 / 无回填 / 无审计"]
+    E --> C[消费端: ZSet 投影 + 原子计数]
 ```
 
-修复应让仓储返回“是否发生 rel_status 迁移”，只有 `0 -> 1` 或首次插入才产生 FollowCreated；或者让事件处理器按关系真值/状态机幂等更新计数，不能只依赖带新 RelationID 的短 TTL 去重。
+两个容易忽略的实现细节：
+
+1. **`updated_at` 不能无条件更新**——否则重复 Follow 也会 `affected=2`，迁移判定即失效。
+   SQL 写成 `updated_at = IF(rel_status <> VALUES(rel_status), VALUES(updated_at), updated_at)`。
+2. **判定必须在事务内**，而 `RunInTx` 的事件是入参——用哨兵错误 `errNothingToFollow`
+   借错误通道让事务回滚（空事务）并跳过事件写入，调用方把它翻译成幂等成功。
+   （事务外预检 `ExistsFollowing` 有并发窗口，affected-rows 才是权威。）
+
+回归测试：`TestUpsertFollowing_TransitionSemantics` 锁住三种 affected 值的语义映射。
 
 ## 7. 面试官高频问题
 

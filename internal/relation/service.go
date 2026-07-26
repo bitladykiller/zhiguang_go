@@ -219,4 +219,9 @@ func (s *RelationService) toIDList(members []string) []uint64 {
 }
 
 // errNothingToCancel 表示取关时没有有效的关注关系。
-var errNothingToCancel = errors.New("relation: nothing to cancel")
+var (
+	errNothingToCancel = errors.New("relation: nothing to cancel")
+	// errNothingToFollow 是事务内的控制哨兵：关系已处于激活态，无迁移发生。
+	// 借错误通道让 RunInTx 回滚空事务并跳过 outbox 事件写入，调用方翻译为幂等成功。
+	errNothingToFollow = errors.New("relation: already following")
+)

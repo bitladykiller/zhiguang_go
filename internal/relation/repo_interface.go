@@ -8,8 +8,8 @@ import (
 
 // RepoWriter 定义关系写操作接口。
 type RepoWriter interface {
-	UpsertFollowing(ctx context.Context, id, fromUserID, toUserID uint64, status int) error
-	UpsertFollower(ctx context.Context, id, toUserID, fromUserID uint64, status int) error
+	UpsertFollowing(ctx context.Context, id, fromUserID, toUserID uint64, status int) (transitioned bool, err error)
+	UpsertFollower(ctx context.Context, id, toUserID, fromUserID uint64, status int) (transitioned bool, err error)
 	CancelFollowing(ctx context.Context, fromUserID, toUserID uint64) (int64, error)
 	CancelFollower(ctx context.Context, toUserID, fromUserID uint64) (int64, error)
 }

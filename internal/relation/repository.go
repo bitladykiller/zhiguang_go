@@ -29,25 +29,46 @@ func (r *RelationRepository) WithDB(db sqlx.ExtContext) *RelationRepository {
 }
 
 // UpsertFollowing INSERT ... ON DUPLICATE KEY UPDATE，使用 ExecContext。
-func (r *RelationRepository) UpsertFollowing(ctx context.Context, id, fromUserID, toUserID uint64, status int) error {
+// UpsertFollowing 写入/激活正向关系，返回**是否发生激活迁移**（首次插入或 0→1 复关注）。
+//
+// WHY 需要感知迁移：Follow 是 upsert 语义，重复调用不会多出关系行；
+// 但事件必须只在真实迁移时发出——否则每次重复 Follow 都产生带新 RelationID 的
+// FollowCreated，消费端去重键含 RelationID 无法拦截，用户关注数被重复 +1（计数漂移）。
+//
+// 实现依赖 MySQL affected-rows 语义：INSERT=1、UPDATE 且有实际变更=2、无变更=0。
+// 关键在 SQL：updated_at 仅在 rel_status 真正变化时才更新——
+// 若无条件写 updated_at，重复 Follow 也会 affected=2，迁移判定即失效。
+func (r *RelationRepository) UpsertFollowing(ctx context.Context, id, fromUserID, toUserID uint64, status int) (transitioned bool, err error) {
 	now := time.Now()
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 INSERT INTO following (id, from_user_id, to_user_id, rel_status, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(updated_at)
+ON DUPLICATE KEY UPDATE
+    updated_at = IF(rel_status <> VALUES(rel_status), VALUES(updated_at), updated_at),
+    rel_status = VALUES(rel_status)
 `, id, fromUserID, toUserID, status, now, now)
-	return err
+	if err != nil {
+		return false, err
+	}
+	affected, _ := res.RowsAffected()
+	return affected > 0, nil
 }
 
-// UpsertFollower INSERT ... ON DUPLICATE KEY UPDATE，使用 ExecContext。
-func (r *RelationRepository) UpsertFollower(ctx context.Context, id, toUserID, fromUserID uint64, status int) error {
+// UpsertFollower 写入/激活反向关系，迁移语义同 UpsertFollowing。
+func (r *RelationRepository) UpsertFollower(ctx context.Context, id, toUserID, fromUserID uint64, status int) (transitioned bool, err error) {
 	now := time.Now()
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 INSERT INTO follower (id, to_user_id, from_user_id, rel_status, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(updated_at)
+ON DUPLICATE KEY UPDATE
+    updated_at = IF(rel_status <> VALUES(rel_status), VALUES(updated_at), updated_at),
+    rel_status = VALUES(rel_status)
 `, id, toUserID, fromUserID, status, now, now)
-	return err
+	if err != nil {
+		return false, err
+	}
+	affected, _ := res.RowsAffected()
+	return affected > 0, nil
 }
 
 // CancelFollowing 取消正向关注（rel_status → 0），使用 ExecContext。

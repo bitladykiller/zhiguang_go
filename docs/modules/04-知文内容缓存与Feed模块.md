@@ -146,47 +146,58 @@ flowchart TD
 
 知文详情页是整个系统中吞吐量最高、面对网络攻击与高并发压力最大的入口之一。为了同时解决“缓存穿透（查不存在的数据）”、“缓存击穿（热点 Key 突然过期）”和“多实例本地缓存脏数据”三大工程难题，本项目设计了**四道递进式防护体系**。
 
-### 3.2.0 四道防线全景解析
+### 3.2.0 四道防线全景解析（对齐 `detail_service.go` 的真实顺序）
 
 > **💡 现实工程场景：**
 > 如果某个恶意黑客使用自动化脚本，以每秒 5000 次的频率轮询随机生成的废 ID（如 `99999999`），如果没有前置过滤器和空值哨兵，这些请求会全部打穿缓存直奔 MySQL，瞬间导致数据库 CPU 满载、连接池枯竭，引发整站崩溃。
 
+**先记住一个容易讲错的点：四道防线的编排顺序是 `L1 → L2(含 NULL 哨兵) → Bloom → 锁内回源`，Bloom 不在最前面。**
+
+早期实现确实把 Bloom 放在第一位——直觉上"先拦住不存在的"。但推演一下成本：
+
+- 正常用户读热点内容：L1 本可 50ns 返回，却先付一次 Bloom 的 Redis 往返——**热路径为冷场景买单**；
+- 扫号攻击者：请求的 ID 必然 L1/L2 全 miss，无论 Bloom 排第几，到达它的成本完全一样。
+
+结论：**缓存命中本身就证明存在**，先问"可能存在吗"没有信息量。Bloom 的正确位置是"两级缓存都 miss、即将碰 DB 之前"。这一顺序调整让 L1 命中路径的 Redis 往返从 3 次降到 0 次（配合版本号本地短缓存，见 3.2.6）。
+
 ```mermaid
 flowchart TD
-    A[详情读请求] --> B[防线 1: RedisBloom CF.* 存在性过滤]
-    B -->|MightContain=false| Z1[100% 确定不存在 -> 直接 404]
-    B -->|MightContain=true / fail-open| C[防线 2: L1 FreeCache 本地内存缓存]
-    C -->|命中 50ns| U[补充用户态 like/fav -> 返回]
-    C -->|miss| D[防线 3: L2 Redis 共享缓存]
-    D -->|命中 NULL 哨兵| Z2[确认不存在 -> 直接 404]
-    D -->|命中详情 json| C2[回填 L1] --> U
-    D -->|miss| E[防线 4: L3 DB + 看门狗分布式锁回源]
-    E -->|未抢到锁| F[休眠 10ms -> 重查 L2] --> D
-    E -->|抢到锁| G[double check L2 -> 回源 MySQL]
-    G -->|DB 存在| H[回填 L1/L2 + CF.ADD] --> U
-    G -->|DB 不存在| I[写 NULL 哨兵短 TTL] --> Z2
+    A[详情读请求] --> V["cache.Versions 取版本号<br/>(进程内短缓存, 默认 2s)"]
+    V --> K["拼缓存键 knowpost:detail:id:vL:verN"]
+    K --> C["防线 1: L1 freecache<br/>命中≈50ns, 零网络"]
+    C -->|"命中且解码成功"| U["记录热点 + enrichDetail 补用户态"] --> R[返回]
+    C -->|miss| D["防线 2: L2 Redis"]
+    D -->|"命中 NULL 哨兵"| Z2[确认不存在 → 404]
+    D -->|"命中详情 JSON"| C2[解码成功才回填 L1] --> U
+    D -->|miss| B["防线 3: RedisBloom CF.EXISTS"]
+    B -->|"MightContain=false"| Z1["数学上 100% 不存在 → 404<br/>DB 一次都不碰"]
+    B -->|"true / fail-open"| E["防线 4: 分布式锁 + 看门狗"]
+    E -->|"未抢到锁"| F[等待后重查 L2] --> D
+    E -->|"抢到锁"| G[double check L2 → 回源 MySQL]
+    G -->|"DB 存在"| H["填计数 → 回填 L2/L1 + CF.ADD"] --> U
+    G -->|"DB 不存在"| I["写 NULL 哨兵 (30~60s 随机 TTL)"] --> Z2
+    G -->|"403 无权限"| Z3["直接透传, 不写任何缓存"]
 ```
 
 #### Step-by-Step 四道防线工作机制：
 
-1. **防线 1：第三方 RedisBloom Cuckoo Filter (`CF.*`) 前置**
-   - **原理**：在请求接触自由内存与 Redis 缓存之前，先通过 RedisBloom 的布隆/布谷鸟过滤器检查 ID 是否存在。
-   - **教学结论**：如果 `CF.EXISTS` 返回 `false`（即 `MightContain=false`），在数学上可以 **100% 保证该知文从未存在过**，系统直接返回 `404`，连本地内存与 Redis L2 都不必读取。
-   - **优点**：能够以几 KB 的极小内存消耗，把 99% 以上的盲目扫号攻击隔绝在最外层。
+1. **防线 1：L1 freecache 进程内缓存**
+   - **原理**：Go 进程内内存，约 50ns 返回，零网络往返。解码失败视为 miss（可能是旧布局残留），**不会**把解不开的字节回填。
+   - **教学结论**：热点文章的绝大多数流量在单个 API 节点内存中直接消化。注意 L1 能做到"零 Redis IO"的前提是版本号也有进程内短缓存——版本号编码在键里，"读 L1"必须先"知道版本号"（详见 3.2.6）。
 
-2. **防线 2：L1 FreeCache 进程内内存缓存**
-   - **原理**：基于 Go 进程内内存（FreeCache）实现，响应时间仅需大约 50 纳秒（ns）。
-   - **教学结论**：热点文章在被频繁访问时，99.9% 的流量在单个 API 节点的内存中就被直接消化，极大地减轻了 Redis 的网络与单线程命令处理压力。
+2. **防线 2：L2 Redis 共享缓存 + NULL 空值哨兵**
+   - **原理**：跨实例共享。命中 `"NULL"` 哨兵串直接 404；命中 JSON 则**先解码成功再回填 L1**。
+   - **教学结论**：NULL 哨兵吸收三类流量——回源确认过不存在的 ID、Cuckoo Filter 的假阳性、过滤器未预热期间的真实 miss。随机短 TTL（30~60s）防止同批哨兵同时过期造成周期性穿透。
 
-3. **防线 3：L2 Redis 共享缓存 + NULL 空值哨兵**
-   - **原理**：跨 API 实例共享的二级缓存。如果回源 MySQL 后发现资源真的不存在，绝不静默丢弃，而是在 Redis 中写入一个特殊的 `"NULL"` 哨兵字符串，并赋予 30s~60s 的随机短 TTL。
-   - **教学结论**：NULL 哨兵专门吸收 Cuckoo Filter 的假阳性（False Positive）、删除残留或过滤器尚未完成预热时的真实 miss 请求，是防止穿透的第二道保险。
+3. **防线 3：RedisBloom Cuckoo Filter（`CF.*`）存在性预判**
+   - **原理**：两级缓存都 miss 后、抢锁之前执行 `CF.EXISTS`。返回 false 在数学上保证该 ID 从未存在，直接 404，DB 一次都不碰。模块缺失 / Redis 故障 / 未预热一律 **fail-open** 放行，由 NULL 哨兵兜底。
+   - **教学结论**：位置在缓存之后不削弱防护——扫号请求本来就到不了缓存命中分支；而正常请求由此免付一次往返。
 
-4. **防线 4：L3 DB 回源 + Redis看门狗（Watchdog）分布式锁**
-   - **原理**：当 L1/L2 均未命中时，系统不会允许所有并发协程同时冲向 MySQL（即缓存击穿），而是通过 Redis `SET NX PX` 争抢独占回源锁。
-   - **教学结论**：抢到锁的协程开启本地看门狗（每 `TTL/3` 时间自动续期），防止数据库长查询导致锁超时释放；未抢到锁的协程休眠等待后重新读取 Redis L2，直接复用前者的回填结果。
+4. **防线 4：L3 DB 回源 + Redis 看门狗分布式锁**
+   - **原理**：`SET NX PX` 抢独占回源锁；持锁者每 `TTL/3` 续期（看门狗），防长查询导致锁提前失效；未抢到锁的协程等待后重查 L2 复用回填结果；抢到锁后先 double check L2。
+   - **教学结论**：击穿防护的本质是"同一 key 同一时刻至多一个回源者"。注意 **403（无权限）不写任何缓存**——内容存在、只是请求者无权看，写哨兵会把它对所有人变成 404。
 
----
+> 以上编排不再是手写流程，而是 `cache.Tiered[T]` 组件的一次配置化调用——详见 3.2.5。
 
 ### 3.2.0.1 第三方 RedisBloom（Cuckoo CF.*）适配层
 
@@ -315,6 +326,104 @@ sequenceDiagram
 因为这些是用户维度数据，不是公共数据。  
 如果把它们塞进共享缓存，会导致不同用户互相污染。
 
+### 3.2.5 Tiered：把"读穿舞步"沉淀成组件（教学深度拆解）
+
+> **💡 为什么值得单独一节：**
+> "L1 查 → L2 查 → 抢锁 double-check → 回源 → 回填"这套舞步曾在详情、我的列表等处**各手写一遍**，
+> 细节各有微差——历史上的公共 Feed 跨用户串号事故，根因正是其中一份在叠加用户态**之后**才写缓存。
+> 复制粘贴的模式没有结构可言，正确性只能逐处人工核对。`cache.Tiered[T]`（internal/cache/tiered.go）
+> 把这套编排一次写对、处处复用。
+
+**调用方只需提供 5 类"业务件"，编排完全交给组件：**
+
+| 业务件 | 详情场景的取值 | 说明 |
+|---|---|---|
+| 键 | `detailPageKey(id, version)` | 由 keys.go 统一构造 |
+| Loader | 查 DB + 权限判定 + 填计数 + CF.ADD | 契约见下表 |
+| TTL 策略 | `L2TTL` 闭包内叠加热点延长 | 每次写 L2 时调用，可带 jitter |
+| PreLoad | Bloom `CF.EXISTS` | 两级 miss 后、抢锁前执行 |
+| 锁参数 | `lock:{pageKey}` + 看门狗选项 | LockKey 为空则不加锁直接回源 |
+
+**Loader 契约（三种返回的语义严格区分）：**
+
+| 返回 | 语义 | 组件行为 |
+|---|---|---|
+| `(v, true, nil)` | 数据存在 | Encode → 写 L2 → 回填 L1 → 返回 v |
+| `(_, false, nil)` | **确认**不存在 | 写 NULL 哨兵 → 返回 `ErrNullCached` |
+| `(_, _, err)` | 加载失败/无权限 | **不写任何缓存**，错误原样透传 |
+
+**结构性防串号（本组件最重要的一条不变量）：**
+
+> 缓存中只会出现 Loader 的原始产物或 L2 的原始字节。`Get` 在返回**之前**就完成了全部缓存写入，
+> 用户态（liked/faved）由调用方在拿到返回值**之后**叠加——即便调用方随手改返回值，也污染不了缓存。
+> "共享视图进缓存、用户态读后叠加"从纪律变成了结构，有专门测试演练这条不变量
+> （`TestTiered_CacheStoresLoaderOutputOnly`）。
+
+```mermaid
+sequenceDiagram
+    participant Caller as 调用方(GetDetail)
+    participant T as Tiered.Get
+    participant L1 as freecache
+    participant L2 as Redis
+    participant Lock as 分布式锁
+    participant Loader as Loader(DB)
+
+    Caller->>T: Get(key, loader)
+    T->>L1: Get(key)
+    alt L1 命中且解码成功
+        T-->>Caller: (v, HitL1)
+    else miss
+        T->>L2: GET key
+        alt NULL 哨兵
+            T-->>Caller: ErrNullCached
+        else JSON 命中
+            T->>L1: 回填原始字节
+            T-->>Caller: (v, HitL2)
+        else miss
+            T->>T: PreLoad (Bloom)
+            T->>Lock: 抢锁+看门狗
+            T->>L2: double check
+            T->>Loader: 回源
+            T->>L2: Set(Encode(v), L2TTL())
+            T->>L1: 回填
+            T-->>Caller: (v, HitLoad)
+        end
+    end
+    Note over Caller: 拿到返回值后才 enrichDetail 补用户态<br/>此刻缓存已定格, 用户态进不去
+```
+
+**命中级（HitLevel）驱动的差异化处理**——这是返回三元组的价值：
+
+| 命中级 | 计数是否刷新 | 原因 |
+|---|---|---|
+| `HitL1` | 否 | L1 窗口极短（秒级），载荷计数足够新 |
+| `HitL2` | **是** | 载荷携带的是写缓存那一刻的计数，可能已陈旧 |
+| `HitLoad` | 否 | Loader 刚查过计数 |
+
+### 3.2.6 Versions：版本号读取端（以及 L1 为什么曾经"名存实亡"）
+
+版本号失效模式的写侧很简单（INCR 一下），**读侧**才藏着坑：版本号编码在缓存键里，
+"读 L1"必须先"知道版本号"，而版本号在 Redis——于是每次详情读取（**包括 L1 命中**）
+都要先付一次 Redis 往返。L1 的意义是零网络，这个顺序把它的延迟下限锁死在 Redis RTT 上，
+文档曾宣称的"L1 约 50ns"在这条路径上从未成立过。
+
+`cache.Versions` 统一了三处版本号变体（详情 per-post / 公共 Feed 全局 / mine per-user）的读取端：
+
+```mermaid
+flowchart LR
+    A[Get verKey] --> B{进程内短缓存<br/>默认 2s}
+    B -->|命中| R[返回版本号]
+    B -->|miss| C[Redis GET]
+    C --> D[写回短缓存] --> R
+    W[本实例写操作] --> X[Redis INCR 版本] --> Y[Drop 本地短缓存]
+    Y -.保证.-> Z[自写自读立即切新键]
+```
+
+**取舍的推演（面试高频）**：短缓存引入"其他实例写入后，本实例最多延迟 2s 才切新键"的窗口——
+但在引入它之前，跨实例读到旧内容的窗口本来就是 **L1 TTL（60s）级别**的（旧 L1 条目仍在、无人通知）。
+版本号的"即时性"从来没带来端到端强一致，它带来的只是"新键提前生效"；
+用 2s 窗口换掉每次读取的一个 RTT，是净赚。配置项 `detail_cache.version_cache_ttl_seconds`（0=默认 2s，负数=关闭）。
+
 ## 3.3 Feed 读路径流程
 
 ### 3.3.1 公共 Feed
@@ -358,6 +467,11 @@ flowchart TD
 
 这是一个非常典型的“按访问模式选缓存模型”的例子。
 
+重构后本路径同样跑在 `cache.Tiered` 上（键 `feed:mine:{uid}:{size}:{page}:{ver}`，整页 JSON），
+由此带来两个行为改进：**回源有了分布式锁 + double check**（此前该路径无击穿保护），
+以及**返回前统一叠加当前用户 liked/faved**（此前三个列表接口只有部分叠加，
+同一字段是否出现取决于走了哪条代码路径——契约不该依赖实现路径）。
+
 不过接口命名和 SQL 语义有一处需要按源码说明：`GetMyPublished` 最终查询条件是 `creator_id = ? AND status != deleted`，因此当前会返回草稿和已发布内容，不是严格意义的“我的已发布列表”。由于该接口要求登录、且只允许读取当前用户自己的数据，这不会泄露草稿，但前端产品语义与方法名不一致；若产品确实只要已发布内容，应将 SQL 条件收紧为 `status = published`，或拆出明确的草稿列表接口。
 
 ```mermaid
@@ -388,6 +502,57 @@ flowchart TD
     C --> E
     D --> E
 ```
+
+### 3.3.4 关注流 `/feed/home`（游标分页 + 可见性档位）
+
+关注流的帖子 **ID 序列由扩散模块给出**（推拉归并，机制详见
+[14-信息流扩散](14-信息流扩散-读扩散写扩散与推拉结合.md)），本模块只做三件事：
+按 ID 批量补详情、按时间线顺序重排、叠加用户态。两个模块通过一个窄接口解耦：
+
+```go
+type HomeTimelineReader interface {
+    HomeTimelinePage(ctx, userID, cursor string, limit int) (ids []uint64, nextCursor string, hasMore bool, err error)
+}
+```
+
+```mermaid
+flowchart TD
+    A["GET /feed/home?cursor=&size=20"] --> B[HomeTimelinePage<br/>fanout 推拉归并 + 游标]
+    B -->|"ids 为空"| Z[返回空列表]
+    B --> C["FindFeedRowsByIDs(ids, {public, followers})"]
+    C --> D[按时间线顺序重排 rows<br/>SQL 排序与信息流顺序无关]
+    D --> E[mapRowsToItems 公共视图]
+    E --> F[withUserState 叠加 liked/faved]
+    F --> G["返回 items + next_cursor + has_more"]
+```
+
+三个教学点：
+
+1. **游标不透明**：`cursor`/`next_cursor` 原样回传（`t:{发布时间}:{postID}` 双键，
+   动态列表用 offset 会跳条/重条，复合游标不重不漏——项目统一约定，见 15 篇第 6 条）。
+2. **可见性档位按场景传参**：`FindFeedRowsByIDs(ids, visibilities)`——关注流按定义只含
+   "我关注的作者"，`followers` 档内容对关注者**应当可见**；公共 Feed 维持仅 `public`。
+   早期关注流复用 public-only 查询，followers 这一档对粉丝形同虚设。
+3. **时间线顺序是权威顺序**：DB 批查的 ORDER BY 只是取数便利，返回前必须按 ids 重排；
+   已删除/降可见性的帖子在此处被过滤，实际条数可能少于请求页长（正常现象）。
+
+## 3.4 键注册表（对齐 `internal/knowpost/keys.go`）
+
+模块占用的全部 Redis 键集中一处定义——键名是模块的公共契约，散落的 `fmt.Sprintf`
+改一处漏一处只能靠全文搜索（`feed:item:` 曾散落 3 个文件）。
+
+| 键 | 类型 | 用途 |
+|---|---|---|
+| `knowpost:ver:{id}` | String | 详情缓存版本号（写操作 INCR） |
+| `knowpost:detail:{id}:v{L}:ver{N}` | String | 详情页 JSON / `"NULL"` 空值哨兵 |
+| `feed:public:version` | String | 公共 Feed 全局版本号 |
+| `feed:mine:version:{userID}` | String | 「我的已发布」版本号 |
+| `feed:public:ids:{ver}:{size}:{page}` | List | 公共 Feed 某页的有序帖子 ID |
+| `feed:item:{id}` | String | Feed 条目碎片 JSON |
+| `lock:{cacheKey}` | String | 回源分布式锁 |
+
+L1（共享 freecache）前缀由 bootstrap 分配：`d:` 详情、`fp:` 公共页、`fm:` 我的页；
+版本号本地短缓存另用 `dv:` / `fv:` 前缀，与载荷键空间隔离。
 
 ## 4. 设计亮点
 
@@ -715,24 +880,22 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[客户端请求知文详情] --> B{布隆是否已预热?}
-    B -->|否或故障| C[放行 fail-open]
-    B -->|是| D{可能存在?}
-    D -->|一定不存在| E[直接返回不存在]
-    D -->|可能存在| C
-    C --> F{一级缓存命中?}
+    A[客户端请求知文详情] --> V[版本号: 进程内短缓存优先]
+    V --> F{一级缓存命中?}
     F -->|是| G[记录热点并补齐用户态]
     F -->|否| H{二级缓存命中?}
-    H -->|空值| E
-    H -->|正常内容| I[回写一级并刷新计数]
-    H -->|未命中| J[读穿锁回源]
+    H -->|空值哨兵| E[直接返回不存在]
+    H -->|正常内容| I[解码成功才回写一级 并刷新计数]
+    H -->|未命中| B{布隆判定}
+    B -->|一定不存在| E
+    B -->|可能存在或故障放行| J[读穿锁回源]
     J --> K[再次检查二级]
     K -->|已回填| I
     K -->|仍未命中| L[查数据库]
-    L -->|不存在或已删| M[写空值缓存]
-    M --> E
-    L -->|存在| N[查计数并写回缓存]
-    N --> O[CF.ADD]
+    L -->|不存在或已删| M[写空值哨兵] --> E
+    L -->|无权限| X[403 不写任何缓存]
+    L -->|存在| N[填计数 写回二级一级]
+    N --> O[CF.ADD 渐进补齐过滤器]
     O --> P[补齐点赞收藏状态]
     G --> Q[返回响应]
     I --> Q
@@ -741,10 +904,10 @@ flowchart TD
 
 ### 讲解要点
 
-1. **CF.EXISTS 在最前**：专门拦扫号 ID，减少无效 L1/L2/DB；软删 `CF.DEL`。
-2. **NULL 在 L2**：吸收误判、删除失败、模块缺失、预热未完成窗口。
-3. **读穿锁**：防击穿，不是防穿透。
-4. **用户态后置**：liked/faved 永不进共享缓存。
+1. **CF.EXISTS 在两级缓存之后**：缓存命中即证明存在，先问布隆是白付往返；扫号请求本就缓存全 miss，到达布隆的成本不变（历史版本曾放最前，见 3.2.0 的推演）。
+2. **NULL 在 L2**：吸收误判、删除残留、模块缺失、预热未完成窗口；403 与"不存在"严格区分，前者不写任何缓存。
+3. **读穿锁**：防击穿，不是防穿透；持锁看门狗续期，锁内先 double check。
+4. **用户态后置**：liked/faved 永不进共享缓存——由 Tiered 的结构保证（3.2.5）。
 5. **冷启动 / Redis 故障 fail-open**：宁可多打一次缓存，也不误拦真实内容。
 
 ## A3. 写路径 + 失效 + 事件（中文流程图）

@@ -11,8 +11,23 @@
    search / relation / fanout 三个消费者统一注入。此前该挂点从无调用方，
    重试耗尽的消息只剩一行 Warn、随 commit 永久消失。
 
+```mermaid
+flowchart TD
+    subgraph 表生命周期
+      W[业务事务 INSERT outbox 行] --> BL[Canal 读 binlog<br/>不读表本身]
+      W -.行永不被读取.-> T[(outbox 表)]
+      CL[Cleaner 每小时] -->|"DELETE created_at < 7d 前<br/>LIMIT 1000 循环"| T
+    end
+    subgraph 消费失败终点
+      K[canal-outbox 消息] --> H[RowHandler]
+      H -->|失败| RT[重试 ×3]
+      RT -->|仍失败| DL[DeadLetterRepository<br/>落 counter_failed_messages<br/>stage=outbox]
+      DL --> CM[Commit 跳过<br/>不阻塞分区]
+    end
+```
+
 另：relation 消费端的幂等协议为「幂等的 ZSet 投影先行 + 去重落标与计数同段 Lua 原子」，
-详见 [15-设计约定与模式](15-设计约定与模式.md) 第 5 条。
+时序图见 [05 篇 6.6 节](05-点赞收藏计数模块.md)，约定归纳见 [15-设计约定与模式](15-设计约定与模式.md) 第 5 条。
 
 ## 1. 模块定位
 
