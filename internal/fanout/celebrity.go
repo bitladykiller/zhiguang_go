@@ -4,70 +4,110 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
-// FollowerCounter 提供粉丝数快查能力。
-//
-// 由 counter 模块的用户维度计数（cnt:user:{id} 的 follower 字段）实现。
+// FollowerCounter 提供粉丝数快查能力（由 counter 模块的用户维度计数实现）。
 type FollowerCounter interface {
 	// FollowerCount 返回用户的粉丝数。
-	// 计数缺失或不可用时返回 (0, false)，调用方据此走慢路径。
+	// 计数缺失或不可用时返回 (0, false)，调用方据此走不依赖计数的慢路径。
 	FollowerCount(ctx context.Context, userID uint64) (int64, bool)
 }
 
-// isCelebrity 判断作者是否应走「拉」模式。
+// CelebrityRegistry 维护「大 V 名单」及其判定逻辑。
 //
-// 两级判定，快路径不可信时自动降级到慢路径：
+// WHY 独立成类型，而不是挂在 Service 上：
 //
-//  1. **快路**：读粉丝计数。达到阈值即判定为大 V，无需遍历粉丝列表。
-//  2. **慢路**：计数缺失/异常时返回 unknown，由写扩散过程边推边数——
-//     累计触达超过阈值就中止推送并把作者补记为大 V（见 FanoutPost）。
-//
-// WHY 不完全依赖计数器：
-//
-//	粉丝计数是 Redis 里的增量值，可能因消费失败、键过期或重建而失真。
-//	若完全依赖它，一次计数丢失就会让某个真实大 V 被判成普通作者，
-//	触发一次几十万粉丝的写扩散风暴。
-//	「边推边数」让判定不依赖任何外部状态的正确性，是自我修正的。
-func (s *Service) isCelebrity(ctx context.Context, authorID uint64) (celebrity bool, known bool) {
-	// 已在名单中：直接走拉，省掉计数查询。
-	if s.redisClient != nil {
-		if member, err := s.redisClient.SIsMember(ctx, celebritySetKey, authorID).Result(); err == nil && member {
-			return true, true
-		}
-	}
+//	写路径（Service）与读路径（TimelineReader）都需要判定大 V——
+//	此前 Reader 为了借用一个查询方法而持有整个 *Service，
+//	读路径由此假性依赖了写路径的全部依赖（粉丝列表、推送批量等）。
+//	名单本是两者共享的独立概念，独立后依赖图回到真实形状：
+//	Service → Registry ← Reader。
+type CelebrityRegistry struct {
+	redis     redis.UniversalClient
+	counter   FollowerCounter // 可为 nil：判定完全交给写路径的「边推边数」
+	threshold int
+	logger    *zap.Logger
+}
 
-	if s.followerCounter == nil {
+// NewCelebrityRegistry 创建大 V 名单。
+func NewCelebrityRegistry(redisClient redis.UniversalClient, counter FollowerCounter, threshold int, logger *zap.Logger) *CelebrityRegistry {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	if threshold <= 0 {
+		threshold = DefaultConfig().CelebrityThreshold
+	}
+	return &CelebrityRegistry{redis: redisClient, counter: counter, threshold: threshold, logger: logger}
+}
+
+// demoteRatio 是惰性降级的滞回系数：粉丝数跌破 threshold×0.8 才移出名单。
+//
+// 滞回的意义：阈值附近抖动的账号若立即双向切换，会在「推」「拉」两种模式间
+// 反复横跳——每次切回推模式都要补一轮全量扩散。80% 的缓冲带把切换频率压到可忽略。
+const demoteRatioPercent = 80
+
+// IsCelebrity 判定作者是否应走「拉」模式。
+//
+// 判定顺序（含**惰性降级**）：
+//
+//  1. 名单命中 → 若粉丝计数可信且已跌破滞回线，当场移出名单（解决「名单只进不出」：
+//     掉粉后无需任何离线任务，下一次发帖判定时自动回到推模式）；否则确认为大 V。
+//  2. 名单未命中 → 计数快路判定；计数不可用返回 unknown，
+//     由写路径「边推边数」兜底（不依赖任何外部状态的正确性，自我修正）。
+func (r *CelebrityRegistry) IsCelebrity(ctx context.Context, authorID uint64) (celebrity bool, known bool) {
+	if r == nil || r.redis == nil {
 		return false, false
 	}
-	count, ok := s.followerCounter.FollowerCount(ctx, authorID)
+
+	if member, err := r.redis.SIsMember(ctx, celebritySetKey, authorID).Result(); err == nil && member {
+		if r.counter != nil {
+			if count, ok := r.counter.FollowerCount(ctx, authorID); ok && count < int64(r.threshold*demoteRatioPercent/100) {
+				r.demote(ctx, authorID, count)
+				return false, true
+			}
+		}
+		return true, true
+	}
+
+	if r.counter == nil {
+		return false, false
+	}
+	count, ok := r.counter.FollowerCount(ctx, authorID)
 	if !ok {
 		return false, false
 	}
-	return count >= int64(s.cfg.CelebrityThreshold), true
+	return count >= int64(r.threshold), true
 }
 
-// markCelebrity 把作者加入大 V 名单。
-//
-// 名单不设 TTL：大 V 身份是单调的（粉丝数掉下阈值的情况罕见，且误判为大 V 只是让
-// 读者多拉一次发件箱，不会丢内容）。需要移除时由运维显式 SREM。
-func (s *Service) markCelebrity(ctx context.Context, authorID uint64) {
-	if s.redisClient == nil {
+// Mark 把作者加入大 V 名单（由写路径在触达量越过阈值时调用）。
+func (r *CelebrityRegistry) Mark(ctx context.Context, authorID uint64) {
+	if r == nil || r.redis == nil {
 		return
 	}
-	if err := s.redisClient.SAdd(ctx, celebritySetKey, authorID).Err(); err != nil {
-		s.logger.Warn("failed to mark author as celebrity",
+	if err := r.redis.SAdd(ctx, celebritySetKey, authorID).Err(); err != nil {
+		r.logger.Warn("failed to mark author as celebrity",
 			zap.Uint64("authorID", authorID), zap.Error(err))
 	}
 }
 
-// celebritiesAmong 从给定的关注列表中筛出大 V。
-//
-// 用一次 SMISMEMBER 完成批量判定，而不是逐个 SISMEMBER。
-// 返回值保持输入顺序，便于上层按关注时间倒序截断。
-func (s *Service) celebritiesAmong(ctx context.Context, authorIDs []uint64) ([]uint64, error) {
-	if len(authorIDs) == 0 || s.redisClient == nil {
+// demote 把掉粉的作者移出名单（惰性触发，见 IsCelebrity）。
+func (r *CelebrityRegistry) demote(ctx context.Context, authorID uint64, count int64) {
+	if err := r.redis.SRem(ctx, celebritySetKey, authorID).Err(); err != nil {
+		r.logger.Warn("failed to demote celebrity", zap.Uint64("authorID", authorID), zap.Error(err))
+		return
+	}
+	r.logger.Info("celebrity demoted to push mode",
+		zap.Uint64("authorID", authorID),
+		zap.Int64("followers", count),
+		zap.Int("threshold", r.threshold),
+	)
+}
+
+// Among 从给定的作者列表中筛出大 V（一次 SMISMEMBER 批量判定，保持输入顺序）。
+func (r *CelebrityRegistry) Among(ctx context.Context, authorIDs []uint64) ([]uint64, error) {
+	if r == nil || r.redis == nil || len(authorIDs) == 0 {
 		return nil, nil
 	}
 
@@ -76,7 +116,7 @@ func (s *Service) celebritiesAmong(ctx context.Context, authorIDs []uint64) ([]u
 		members[i] = strconv.FormatUint(id, 10)
 	}
 
-	flags, err := s.redisClient.SMIsMember(ctx, celebritySetKey, members...).Result()
+	flags, err := r.redis.SMIsMember(ctx, celebritySetKey, members...).Result()
 	if err != nil {
 		return nil, err
 	}

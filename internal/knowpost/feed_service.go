@@ -949,10 +949,10 @@ func (s *KnowPostFeedService) feedVersions() *cache.Versions {
 
 // HomeTimelineReader 抽象关注流的帖子 ID 来源，由 fanout 模块实现。
 //
-// 这里只依赖「有序的 postID 列表」这一最小契约，而不引入扩散模块的具体类型：
-// knowpost 不需要知道这些 ID 是推来的还是拉来的，扩散策略的演进不会波及本模块。
+// 契约是「一页有序 postID + 下一页游标」：knowpost 不需要知道这些 ID
+// 是推来的还是拉来的，也不解释游标内容（不透明回传），扩散策略的演进不波及本模块。
 type HomeTimelineReader interface {
-	HomeTimelinePostIDs(ctx context.Context, userID uint64, offset, limit int) (ids []uint64, hasMore bool, err error)
+	HomeTimelinePage(ctx context.Context, userID uint64, cursor string, limit int) (ids []uint64, nextCursor string, hasMore bool, err error)
 }
 
 // SetHomeTimelineReader 注入关注流 ID 来源。
@@ -965,31 +965,25 @@ func (s *KnowPostFeedService) SetHomeTimelineReader(r HomeTimelineReader) {
 
 // GetHomeFeed 返回当前用户的**关注流**：所关注作者发布的知文，按发布时间倒序。
 //
-// 与其它两个列表的区别（三者语义互不相同，不可混用）：
+// 三个列表接口语义互不相同：public（全站）/ home（关注流，本方法）/ mine（我的已发布）。
 //
-//	GetPublicFeed   全站公开内容      —— 与关注关系无关
-//	GetHomeFeed     我关注的人的内容   —— 本方法
-//	GetMyPublished  我自己发布的内容   —— 个人主页
+// 分页是**游标制**（cursor 不透明回传，空串为第一页）：
+// 信息流是动态列表，offset 分页在翻页期间有新帖插入时会跳条或重条；
+// 游标以 (发布时间, postID) 双键定位，翻页不重不漏。
 //
-// 帖子 ID 由扩散模块给出（推拉结合，见 internal/fanout），
-// 本方法只负责把 ID 批量补齐为完整条目并叠加当前用户状态。
-//
-// 边界：
-//   - 未注入 HomeTimelineReader（扩散未装配）→ 返回空列表，不报错。
-//   - 时间线中的帖子可能已被删除或转为不可见，FindByIDs 会过滤掉，
-//     因此实际返回条数可能少于请求的 size。
-func (s *KnowPostFeedService) GetHomeFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
+// 可见性：关注流按定义只包含「我关注的作者」，因此 followers-only 内容
+// **应当**对我可见——批量查询使用 public+followers 双档过滤
+// （private/unlisted 仍被排除）。公共 Feed 则维持仅 public。
+func (s *KnowPostFeedService) GetHomeFeed(ctx context.Context, userID uint64, cursor string, size int) (*HomeFeedResponse, error) {
 	p := s.feedCacheTTLValues()
 	safeSize := clamp(size, 1, p.safeSize)
-	safePage := max(page, 1)
-	offset := (safePage - 1) * safeSize
 
-	empty := &FeedPageResponse{Items: []FeedItemResponse{}, Page: safePage, Size: safeSize, HasMore: false}
+	empty := &HomeFeedResponse{Items: []FeedItemResponse{}, HasMore: false}
 	if s.homeTimeline == nil {
 		return empty, nil
 	}
 
-	ids, hasMore, err := s.homeTimeline.HomeTimelinePostIDs(ctx, userID, offset, safeSize)
+	ids, next, hasMore, err := s.homeTimeline.HomeTimelinePage(ctx, userID, cursor, safeSize)
 	if err != nil {
 		return nil, fmt.Errorf("get home feed: read timeline: %w", err)
 	}
@@ -997,21 +991,19 @@ func (s *KnowPostFeedService) GetHomeFeed(ctx context.Context, userID uint64, pa
 		return empty, nil
 	}
 
-	rows, err := s.repo.FindByIDs(ctx, ids)
+	rows, err := s.repo.FindFeedRowsByIDs(ctx, ids, []KnowPostVisibility{KnowPostVisibilityPublic, KnowPostVisibilityFollowers})
 	if err != nil {
 		return nil, fmt.Errorf("get home feed: find by ids: %w", err)
 	}
-	if len(rows) == 0 {
-		return &FeedPageResponse{Items: []FeedItemResponse{}, Page: safePage, Size: safeSize, HasMore: hasMore}, nil
-	}
 
-	// FindByIDs 的排序由 SQL 决定，未必与时间线顺序一致；
-	// 时间线的顺序才是信息流的权威顺序，因此按 ids 重排。
+	// 时间线顺序是权威顺序，按 ids 重排（FindFeedRowsByIDs 的 SQL 排序与其无关）。
 	rows = reorderRowsByIDs(rows, ids)
 
 	items := s.mapRowsToItems(ctx, rows, &userID, false)
-	shared := &FeedPageResponse{Items: items, Page: safePage, Size: safeSize, HasMore: hasMore}
-	return s.withUserState(ctx, shared, &userID), nil
+	shared := &FeedPageResponse{Items: items, Page: 1, Size: safeSize, HasMore: hasMore}
+	enriched := s.withUserState(ctx, shared, &userID)
+
+	return &HomeFeedResponse{Items: enriched.Items, NextCursor: next, HasMore: hasMore}, nil
 }
 
 // reorderRowsByIDs 按给定的 ID 顺序重排数据库行，丢弃不在 ids 中的行。

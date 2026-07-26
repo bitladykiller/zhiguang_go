@@ -304,7 +304,7 @@ func (s *KnowPostService) UpdateVisibility(ctx context.Context, creatorID, id ui
 	}
 	// 载荷带上目标可见性：扩散消费者据此决定是否把该帖从发件箱清除
 	// （转为非公开/非粉丝可见后，拉路不应再把它分发出去）。
-	if err := s.runKnowPostTxWithPayload(ctx, id, outboxTypeKnowPostVisibilityUpdated, map[string]any{"visible": string(visible)}, func(txRepo Repo) error {
+	if err := s.runKnowPostTxWithPayload(ctx, id, outboxTypeKnowPostVisibilityUpdated, map[string]any{"visible": string(visible), "creator_id": creatorID}, func(txRepo Repo) error {
 		affected, err := txRepo.UpdateVisibility(ctx, id, creatorID, visible)
 		if err != nil {
 			return err
@@ -327,7 +327,8 @@ func (s *KnowPostService) UpdateVisibility(ctx context.Context, creatorID, id ui
 //  1. CF.DEL 从 RedisBloom 过滤器移除（避免软删 ID 仍被 MightContain 放行）
 //  2. 失效详情 / Feed 缓存（版本号 + NULL 仍作兜底）
 func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) error {
-	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostDeleted, func(txRepo Repo) error {
+	// 载荷带 creator_id：扩散消费者据此定位并清理作者发件箱。
+	if err := s.runKnowPostTxWithPayload(ctx, id, outboxTypeKnowPostDeleted, map[string]any{"creator_id": creatorID}, func(txRepo Repo) error {
 		affected, err := txRepo.SoftDelete(ctx, id, creatorID)
 		if err != nil {
 			return err

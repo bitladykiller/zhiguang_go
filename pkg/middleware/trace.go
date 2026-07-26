@@ -3,6 +3,7 @@ package middleware
 
 import (
 	"context"
+	"github.com/zhiguang/app/pkg/contextutil"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,6 +50,8 @@ func TraceMiddleware(timeout time.Duration) gin.HandlerFunc {
 
 		// 存入 Gin 上下文
 		c.Set(contextKeyTraceID, traceID)
+		// 同步注入 request context：服务层与审计通过 contextutil.TraceIDFrom 读取。
+		c.Request = c.Request.WithContext(contextutil.WithTraceID(c.Request.Context(), traceID))
 
 		// 返回给客户端
 		c.Header(TraceIDHeader, traceID)

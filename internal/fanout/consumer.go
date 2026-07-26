@@ -12,9 +12,12 @@ import (
 	"github.com/zhiguang/app/internal/outbox"
 )
 
-// knowPostPublishedType 是知文发布事件在 outbox 中的类型标识。
-// 必须与 knowpost 包内的 outboxTypeKnowPostPublished 保持一致。
-const knowPostPublishedType = "KnowPostPublished"
+// 知文事件在 outbox 中的类型标识（与 knowpost 包内常量保持一致）。
+const (
+	knowPostPublishedType         = "KnowPostPublished"
+	knowPostDeletedType           = "KnowPostDeleted"
+	knowPostVisibilityUpdatedType = "KnowPostVisibilityUpdated"
+)
 
 // Consumer 消费 canal-outbox 主题，把知文发布事件转成扩散动作。
 //
@@ -78,13 +81,14 @@ type publishRowHandler struct {
 	logger  *zap.Logger
 }
 
-// publishPayload 是知文发布事件的载荷结构。
+// publishPayload 是知文事件的载荷结构（发布/删除/可见性共用超集）。
 type publishPayload struct {
 	Entity      string `json:"entity"`
 	Type        string `json:"type"`
 	ID          uint64 `json:"id"`
 	CreatorID   uint64 `json:"creator_id"`
 	PublishedAt int64  `json:"published_at"`
+	Visible     string `json:"visible"`
 }
 
 // HandleRow 处理单条 outbox 行。
@@ -92,7 +96,12 @@ type publishPayload struct {
 // 非发布事件直接放行（返回 nil 即提交位点），因为 canal-outbox 是多消费者共享主题，
 // 里面混有关系、搜索等各类事件。
 func (h *publishRowHandler) HandleRow(ctx context.Context, row outbox.Row) error {
-	if row.Type != knowPostPublishedType || len(row.Payload) == 0 {
+	switch row.Type {
+	case knowPostPublishedType, knowPostDeletedType, knowPostVisibilityUpdatedType:
+	default:
+		return nil
+	}
+	if len(row.Payload) == 0 {
 		return nil
 	}
 
@@ -107,6 +116,26 @@ func (h *publishRowHandler) HandleRow(ctx context.Context, row outbox.Row) error
 		h.logger.Warn("fanout: publish payload missing id or creator_id, skipping",
 			zap.String("aggregateID", row.AggregateID))
 		return nil
+	}
+
+	// 删除 / 可见性收紧：清理发件箱，拉路不再分发该帖。
+	//
+	// 收件箱副本无法穷举清理（粉丝可能极多），由读路径的 FindByIDs 过滤兜底渲染；
+	// 发件箱是拉路与关注回填的数据源，必须清干净，否则死 ID 持续占据
+	// AuthorBoxMaxItems 的槽位、还会被回填复制进新粉丝的收件箱。
+	if row.Type == knowPostDeletedType || (row.Type == knowPostVisibilityUpdatedType && !visibleInFeeds(p.Visible)) {
+		if p.CreatorID == 0 {
+			h.logger.Debug("fanout: removal event without creator_id (pre-feature), skipping",
+				zap.String("aggregateID", row.AggregateID))
+			return nil
+		}
+		if err := h.service.RemovePost(ctx, p.CreatorID, p.ID); err != nil {
+			return fmt.Errorf("fanout: remove post %d from author box: %w", p.ID, err)
+		}
+		return nil
+	}
+	if row.Type == knowPostVisibilityUpdatedType {
+		return nil // 转公开/粉丝可见：不主动补录（缺发布时间），由后续行为自然收敛
 	}
 
 	if p.PublishedAt <= 0 {
@@ -127,4 +156,9 @@ func (h *publishRowHandler) HandleRow(ctx context.Context, row outbox.Row) error
 		return fmt.Errorf("fanout: handle published post %d: %w", p.ID, err)
 	}
 	return nil
+}
+
+// visibleInFeeds 判定某可见性等级是否仍应被信息流分发。
+func visibleInFeeds(visible string) bool {
+	return visible == "public" || visible == "followers"
 }

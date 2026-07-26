@@ -223,8 +223,20 @@ WHERE know_posts.id = ?
 
 // FindByIDs 根据 ID 批量查询已发布的公开知文，返回 FeedRow。
 func (r *KnowPostRepository) FindByIDs(ctx context.Context, ids []uint64) ([]KnowPostFeedRow, error) {
+	return r.FindFeedRowsByIDs(ctx, ids, []KnowPostVisibility{KnowPostVisibilityPublic})
+}
+
+// FindFeedRowsByIDs 按 ID 批量取 Feed 行，可见性档位由调用方按场景给定。
+//
+// WHY 需要档位参数：公共 Feed 只应含 public；而**关注流**按定义只包含
+// 「我关注的作者」，followers-only 内容对关注者应当可见——
+// 早期关注流复用 public-only 的查询，该可见性等级对粉丝也形同虚设。
+func (r *KnowPostRepository) FindFeedRowsByIDs(ctx context.Context, ids []uint64, visibilities []KnowPostVisibility) ([]KnowPostFeedRow, error) {
 	if len(ids) == 0 {
 		return nil, nil
+	}
+	if len(visibilities) == 0 {
+		visibilities = []KnowPostVisibility{KnowPostVisibilityPublic}
 	}
 	query, args, err := sqlx.In(`
 SELECT
@@ -240,9 +252,9 @@ FROM know_posts
 LEFT JOIN users ON know_posts.creator_id = users.id
 WHERE know_posts.id IN (?)
   AND know_posts.status = ?
-  AND know_posts.visible = ?
+  AND know_posts.visible IN (?)
 ORDER BY know_posts.publish_time DESC
-`, ids, KnowPostStatusPublished, KnowPostVisibilityPublic)
+`, ids, KnowPostStatusPublished, visibilities)
 	if err != nil {
 		return nil, fmt.Errorf("find by ids: build query: %w", err)
 	}

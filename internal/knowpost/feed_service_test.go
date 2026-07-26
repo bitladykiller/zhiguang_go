@@ -840,8 +840,8 @@ func TestRecordItemHotKeys_ExtendsOnlyHotItems(t *testing.T) {
 
 	ctx := context.Background()
 
-	// item 100 被标记为热点，item 200 是冷键
-	srv.Set("hotkey:active:knowpost:100", "1")
+	// item 100 被标记为 MEDIUM 热点（标记值即等级），item 200 是冷键
+	srv.Set("hotkey:active:knowpost:100", "2")
 	srv.Set("feed:item:100", `{"id":"100"}`)
 	srv.Set("feed:item:200", `{"id":"200"}`)
 	srv.SetTTL("feed:item:100", 30*time.Second)

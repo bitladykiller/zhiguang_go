@@ -35,7 +35,7 @@ type KnowPostReadService interface {
 type KnowPostFeedServiceInterface interface {
 	GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error)
 	GetMyPublished(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
-	GetHomeFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
+	GetHomeFeed(ctx context.Context, userID uint64, cursor string, size int) (*HomeFeedResponse, error)
 }
 
 // 编译期断言。
@@ -384,7 +384,11 @@ func (h *KnowPostHandler) GetMyPublished(c *gin.Context) {
 // 功能：返回当前登录用户的**关注流**——所关注作者发布的知文，按发布时间倒序。
 // 帖子来源由扩散模块以推拉结合的方式给出（见 internal/fanout）。
 //
-// 请求：GET /knowposts/feed/home?page=1&size=20
+// 请求：GET /knowposts/feed/home?cursor=&size=20
+//
+// 分页为**游标制**：响应中的 next_cursor 原样回传取下一页（不透明值），
+// 空 cursor 表示第一页。信息流是动态列表，offset 分页在翻页期间有新帖插入时
+// 会跳条/重条，游标以 (发布时间, postID) 双键定位则不重不漏。
 //
 // 三个 Feed 接口的语义互不相同，不可混用：
 //
@@ -402,9 +406,9 @@ func (h *KnowPostHandler) GetHomeFeed(c *gin.Context) {
 		response.Error(c, errcode.ErrUnauthorized)
 		return
 	}
-	page := httputil.QueryInt(c, "page", 1)
+	cursor := c.Query("cursor")
 	size := httputil.QueryInt(c, "size", 20)
-	resp, err := h.feedSvc.GetHomeFeed(c.Request.Context(), userID, page, size)
+	resp, err := h.feedSvc.GetHomeFeed(c.Request.Context(), userID, cursor, size)
 	if err != nil {
 		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))
