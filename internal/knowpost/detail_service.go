@@ -45,7 +45,7 @@ type detailEngagement interface {
 type KnowPostDetailService struct {
 	repo    Repo
 	redis   *redis.Client
-	l1Cache *PrefixCache
+	l1Cache *cache.PrefixCache
 	hotKey  *cache.HotKeyDetector
 	// bloom：第三方 RedisBloom（CF.*）适配层；nil 表示关闭，fail-open。
 	bloom   *cache.RedisBloom
@@ -58,7 +58,7 @@ type KnowPostDetailService struct {
 func NewKnowPostDetailService(
 	repo Repo,
 	redisClient *redis.Client,
-	l1Cache *PrefixCache,
+	l1Cache *cache.PrefixCache,
 	hotKey *cache.HotKeyDetector,
 	bloom *cache.RedisBloom,
 	counter detailEngagement,

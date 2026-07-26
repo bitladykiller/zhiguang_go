@@ -34,7 +34,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/counter"
-	"github.com/zhiguang/app/internal/model"
 	"github.com/zhiguang/app/pkg/contextutil"
 	"github.com/zhiguang/app/pkg/jsonutil"
 )
@@ -88,9 +87,9 @@ type SuggestField struct {
 
 // SearchResponse 是搜索接口的响应结构，对齐 Java 版返回。
 type SearchResponse struct {
-	Items     []model.FeedItem `json:"items"`
-	NextAfter *string          `json:"next_after,omitempty"`
-	HasMore   bool             `json:"has_more"`
+	Items     []FeedItem `json:"items"`
+	NextAfter *string    `json:"next_after,omitempty"`
+	HasMore   bool       `json:"has_more"`
 }
 
 // SearchCounterClient 定义搜索结果需要的用户态计数读取接口。
@@ -458,8 +457,8 @@ func (s *SearchService) executeSearch(ctx context.Context, query []byte) ([]sear
 }
 
 // decodeAndEnrich 将 ES 结果解析为 FeedItem 列表，并返回 liked/faved 状态映射。
-func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, currentUserID *uint64) ([]model.FeedItem, map[string]bool, map[string]bool) {
-	items := make([]model.FeedItem, 0, len(hits))
+func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, currentUserID *uint64) ([]FeedItem, map[string]bool, map[string]bool) {
+	items := make([]FeedItem, 0, len(hits))
 
 	var likedMap, favedMap map[string]bool
 	if currentUserID != nil && s.counter != nil && len(hits) > 0 {
@@ -488,7 +487,7 @@ func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, c
 		if len(source.ImgURLs) > 0 {
 			coverImage = &source.ImgURLs[0]
 		}
-		items = append(items, model.FeedItem{
+		items = append(items, FeedItem{
 			ID:             source.ID,
 			Title:          jsonutil.StrPtr(source.Title),
 			Description:    jsonutil.StrPtr(description),
@@ -506,7 +505,7 @@ func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, c
 }
 
 // applyLikedFaved 为每篇结果填充当前用户的点赞/收藏状态。
-func (s *SearchService) applyLikedFaved(items []model.FeedItem, likedMap, favedMap map[string]bool) []model.FeedItem {
+func (s *SearchService) applyLikedFaved(items []FeedItem, likedMap, favedMap map[string]bool) []FeedItem {
 	if likedMap == nil && favedMap == nil {
 		return items
 	}

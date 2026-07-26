@@ -27,11 +27,11 @@ func strPtr(s string) *string { return &s }
 func newTestFeedService(t *testing.T, srv *miniredis.Miniredis) *KnowPostFeedService {
 	t.Helper()
 	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
-	cache := freecache.NewCache(100 * 1024)
+	shared := freecache.NewCache(100 * 1024)
 	return &KnowPostFeedService{
 		redis:    rdb,
-		l1Public: &PrefixCache{Cache: cache, Prefix: "p:"},
-		l1Mine:   &PrefixCache{Cache: cache, Prefix: "m:"},
+		l1Public: &cache.PrefixCache{Cache: shared, Prefix: "p:"},
+		l1Mine:   &cache.PrefixCache{Cache: shared, Prefix: "m:"},
 		logger:   zap.NewNop(),
 	}
 }
@@ -193,17 +193,17 @@ func TestEnrichItems_NilCounter(t *testing.T) {
 // ============================================================================
 
 func TestCacheFeedPage(t *testing.T) {
-	cache := freecache.NewCache(100 * 1024)
+	shared := freecache.NewCache(100 * 1024)
 	svc := &KnowPostFeedService{
-		l1Public: &PrefixCache{Cache: cache, Prefix: "p:"},
+		l1Public: &cache.PrefixCache{Cache: shared, Prefix: "p:"},
 		logger:   nil,
 	}
 	resp := &FeedPageResponse{Items: []FeedItemResponse{{ID: "1"}}, Page: 1, Size: 10}
 	svc.cacheFeedPage("test:key", resp, svc.l1Public)
 
-	val, err := cache.Get([]byte("p:test:key"))
+	val, err := shared.Get([]byte("p:test:key"))
 	if err != nil {
-		t.Fatalf("cache.Get: %v", err)
+		t.Fatalf("shared.Get: %v", err)
 	}
 	var decoded FeedPageResponse
 	if err := json.Unmarshal(val, &decoded); err != nil {
@@ -417,7 +417,7 @@ func TestWriteFeedIDListCache_EmptyRows(t *testing.T) {
 
 func TestGetPublicFeedL1_Hit(t *testing.T) {
 	svc := &KnowPostFeedService{
-		l1Public: &PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "p:"},
+		l1Public: &cache.PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "p:"},
 	}
 	resp := &FeedPageResponse{Items: []FeedItemResponse{{ID: "1"}}, Page: 1, Size: 10, HasMore: false}
 	data := mustMarshal(t, resp)
@@ -434,7 +434,7 @@ func TestGetPublicFeedL1_Hit(t *testing.T) {
 
 func TestGetPublicFeedL1_Miss(t *testing.T) {
 	svc := &KnowPostFeedService{
-		l1Public: &PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "p:"},
+		l1Public: &cache.PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "p:"},
 	}
 	got := svc.getPublicFeedL1(context.Background(), "feed:test:nonexist", nil)
 	if got != nil {
@@ -571,9 +571,9 @@ func TestAssembleFromCache_NoIDs(t *testing.T) {
 // ============================================================================
 
 func TestPrefixCache_Isolation(t *testing.T) {
-	cache := freecache.NewCache(100 * 1024)
-	p1 := &PrefixCache{Cache: cache, Prefix: "a:"}
-	p2 := &PrefixCache{Cache: cache, Prefix: "b:"}
+	shared := freecache.NewCache(100 * 1024)
+	p1 := &cache.PrefixCache{Cache: shared, Prefix: "a:"}
+	p2 := &cache.PrefixCache{Cache: shared, Prefix: "b:"}
 
 	p1.Set([]byte("key1"), []byte("value1"), 60)
 	p2.Set([]byte("key1"), []byte("value2"), 60)
@@ -899,7 +899,7 @@ func TestPrefixCache_SetOrWarn_LogsOversizedEntry(t *testing.T) {
 	logger := zap.New(core)
 
 	// freecache 最小容量 512KB，单条上限为容量的 1/1024 = 512 字节。
-	pc := &PrefixCache{Cache: freecache.NewCache(512 * 1024), Prefix: "d:"}
+	pc := &cache.PrefixCache{Cache: freecache.NewCache(512 * 1024), Prefix: "d:"}
 
 	pc.SetOrWarn(logger, []byte("small"), []byte("ok"), 60)
 	if logs.Len() != 0 {

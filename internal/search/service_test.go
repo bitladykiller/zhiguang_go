@@ -14,7 +14,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/counter"
-	"github.com/zhiguang/app/internal/model"
 )
 
 // ---------------------------------------------------------------------------
@@ -917,7 +916,7 @@ func TestDeleteDocument_NetworkError(t *testing.T) {
 
 func TestSearchResponse_JSONRoundTrip(t *testing.T) {
 	resp := &SearchResponse{
-		Items: []model.FeedItem{
+		Items: []FeedItem{
 			{
 				ID:             "1",
 				Title:          strPtr("t"),

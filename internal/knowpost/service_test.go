@@ -3,10 +3,11 @@ package knowpost
 import (
 	"context"
 	"errors"
-	"go.uber.org/zap"
 	"sync"
 	"testing"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
@@ -17,6 +18,7 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/httputil"
+	"github.com/zhiguang/app/pkg/idgen"
 )
 
 // --- helper ---
@@ -402,9 +404,9 @@ func TestPublish_DBFailure_OutboxNotWritten(t *testing.T) {
 	}
 }
 
-func NewRealSnowflakeForTest(t *testing.T) *SnowflakeIdGenerator {
+func NewRealSnowflakeForTest(t *testing.T) *idgen.SnowflakeGenerator {
 	t.Helper()
-	gen, err := NewSnowflakeIdGenerator(&config.IDGeneratorConfig{
+	gen, err := idgen.NewSnowflakeGenerator(&config.IDGeneratorConfig{
 		MachineID: 1,
 		WorkerID:  1,
 	})

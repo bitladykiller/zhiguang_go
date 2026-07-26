@@ -54,8 +54,8 @@ type feedEngagement interface {
 type KnowPostFeedService struct {
 	repo     Repo
 	redis    *redis.Client
-	l1Public *PrefixCache
-	l1Mine   *PrefixCache
+	l1Public *cache.PrefixCache
+	l1Mine   *cache.PrefixCache
 	hotKey   *cache.HotKeyDetector
 	counter  feedEngagement
 	logger   *zap.Logger
@@ -141,8 +141,8 @@ func jitterN(n int) int {
 func NewKnowPostFeedService(
 	repo Repo,
 	redisClient *redis.Client,
-	l1Public *PrefixCache,
-	l1Mine *PrefixCache,
+	l1Public *cache.PrefixCache,
+	l1Mine *cache.PrefixCache,
 	hotKey *cache.HotKeyDetector,
 	counter feedEngagement,
 	logger *zap.Logger,
@@ -843,7 +843,7 @@ func (s *KnowPostFeedService) logWarn(msg string, err error) {
 //   - key: string，缓存键名。
 //   - resp: *FeedPageResponse，需要缓存的整页响应。
 //   - cache: *freecache.Cache，目标缓存实例（公共 Feed 使用 l1Public，"我的 Feed" 使用 l1Mine）。
-func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, cache *PrefixCache) {
+func (s *KnowPostFeedService) cacheFeedPage(key string, resp *FeedPageResponse, cache *cache.PrefixCache) {
 	jsonBytes, err := json.Marshal(resp)
 	if err != nil {
 		s.logger.Warn("failed to marshal feed page for cache", zap.String("key", key), zap.Error(err))

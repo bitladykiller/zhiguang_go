@@ -39,9 +39,9 @@ func initKnowPost(
 	counterSvc *counter.CounterService,
 	logger *zap.Logger,
 ) (*knowpost.KnowPostHandler, *knowpost.KnowPostService, *knowpost.KnowPostFeedService) {
-	detailCache := &knowpost.PrefixCache{Cache: l1Cache, Prefix: "d:"}
-	feedPublicCache := &knowpost.PrefixCache{Cache: l1Cache, Prefix: "fp:"}
-	feedMineCache := &knowpost.PrefixCache{Cache: l1Cache, Prefix: "fm:"}
+	detailCache := &cache.PrefixCache{Cache: l1Cache, Prefix: "d:"}
+	feedPublicCache := &cache.PrefixCache{Cache: l1Cache, Prefix: "fp:"}
+	feedMineCache := &cache.PrefixCache{Cache: l1Cache, Prefix: "fm:"}
 
 	repo := knowpost.NewKnowPostRepository(db)
 	bloom := knowpost.NewDetailBloom(redisClient, &cfg.KnowPost, logger)

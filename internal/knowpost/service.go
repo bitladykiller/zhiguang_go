@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/zhiguang/app/pkg/idgen"
+
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -39,7 +41,7 @@ type AuditLogger interface {
 type KnowPostService struct {
 	db    *sqlx.DB
 	repo  Repo
-	idGen *SnowflakeIdGenerator
+	idGen *idgen.SnowflakeGenerator
 	redis *redis.Client
 	// versions 供写后失效作废本实例的版本号短缓存（详情读取侧共用同一 freecache）。
 	versions *cache.Versions
@@ -64,18 +66,18 @@ const (
 //
 // 参数：
 //   - db: *sqlx.DB，MySQL 数据库连接实例。
-//   - idGen: *SnowflakeIdGenerator，雪花算法 ID 生成器。
+//   - idGen: *idgen.SnowflakeGenerator，雪花算法 ID 生成器（pkg/idgen，跨业务域共享）。
 //   - redisClient: *redis.Client，Redis 客户端，用于 L2 分布式缓存。
-//   - l1Cache: *PrefixCache，带前缀的 L1 进程级缓存实例。
+//   - l1Cache: *cache.PrefixCache，带前缀的 L1 进程级缓存实例。
 //   - hotKey: *cache.HotKeyDetector，热点探测器。
 //   - ossCfg: *config.OssConfig，OSS 对象存储配置。
 //   - counter: CounterClient 接口实例，nil 表示不使用计数器。
 //   - feedCache: FeedCacheInvalidator 接口实例，nil 表示不失效 feed 缓存。
 func NewKnowPostService(
 	db *sqlx.DB,
-	idGen *SnowflakeIdGenerator,
+	idGen *idgen.SnowflakeGenerator,
 	redisClient *redis.Client,
-	l1Cache *PrefixCache,
+	l1Cache *cache.PrefixCache,
 	bloom *cache.RedisBloom,
 	ossCfg *config.OssConfig,
 	feedCache FeedCacheInvalidator,

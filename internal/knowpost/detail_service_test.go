@@ -26,7 +26,7 @@ func newTestDetailService(t *testing.T, srv *miniredis.Miniredis) *KnowPostDetai
 	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
 	return &KnowPostDetailService{
 		redis:   rdb,
-		l1Cache: &PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "d:"},
+		l1Cache: &cache.PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "d:"},
 		logger:  zap.NewNop(),
 	}
 }

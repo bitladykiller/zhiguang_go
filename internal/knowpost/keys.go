@@ -108,7 +108,7 @@ func versionLocalTTL(cfg *config.KnowPostConfig) int {
 
 // newDetailVersions 构造详情版本号读取器。
 // l1 可为 nil（零依赖单测）：此时无本地缓存，每次直读 Redis。
-func newDetailVersions(rdb *redis.Client, l1 *PrefixCache, cfg *config.KnowPostConfig) *cache.Versions {
+func newDetailVersions(rdb *redis.Client, l1 *cache.PrefixCache, cfg *config.KnowPostConfig) *cache.Versions {
 	v := &cache.Versions{
 		Redis:           rdb,
 		LocalPrefix:     detailVersionLocalPrefix,
@@ -125,7 +125,7 @@ func newDetailVersions(rdb *redis.Client, l1 *PrefixCache, cfg *config.KnowPostC
 //
 // 公共 Feed 的 L1 整页键同样编入版本号——没有本地缓存时，
 // 每次 L1 命中都要为版本号付一次 Redis 往返，与详情当年同款缺陷。
-func newFeedVersions(rdb *redis.Client, l1 *PrefixCache, cfg *config.KnowPostConfig) *cache.Versions {
+func newFeedVersions(rdb *redis.Client, l1 *cache.PrefixCache, cfg *config.KnowPostConfig) *cache.Versions {
 	v := &cache.Versions{
 		Redis:           rdb,
 		LocalPrefix:     feedVersionLocalPrefix,
