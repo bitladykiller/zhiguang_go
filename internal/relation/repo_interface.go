@@ -2,6 +2,7 @@ package relation
 
 import (
 	"context"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -20,6 +21,8 @@ type RepoReader interface {
 	ListFollowingRows(ctx context.Context, userID uint64, limit, offset int) ([]FollowingRow, error)
 	ListFollowerRows(ctx context.Context, userID uint64, limit, offset int) ([]FollowerRow, error)
 	ListFollowerRowsFromFollowing(ctx context.Context, userID uint64, limit, offset int) ([]FollowerRow, error)
+	ListFollowingRowsBefore(ctx context.Context, userID uint64, before time.Time, beforeUID uint64, limit int) ([]FollowingRow, error)
+	ListFollowerRowsBefore(ctx context.Context, userID uint64, before time.Time, beforeUID uint64, limit int) ([]FollowerRow, error)
 }
 
 // Repo 是关系域的数据访问接口，组合读写接口，使 Service 可被 mock。

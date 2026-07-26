@@ -21,7 +21,10 @@ func (s *RelationService) fillL1(ctx context.Context, listType string, userID ui
 	for i, e := range entries {
 		idStrs[i] = strconv.FormatUint(e.UserID, 10)
 	}
-	s.l1.Set([]byte(key), []byte(strings.Join(idStrs, ",")), relationL1CacheTTL(s.cfg))
+	if err := s.l1.Set([]byte(key), []byte(strings.Join(idStrs, ",")), relationL1CacheTTL(s.cfg)); err != nil {
+		// freecache 对超容量 1/1024 的单条会拒写；静默会让该键永远不进 L1。
+		s.logger.Warn("relation l1 set failed", zap.String("key", key), zap.Error(err))
+	}
 }
 
 // invalidateCaches 在关注/取关操作后，使涉及的用户的 L1（freecache）和 L2（Redis ZSet）缓存失效。

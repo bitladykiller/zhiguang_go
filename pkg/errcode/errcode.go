@@ -108,7 +108,7 @@ var (
 // HTTPStatusFromCode 根据错误码获取对应的 HTTP 状态码。
 func HTTPStatusFromCode(code ErrorCode) int {
 	if code >= 1000 {
-		code = code / 100
+		code /= 100
 	}
 	switch {
 	case code == CodeSuccess:

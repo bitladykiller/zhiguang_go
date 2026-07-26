@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 	"github.com/zhiguang/app/pkg/middleware"
 	"github.com/zhiguang/app/pkg/response"
 )
@@ -77,9 +78,9 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 		return
 	}
 
-	data, appErr := h.svc.SendCode(c.Request.Context(), &req)
-	if appErr != nil {
-		response.Error(c, appErr)
+	data, err := h.svc.SendCode(c.Request.Context(), &req)
+	if err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, data)
@@ -109,9 +110,9 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	data, appErr := h.svc.Register(c.Request.Context(), &req, extractClientInfo(c))
-	if appErr != nil {
-		response.Error(c, appErr)
+	data, err := h.svc.Register(c.Request.Context(), &req, extractClientInfo(c))
+	if err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Created(c, data)
@@ -140,9 +141,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	data, appErr := h.svc.Login(c.Request.Context(), &req, extractClientInfo(c))
-	if appErr != nil {
-		response.Error(c, appErr)
+	data, err := h.svc.Login(c.Request.Context(), &req, extractClientInfo(c))
+	if err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, data)
@@ -175,9 +176,9 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	data, appErr := h.svc.Refresh(c.Request.Context(), &req)
-	if appErr != nil {
-		response.Error(c, appErr)
+	data, err := h.svc.Refresh(c.Request.Context(), &req)
+	if err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, data)
@@ -240,8 +241,8 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	if appErr := h.svc.ResetPassword(c.Request.Context(), &req); appErr != nil {
-		response.Error(c, appErr)
+	if err := h.svc.ResetPassword(c.Request.Context(), &req); err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, gin.H{"message": "密码重置成功"})
@@ -272,9 +273,9 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		return
 	}
 
-	data, appErr := h.svc.CurrentUser(c.Request.Context(), userID)
-	if appErr != nil {
-		response.Error(c, appErr)
+	data, err := h.svc.CurrentUser(c.Request.Context(), userID)
+	if err != nil {
+		response.Error(c, httputil.ToAppError(err))
 		return
 	}
 	response.Success(c, data)

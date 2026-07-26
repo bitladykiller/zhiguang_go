@@ -142,6 +142,8 @@ func (s *RelationService) IsFollowing(ctx context.Context, fromUserID, toUserID 
 }
 
 // RelationStatus 返回两个用户之间的关系状态。
+const relationStatusNone = "none"
+
 func (s *RelationService) RelationStatus(ctx context.Context, fromUserID, toUserID uint64) (string, error) {
 	following, err := s.IsFollowing(ctx, fromUserID, toUserID)
 	if err != nil {
@@ -155,33 +157,33 @@ func (s *RelationService) RelationStatus(ctx context.Context, fromUserID, toUser
 		return "mutual", nil
 	}
 	if following {
-		return "following", nil
+		return listTypeFollowing, nil
 	}
 	if followedBy {
 		return "followed", nil
 	}
-	return "none", nil
+	return relationStatusNone, nil
 }
 
 // Following 返回 userID 关注的人列表，使用 offset 分页。
 func (s *RelationService) Following(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error) {
-	return s.getListWithOffset(ctx, userID, "following", limit, offset)
+	return s.getListWithOffset(ctx, userID, listTypeFollowing, limit, offset)
 }
 
 // Followers 返回粉丝列表，使用 offset 分页。
 func (s *RelationService) Followers(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error) {
-	return s.getListWithOffset(ctx, userID, "followers", limit, offset)
+	return s.getListWithOffset(ctx, userID, listTypeFollowers, limit, offset)
 }
 
 // FollowingCursor 返回基于复合游标分页的关注列表。
 // cursor 为不透明串（"s:{ms}:{uid}"），空为第一页；兼容历史纯数字游标。
 func (s *RelationService) FollowingCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error) {
-	return s.getListWithCursor(ctx, userID, "following", limit, cursor)
+	return s.getListWithCursor(ctx, userID, listTypeFollowing, limit, cursor)
 }
 
 // FollowersCursor 返回基于复合游标分页的粉丝列表。语义同 FollowingCursor。
 func (s *RelationService) FollowersCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error) {
-	return s.getListWithCursor(ctx, userID, "followers", limit, cursor)
+	return s.getListWithCursor(ctx, userID, listTypeFollowers, limit, cursor)
 }
 
 type listEntry struct {

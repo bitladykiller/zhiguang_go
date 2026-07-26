@@ -8,6 +8,7 @@ import (
 
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
+	"github.com/zhiguang/app/pkg/httputil"
 )
 
 func TestValidateIdentifier_Phone(t *testing.T) {
@@ -136,8 +137,9 @@ func TestEnsureVerificationSuccess_UnknownStatus(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown status")
 	}
-	if err.Code != errcode.ErrCodeVerificationNotFound {
-		t.Fatalf("expected verification not found, got %d", err.Code)
+	appErr := httputil.ToAppError(err)
+	if appErr.Code != errcode.ErrCodeVerificationNotFound {
+		t.Fatalf("expected verification not found, got %d", appErr.Code)
 	}
 }
 

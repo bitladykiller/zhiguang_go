@@ -2,7 +2,9 @@ package relation
 
 import (
 	"context"
+	"github.com/DATA-DOG/go-sqlmock"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/coocood/freecache"
@@ -504,4 +506,48 @@ func TestFollowingCursor_Empty(t *testing.T) {
 
 func TestRelationServiceImplementsInterface(t *testing.T) {
 	var _ RelationServiceInterface = (*RelationService)(nil)
+}
+
+// TestGetListWithCursor_DBFallbackBeyondWarmLimit 验证游标翻页越过 ZSet 覆盖范围后回落 DB 续读。
+//
+// 预热有 ZSetWarmLimit 截断、事件增量有 TTL 空洞——ZSet 页取不满时以复合边界
+// (created_at, uid) 续查 DB，游标深翻页不再受缓存容量约束。
+func TestGetListWithCursor_DBFallbackBeyondWarmLimit(t *testing.T) {
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+	db, mock := newMockDB(t)
+
+	svc := newTestServiceWithDB(rdb, db)
+	zkey := svc.zsetKey("following", 9)
+	// ZSet 只覆盖最近 2 条（模拟截断）
+	svc.redis.ZAdd(context.Background(), zkey, redis.Z{Score: 5000, Member: "50"})
+	svc.redis.ZAdd(context.Background(), zkey, redis.Z{Score: 4000, Member: "40"})
+
+	// DB 里还有更早的 3 条
+	rows := sqlmock.NewRows([]string{"id", "from_user_id", "to_user_id", "created_at"}).
+		AddRow(1, 9, 30, time.UnixMilli(3000)).
+		AddRow(2, 9, 20, time.UnixMilli(2000)).
+		AddRow(3, 9, 10, time.UnixMilli(1000))
+	mock.ExpectQuery(`SELECT id, from_user_id, to_user_id, created_at\s+FROM following`).
+		WillReturnRows(rows)
+
+	ids, next, err := svc.getListWithCursor(context.Background(), 9, "following", 5, "")
+	if err != nil {
+		t.Fatalf("cursor list: %v", err)
+	}
+	want := []uint64{50, 40, 30, 20, 10}
+	if len(ids) != len(want) {
+		t.Fatalf("ids=%v want %v", ids, want)
+	}
+	for i, w := range want {
+		if ids[i] != w {
+			t.Fatalf("ids=%v want %v", ids, want)
+		}
+	}
+	if next != "s:1000:10" {
+		t.Fatalf("next=%q want s:1000:10 (cursor must advance into the DB-served tail)", next)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
 }

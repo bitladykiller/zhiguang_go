@@ -19,6 +19,7 @@ import (
 	"github.com/withlin/canal-go/client"
 	"go.uber.org/zap"
 
+	pb "github.com/withlin/canal-go/protocol"
 	pbe "github.com/withlin/canal-go/protocol/entry"
 
 	"github.com/zhiguang/app/internal/outbox"
@@ -224,40 +225,45 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 			continue
 		}
 
-		batchID := message.Id
-		payloads, err := parseEntries(entryPtrSlice(message.Entries))
-		if err != nil {
-			rollbackOrPanic(connector, batchID, b.logger)
-			return err
-		}
-		if len(payloads) == 0 {
-			if err := connector.Ack(batchID); err != nil {
-				return err
-			}
-			continue
-		}
-
-		messages := make([]kafka.Message, 0, len(payloads))
-		for _, payload := range payloads {
-			var key []byte
-			rows, err := outbox.ExtractRows(payload)
-			if err != nil {
-				rollbackOrPanic(connector, batchID, b.logger)
-				return err
-			}
-			if len(rows) > 0 {
-				key = []byte(outbox.MessageKey(rows[0]))
-			}
-			messages = append(messages, kafka.Message{Key: key, Value: payload})
-		}
-		if err := b.writer.WriteMessages(ctx, messages...); err != nil {
-			rollbackOrPanic(connector, batchID, b.logger)
-			return err
-		}
-		if err := connector.Ack(batchID); err != nil {
+		if err := b.forwardBatch(ctx, connector, message); err != nil {
 			return err
 		}
 	}
+}
+
+// forwardBatch 把一个 Canal 批次解析为 Kafka 消息并投递，成功后 Ack 位点。
+//
+// 任何一步失败都先 rollbackOrPanic（回滚 Canal 位点，保证该批次会被重取），
+// 再向上返回错误触发重连；Ack 失败本身无需回滚——位点还停留在原处。
+func (b *Bridge) forwardBatch(ctx context.Context, connector client.CanalConnector, message *pb.Message) error {
+	batchID := message.Id
+	payloads, err := parseEntries(entryPtrSlice(message.Entries))
+	if err != nil {
+		rollbackOrPanic(connector, batchID, b.logger)
+		return err
+	}
+	if len(payloads) == 0 {
+		return connector.Ack(batchID)
+	}
+
+	messages := make([]kafka.Message, 0, len(payloads))
+	for _, payload := range payloads {
+		var key []byte
+		rows, exErr := outbox.ExtractRows(payload)
+		if exErr != nil {
+			rollbackOrPanic(connector, batchID, b.logger)
+			return exErr
+		}
+		if len(rows) > 0 {
+			key = []byte(outbox.MessageKey(rows[0]))
+		}
+		messages = append(messages, kafka.Message{Key: key, Value: payload})
+	}
+	if err := b.writer.WriteMessages(ctx, messages...); err != nil {
+		rollbackOrPanic(connector, batchID, b.logger)
+		return err
+	}
+	return connector.Ack(batchID)
 }
 
 // maxInt 返回两个 int 中较大的一个，同时确保有效值至少为 1。

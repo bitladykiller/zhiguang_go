@@ -20,6 +20,9 @@ import (
 // 用于缓存键编码，递增版本号可使旧缓存整体失效。
 const feedLayoutVer = 1
 
+// maxPublicFeedPage 是公共 Feed 可翻页数上界（防无界 OFFSET 慢查询）。
+const maxPublicFeedPage = 1000
+
 // KnowPostFeedService 实现基于碎片缓存架构的 Feed 列表流读取。
 //
 // 缓存架构（三级、碎片化）：
@@ -190,7 +193,10 @@ func NewKnowPostFeedService(
 func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
 	p := s.feedCacheTTLValues()
 	safeSize := clamp(size, 1, p.safeSize)
-	safePage := max(page, 1)
+	// page 同样需要上界：offset = (page-1)*size 直接进 SQL 的 OFFSET，
+	// 无界的页码等于允许任意大的 offset 扫描（一次恶意翻页就是一条慢查询）。
+	// 公共信息流本就无深翻价值，1000 页 × 50 条已远超任何真实浏览深度。
+	safePage := clamp(page, 1, maxPublicFeedPage)
 	feedVersion := s.currentPublicFeedVersion(ctx)
 	localPageKey := publicFeedPageLocalKey(safeSize, safePage, feedVersion)
 

@@ -29,3 +29,4 @@ server
 nul
 # Linux: dotfile settings
 .vscode/
+rebuild-likers

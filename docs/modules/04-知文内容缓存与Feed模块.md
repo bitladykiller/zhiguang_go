@@ -472,7 +472,7 @@ flowchart TD
 以及**返回前统一叠加当前用户 liked/faved**（此前三个列表接口只有部分叠加，
 同一字段是否出现取决于走了哪条代码路径——契约不该依赖实现路径）。
 
-不过接口命名和 SQL 语义有一处需要按源码说明：`GetMyPublished` 最终查询条件是 `creator_id = ? AND status != deleted`，因此当前会返回草稿和已发布内容，不是严格意义的“我的已发布列表”。由于该接口要求登录、且只允许读取当前用户自己的数据，这不会泄露草稿，但前端产品语义与方法名不一致；若产品确实只要已发布内容，应将 SQL 条件收紧为 `status = published`，或拆出明确的草稿列表接口。
+接口命名与 SQL 语义曾有一处偏差，**现已修复**：`GetMyPublished` 的查询条件曾是 `creator_id = ? AND status != deleted`，会把草稿也混进“我的已发布列表”。由于接口要求登录且只读自己的数据，这不泄露草稿，但方法名与返回内容不一致。现在 `ListMyPublished` 的条件已收紧为 `creator_id = ? AND status = published`（`internal/knowpost/repository.go`），语义与命名对齐；草稿如需列表可另开明确的草稿接口。
 
 ```mermaid
 flowchart TD
@@ -1246,7 +1246,7 @@ flowchart TD
 ## F3. `feed_service.go` — 列表读取（KnowPostFeedService）核心函数
 
 #### `GetPublicFeed(ctx, page, size, currentUserID) (*FeedPageResponse, error)`
-- **逐步**：clamp 参数 → `currentPublicFeedVersion`（Versions，含本地短缓存）→ 拼 `localPageKey`（L1 整页）与 `idsKey`（L2 碎片）→ 依次 `getPublicFeedL1` / `getPublicFeedL2` / `getPublicFeedUnderLock`。
+- **逐步**：clamp 参数（page 同时有**上界** `maxPublicFeedPage=1000`——公共 Feed 回源是 `LIMIT size OFFSET page*size`，无上界的 page 等于让任意请求驱动 MySQL 扫描任意深的 OFFSET；截断到千页对产品无损，对 DB 是硬保护）→ `currentPublicFeedVersion`（Versions，含本地短缓存）→ 拼 `localPageKey`（L1 整页）与 `idsKey`（L2 碎片）→ 依次 `getPublicFeedL1` / `getPublicFeedL2` / `getPublicFeedUnderLock`。
 - **键设计**：ids 键只含 `{ver}:{size}:{page}` 三维——曾多编一个 hourSlot，但全局版本号失效粒度已是"全部"，分槽只降低命中率（两机制不构成组合）。
 
 #### `getPublicFeedL1(ctx, localPageKey, currentUserID) *FeedPageResponse`

@@ -397,9 +397,14 @@ func (s *KnowPostService) runKnowPostTxWithPayload(
 	}, allEvents)
 }
 
+const (
+	outboxOpUpsert = "upsert"
+	outboxOpDelete = "delete"
+)
+
 func knowPostOutboxOp(eventType string) string {
 	if eventType == outboxTypeKnowPostDeleted {
-		return "delete"
+		return outboxOpDelete
 	}
-	return "upsert"
+	return outboxOpUpsert
 }

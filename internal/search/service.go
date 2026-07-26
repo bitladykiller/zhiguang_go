@@ -929,16 +929,8 @@ type esTermsQuery struct {
 	Terms map[string]interface{} `json:"terms"`
 }
 
-type esMatchQuery struct {
-	Match map[string]interface{} `json:"match"`
-}
-
 type esMultiMatchQuery struct {
 	MultiMatch map[string]interface{} `json:"multi_match"`
-}
-
-type esRangeQuery struct {
-	Range map[string]interface{} `json:"range"`
 }
 
 type esFunctionScoreQuery struct {

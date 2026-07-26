@@ -84,11 +84,12 @@ func LoggerMiddleware(logger *zap.Logger) gin.HandlerFunc {
 
 		// 根据状态码选择日志级别：错误用 warn/error，正常用 info
 		status := c.Writer.Status()
-		if status >= 500 {
+		switch {
+		case status >= 500:
 			logger.Error("request completed with server error", fields...)
-		} else if status >= 400 {
+		case status >= 400:
 			logger.Warn("request completed with client error", fields...)
-		} else {
+		default:
 			logger.Info("request completed", fields...)
 		}
 	}

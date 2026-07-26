@@ -75,56 +75,44 @@ func (r *KnowPostRepository) UpdateContent(ctx context.Context, post *KnowPost) 
 
 // UpdateMetadata 动态构建 SET 子句，仅更新非零/非空字段。
 func (r *KnowPostRepository) UpdateMetadata(ctx context.Context, post *KnowPost) (int64, error) {
-	sets := []string{"update_time = ?"}
-	args := []interface{}{time.Now()}
+	// 先收集「哪些字段要更新」，再统一过白名单并拼 SET 子句。
+	// 之前每个字段重复一遍「判空→查白名单→append×2」四行；收集与拼接分离后，
+	// 白名单校验只写一处，新增字段只需加一行收集逻辑。
+	type fieldUpdate struct {
+		column string
+		value  interface{}
+	}
+	var updates []fieldUpdate
 	if post.Title != nil {
-		if _, ok := knowPostUpdateFields["title"]; !ok {
-			return 0, fmt.Errorf("unknown field: title")
-		}
-		sets = append(sets, "title = ?")
-		args = append(args, *post.Title)
+		updates = append(updates, fieldUpdate{"title", *post.Title})
 	}
 	if post.TagID != nil {
-		if _, ok := knowPostUpdateFields["tag_id"]; !ok {
-			return 0, fmt.Errorf("unknown field: tag_id")
-		}
-		sets = append(sets, "tag_id = ?")
-		args = append(args, *post.TagID)
+		updates = append(updates, fieldUpdate{"tag_id", *post.TagID})
 	}
 	if post.Tags != nil {
-		if _, ok := knowPostUpdateFields["tags"]; !ok {
-			return 0, fmt.Errorf("unknown field: tags")
-		}
-		sets = append(sets, "tags = ?")
-		args = append(args, *post.Tags)
+		updates = append(updates, fieldUpdate{"tags", *post.Tags})
 	}
 	if post.ImgUrls != nil {
-		if _, ok := knowPostUpdateFields["img_urls"]; !ok {
-			return 0, fmt.Errorf("unknown field: img_urls")
-		}
-		sets = append(sets, "img_urls = ?")
-		args = append(args, *post.ImgUrls)
+		updates = append(updates, fieldUpdate{"img_urls", *post.ImgUrls})
 	}
 	if post.Visible != "" {
-		if _, ok := knowPostUpdateFields["visible"]; !ok {
-			return 0, fmt.Errorf("unknown field: visible")
-		}
-		sets = append(sets, "visible = ?")
-		args = append(args, post.Visible)
+		updates = append(updates, fieldUpdate{"visible", post.Visible})
 	}
 	if post.Description != nil {
-		if _, ok := knowPostUpdateFields["description"]; !ok {
-			return 0, fmt.Errorf("unknown field: description")
-		}
-		sets = append(sets, "description = ?")
-		args = append(args, *post.Description)
+		updates = append(updates, fieldUpdate{"description", *post.Description})
 	}
 	if post.IsTop {
-		if _, ok := knowPostUpdateFields["is_top"]; !ok {
-			return 0, fmt.Errorf("unknown field: is_top")
+		updates = append(updates, fieldUpdate{"is_top", 1})
+	}
+
+	sets := []string{"update_time = ?"}
+	args := []interface{}{time.Now()}
+	for _, u := range updates {
+		if _, ok := knowPostUpdateFields[u.column]; !ok {
+			return 0, fmt.Errorf("unknown field: %s", u.column)
 		}
-		sets = append(sets, "is_top = ?")
-		args = append(args, 1)
+		sets = append(sets, u.column+" = ?")
+		args = append(args, u.value)
 	}
 
 	args = append(args, post.ID, post.CreatorID)
@@ -311,7 +299,10 @@ LIMIT ?
 	return ids, nil
 }
 
-// ListMyPublished 分页查询某用户的已发布知文，使用 sqlx.SelectContext。
+// ListMyPublished 分页查询某用户的**已发布**知文。
+//
+// 语义修正：早期条件是 status != deleted，草稿会混进「我的已发布」——
+// 仅本人可见故不泄露，但接口名与返回内容不一致；草稿应走独立的草稿箱接口。
 func (r *KnowPostRepository) ListMyPublished(ctx context.Context, userID uint64, limit, offset int) ([]KnowPostFeedRow, error) {
 	var rows []KnowPostFeedRow
 	err := sqlx.SelectContext(ctx, r.db, &rows, `
@@ -327,10 +318,10 @@ SELECT
     users.tags_json AS author_tag_json
 FROM know_posts
 LEFT JOIN users ON know_posts.creator_id = users.id
-WHERE know_posts.creator_id = ? AND know_posts.status != ?
+WHERE know_posts.creator_id = ? AND know_posts.status = ?
 ORDER BY know_posts.is_top DESC, know_posts.create_time DESC
 LIMIT ? OFFSET ?
-`, userID, KnowPostStatusDeleted, limit, offset)
+`, userID, KnowPostStatusPublished, limit, offset)
 	if err != nil {
 		return rows, fmt.Errorf("list my published: %w", err)
 	}

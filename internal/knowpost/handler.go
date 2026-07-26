@@ -183,6 +183,30 @@ func (h *KnowPostHandler) UpdateMetadata(c *gin.Context) {
 	response.Success(c, gin.H{"success": true})
 }
 
+// runOwnedMutation 是「需登录 + 路径 :id + 执行写操作 + 统一成功响应」的骨架。
+//
+// Publish/Delete/UpdateTop/UpdateVisibility 四个 handler 的差异只有中间那一次
+// service 调用，其余 20 行完全一致——重复的骨架让每次微调（比如统一错误转换）
+// 都要改四处。骨架收敛后，各 handler 只剩「解析各自的请求体 + 提供动作闭包」。
+func (h *KnowPostHandler) runOwnedMutation(c *gin.Context, action func(ctx context.Context, userID, id uint64) error) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		response.Error(c, errcode.ErrUnauthorized)
+		return
+	}
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
+		return
+	}
+	if err := action(c.Request.Context(), userID, id); err != nil {
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
+		return
+	}
+	response.Success(c, gin.H{"success": true})
+}
+
 // Publish 处理 POST /knowposts/:id/publish。
 //
 // 功能：将指定知文从草稿状态发布为已发布状态。
@@ -192,22 +216,9 @@ func (h *KnowPostHandler) UpdateMetadata(c *gin.Context) {
 // 边界情况：
 //   - 知文不存在、非草稿状态或无权操作：返回 404 给客户端（经由 toAppErr 转换）。
 func (h *KnowPostHandler) Publish(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
-		return
-	}
-	if err := h.svc.Publish(c.Request.Context(), userID, id); err != nil {
-		middleware.RecordError(c, err)
-		response.Error(c, httputil.ToAppError(err))
-		return
-	}
-	response.Success(c, gin.H{"success": true})
+	h.runOwnedMutation(c, func(ctx context.Context, userID, id uint64) error {
+		return h.svc.Publish(ctx, userID, id)
+	})
 }
 
 // UpdateTop 处理 PUT /knowposts/:id/top。
@@ -217,27 +228,14 @@ func (h *KnowPostHandler) Publish(c *gin.Context) {
 // 请求：PUT /knowposts/:id/top
 // Body：{"isTop": true} 或 {"isTop": false}
 func (h *KnowPostHandler) UpdateTop(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
-		return
-	}
 	var req KnowPostTopPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
-	if err := h.svc.UpdateTop(c.Request.Context(), userID, id, req.IsTop); err != nil {
-		middleware.RecordError(c, err)
-		response.Error(c, httputil.ToAppError(err))
-		return
-	}
-	response.Success(c, gin.H{"success": true})
+	h.runOwnedMutation(c, func(ctx context.Context, userID, id uint64) error {
+		return h.svc.UpdateTop(ctx, userID, id, req.IsTop)
+	})
 }
 
 // UpdateVisibility 处理 PUT /knowposts/:id/visibility。
@@ -247,27 +245,14 @@ func (h *KnowPostHandler) UpdateTop(c *gin.Context) {
 // 请求：PUT /knowposts/:id/visibility
 // Body：{"visible": "public"}，可见性值由 isValidVisible 校验。
 func (h *KnowPostHandler) UpdateVisibility(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
-		return
-	}
 	var req KnowPostVisibilityPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid request"))
 		return
 	}
-	if err := h.svc.UpdateVisibility(c.Request.Context(), userID, id, req.Visible); err != nil {
-		middleware.RecordError(c, err)
-		response.Error(c, httputil.ToAppError(err))
-		return
-	}
-	response.Success(c, gin.H{"success": true})
+	h.runOwnedMutation(c, func(ctx context.Context, userID, id uint64) error {
+		return h.svc.UpdateVisibility(ctx, userID, id, req.Visible)
+	})
 }
 
 // Delete 处理 DELETE /knowposts/:id。
@@ -279,22 +264,9 @@ func (h *KnowPostHandler) UpdateVisibility(c *gin.Context) {
 // 边界情况：
 //   - 知文已被删除或不存在：返回 404。
 func (h *KnowPostHandler) Delete(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok {
-		response.Error(c, errcode.ErrUnauthorized)
-		return
-	}
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		response.Error(c, errcode.ErrBadRequest.WithMsg("invalid id"))
-		return
-	}
-	if err := h.svc.Delete(c.Request.Context(), userID, id); err != nil {
-		middleware.RecordError(c, err)
-		response.Error(c, httputil.ToAppError(err))
-		return
-	}
-	response.Success(c, gin.H{"success": true})
+	h.runOwnedMutation(c, func(ctx context.Context, userID, id uint64) error {
+		return h.svc.Delete(ctx, userID, id)
+	})
 }
 
 // GetDetail 处理 GET /knowposts/:id。

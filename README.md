@@ -43,6 +43,8 @@
 
 - `cmd/server`
   - 程序启动入口
+- `cmd/rebuild-likers`
+  - 离线重建点赞人时间序索引的运维 CLI（`-config/-entity-type/-entity-id/-metric`，幂等、`ZAddNX` 不覆盖真实时间戳，见 docs/modules/05 §6.5）
 - `internal/bootstrap`
   - 应用装配
 - `internal/database`

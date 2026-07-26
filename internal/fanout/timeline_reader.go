@@ -236,9 +236,8 @@ const followingScanMaxPages = 40
 // 关注超过 500 人且大 V 是早年关注的用户，那些大 V 的内容会从首页凭空消失。
 // MaxPullAuthors 只应约束**产出**（要拉多少个大 V），不应约束**扫描范围**。
 //
-// 另一个隐含上界来自数据源：relation 的关注 ZSet 冷启动预热最多写入
-// ZSetWarmLimit（默认 2000）条——关注超过该数的用户，更早的关注对象
-// 不在 ZSet 里，本扫描自然也看不到。这是 relation 侧的容量取舍，非本函数缺陷。
+// 数据源覆盖：relation 的游标接口在 ZSet 页取不满时会按复合边界回落 DB 续读，
+// 因此本扫描不再受其预热上限（ZSetWarmLimit=2000）约束，可达全量关注列表。
 func (r *TimelineReader) followedCelebrities(ctx context.Context, userID uint64) ([]uint64, error) {
 	if r.celebrities == nil || r.followingLister == nil {
 		return nil, nil

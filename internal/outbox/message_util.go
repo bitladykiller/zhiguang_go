@@ -32,7 +32,7 @@ type CanalEnvelope struct {
 //
 // 字段说明：
 //   - ID：outbox 行的自增主键（当前版本仅用于排障和去重）
-//   - AggregateType：聚合类型，如 "knowpost"、"following"
+//   - AggregateType：聚合类型，如 aggregateKnowPost、"following"
 //   - AggregateID：聚合根 ID
 //   - Type：事件类型，如 "KnowPostPublished"、"FollowCreated"
 //   - Payload：业务事件的 JSON 序列化载荷，是消费端真正处理的内容
@@ -75,37 +75,21 @@ func ExtractRows(message []byte) ([]CanalRow, error) {
 
 // MessageKey 为一条 outbox 行生成稳定的 Kafka 分区键。
 // WHY：同一聚合根的事件必须进入同一分区，才能在 consumer 侧保持处理顺序。
+// aggregateKnowPost 是知文聚合类型标识（outbox 行的 aggregate_type/entity 值）。
+const aggregateKnowPost = "knowpost"
+
 func MessageKey(row CanalRow) string {
 	aggType := strings.TrimSpace(row.AggregateType)
 	aggID := strings.TrimSpace(row.AggregateID)
 
 	switch aggType {
-	case "knowpost":
-		// 优先使用 aggID（自 2025-06 起的推送均已携带）。
-		// 只有在 aggID 为空时才回退到解析 Payload 兼容历史数据。
-		if aggID != "" {
-			return "knowpost:" + aggID
-		}
-		var payload struct {
-			Entity string `json:"entity"`
-			ID     uint64 `json:"id"`
-		}
-		if err := json.Unmarshal([]byte(row.Payload), &payload); err == nil && payload.Entity == "knowpost" && payload.ID != 0 {
-			return fmt.Sprintf("knowpost:%d", payload.ID)
+	case aggregateKnowPost:
+		if key, ok := knowPostMessageKey(row, aggID); ok {
+			return key
 		}
 	case "following":
-		// 先尝试从 Payload 中提取 from_user_id / to_user_id（主流场景），
-		// 避免以 aggID 为键导致同一用户的关系事件散列到多个分区。
-		var evt struct {
-			FromUserID uint64 `json:"from_user_id"`
-			ToUserID   uint64 `json:"to_user_id"`
-		}
-		if err := json.Unmarshal([]byte(row.Payload), &evt); err == nil && evt.FromUserID != 0 && evt.ToUserID != 0 {
-			return fmt.Sprintf("following:%d:%d", evt.FromUserID, evt.ToUserID)
-		}
-		// 解析失败时回退到 aggID，确保至少可以路由。
-		if aggID != "" {
-			return "following:" + aggID
+		if key, ok := followingMessageKey(row, aggID); ok {
+			return key
 		}
 	}
 
@@ -119,4 +103,39 @@ func MessageKey(row CanalRow) string {
 		return "outbox:" + row.ID
 	}
 	return row.Type
+}
+
+// knowPostMessageKey 生成帖子事件的分区键。
+// 优先使用 aggID（自 2025-06 起的推送均已携带）；
+// 只有在 aggID 为空时才回退到解析 Payload 兼容历史数据。
+func knowPostMessageKey(row CanalRow, aggID string) (string, bool) {
+	if aggID != "" {
+		return "knowpost:" + aggID, true
+	}
+	var payload struct {
+		Entity string `json:"entity"`
+		ID     uint64 `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(row.Payload), &payload); err == nil && payload.Entity == aggregateKnowPost && payload.ID != 0 {
+		return fmt.Sprintf("knowpost:%d", payload.ID), true
+	}
+	return "", false
+}
+
+// followingMessageKey 生成关注事件的分区键。
+// 先尝试从 Payload 中提取 from_user_id / to_user_id（主流场景），
+// 避免以 aggID 为键导致同一用户的关系事件散列到多个分区；
+// 解析失败时回退到 aggID，确保至少可以路由。
+func followingMessageKey(row CanalRow, aggID string) (string, bool) {
+	var evt struct {
+		FromUserID uint64 `json:"from_user_id"`
+		ToUserID   uint64 `json:"to_user_id"`
+	}
+	if err := json.Unmarshal([]byte(row.Payload), &evt); err == nil && evt.FromUserID != 0 && evt.ToUserID != 0 {
+		return fmt.Sprintf("following:%d:%d", evt.FromUserID, evt.ToUserID), true
+	}
+	if aggID != "" {
+		return "following:" + aggID, true
+	}
+	return "", false
 }

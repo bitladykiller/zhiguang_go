@@ -897,10 +897,15 @@ flowchart TD
 - 空/"0"=首页；`s:{ms}:{uid}` 复合；纯数字按 legacy（排除式旧语义）兼容；其余报错。
 
 #### `getListWithCursor(ctx, userID, listType, limit, cursor string) ([]uint64, string, error)`
-- **逐步**：解析游标 → EXISTS 判 ZSet，冷则预热 → 上界：首页 +inf / legacy 排除式 `("ms` / 复合**包含式** ms 且 fetch=limit+8 并列冗余 → `ZREVRANGEBYSCORE WITHSCORES` → 应用侧跳过 `ms==cur.ms && member>=curMember`（与 Redis 并列输出的逆字典序同序比较）→ 收满 limit → 尾条编 `s:` 游标。
+- **逐步**：解析游标 → EXISTS 判 ZSet，冷则预热 → `readCursorPageFromZSet`：上界：首页 +inf / legacy 排除式 `("ms` / 复合**包含式** ms 且 fetch=limit+8 并列冗余 → `ZREVRANGEBYSCORE WITHSCORES` → 应用侧跳过 `ms==cur.ms && member>=curMember`（与 Redis 并列输出的逆字典序同序比较）→ **页不满且 repo 可用 → `mergeDBTail` DB 续读**（见下）→ 尾条编 `s:` 游标。
 - **修复点**：旧排除式区间在毫秒并列横跨页边界时整页跳过成员（静默丢条目）。
-- **容量边界**：ZSet 冷启动预热上限 ZSetWarmLimit（默认 2000）——关注数超过它的用户，
-  更早的关注对象不在缓存里，游标翻页与 fanout 的大 V 扫描都到不了那部分（DB 里仍在）。
+- **容量边界（已突破）**：ZSet 冷启动预热上限 ZSetWarmLimit（默认 2000）曾是游标翻页的硬顶——
+  更早的关注对象不在缓存里，翻到 2000 就"到底"。现在 ZSet 页取不满时（真到尾、预热截断、
+  增量 TTL 空洞——不必区分），以最后已产出条目（空页则用请求游标）为复合边界调
+  `ListFollowingRowsBefore/ListFollowerRowsBefore`：`(created_at < ? OR (created_at = ? AND to_user_id < ?))
+  ORDER BY created_at DESC, to_user_id DESC LIMIT ?`——B 树一页查询的代价续读 DB 尾部，
+  seen 集去重后游标继续推进；DB 返回空即确证翻尽。DB 读失败仅 Warn 降级为短页（缓存页照常可用）。
+  回归测试 `TestGetListWithCursor_DBFallbackBeyondWarmLimit`（ZSet 只有 2 条、DB 续 3 条）锁定。
 
 ## C3. `repository.go`（关键两个）
 

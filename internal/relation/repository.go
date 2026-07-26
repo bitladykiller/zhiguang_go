@@ -144,3 +144,34 @@ LIMIT ? OFFSET ?
 `, userID, limit, offset)
 	return rows, err
 }
+
+// ListFollowingRowsBefore 按 (created_at, to_user_id) 复合边界续读关注列表。
+//
+// 供游标深翻页在 ZSet 覆盖范围（预热上限截断 / TTL 过期）之外回落 DB：
+// 复合条件保证毫秒并列跨边界时不重不漏，与 Redis 侧游标语义一致。
+func (r *RelationRepository) ListFollowingRowsBefore(ctx context.Context, userID uint64, before time.Time, beforeUID uint64, limit int) ([]FollowingRow, error) {
+	var rows []FollowingRow
+	err := sqlx.SelectContext(ctx, r.db, &rows, `
+SELECT id, from_user_id, to_user_id, created_at
+FROM following
+WHERE from_user_id = ? AND rel_status = 1
+  AND (created_at < ? OR (created_at = ? AND to_user_id < ?))
+ORDER BY created_at DESC, to_user_id DESC
+LIMIT ?
+`, userID, before, before, beforeUID, limit)
+	return rows, err
+}
+
+// ListFollowerRowsBefore 语义同 ListFollowingRowsBefore，作用于 follower 表。
+func (r *RelationRepository) ListFollowerRowsBefore(ctx context.Context, userID uint64, before time.Time, beforeUID uint64, limit int) ([]FollowerRow, error) {
+	var rows []FollowerRow
+	err := sqlx.SelectContext(ctx, r.db, &rows, `
+SELECT id, to_user_id, from_user_id, created_at
+FROM follower
+WHERE to_user_id = ? AND rel_status = 1
+  AND (created_at < ? OR (created_at = ? AND from_user_id < ?))
+ORDER BY created_at DESC, from_user_id DESC
+LIMIT ?
+`, userID, before, before, beforeUID, limit)
+	return rows, err
+}

@@ -99,7 +99,7 @@ func NewAuthService(
 // 边界情况：
 //   - 发送间隔内重复调用不会抛出错误，而是返回正常响应但不发送新验证码
 //     （防短信轰炸，见 VerificationService.SendCode 的 interval 检查逻辑）
-func (s *AuthService) SendCode(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, *errcode.AppError) {
+func (s *AuthService) SendCode(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, error) {
 	normalized := normalizeIdentifier(req.IdentifierType, req.Identifier)
 	if err := validateIdentifier(req.IdentifierType, normalized); err != nil {
 		return SendCodeResponse{}, errcode.ErrBadRequest.WithMsg(err.Error())
@@ -155,7 +155,7 @@ func (s *AuthService) SendCode(ctx context.Context, req *SendCodeRequest) (SendC
 //     golang.org/x/crypto/bcrypt 包，使用 bcrypt 算法对密码进行哈希。
 //     参数为密码 []byte 和 cost 值（越高越安全但也越慢，默认 10，当前配置为 12）。
 //     返回固定长度的哈希字符串（60 字符），每次调用结果不同（自动加盐）。
-func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError) {
+func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, clientInfo ClientInfo) (AuthResponse, error) {
 	if !req.AgreeTerms {
 		return AuthResponse{}, errcode.ErrTermsNotAccepted
 	}
@@ -252,7 +252,7 @@ func (s *AuthService) Register(ctx context.Context, req *RegisterRequest, client
 // 边界情况：
 //   - 登录失败时仍会记录 login_logs（status = FAILED），用于安全审计。
 //   - 验证码登录成功后会删除该验证码（防止重复使用）。
-func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError) {
+func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo ClientInfo) (AuthResponse, error) {
 	normalized := normalizeIdentifier(req.IdentifierType, req.Identifier)
 	if err := validateIdentifier(req.IdentifierType, normalized); err != nil {
 		return AuthResponse{}, errcode.ErrBadRequest.WithMsg(err.Error())
@@ -268,9 +268,9 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 	if req.Code != "" {
 		channel = ChannelCode
 		checkResult := s.verifSvc.Verify(ctx, SceneLogin, normalized, req.Code)
-		if err := ensureVerificationSuccess(checkResult); err != nil {
+		if vErr := ensureVerificationSuccess(checkResult); vErr != nil {
 			s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusFailed, clientInfo)
-			return AuthResponse{}, err
+			return AuthResponse{}, vErr
 		}
 	} else {
 		if req.Password == "" || user.PasswordHash == nil {
@@ -326,7 +326,7 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 //	使用令牌轮换（Token Rotation），每次刷新都吊销旧令牌。
 //	如果攻击者窃取了 refresh token，在它被轮换后，合法用户再次刷新时会失败，
 //	此时可以推断出令牌可能被窃取并采取相应措施。
-func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, *errcode.AppError) {
+func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, error) {
 	claims, err := s.jwtSvc.ValidateToken(req.RefreshToken)
 	if err != nil {
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
@@ -408,7 +408,7 @@ func (s *AuthService) Logout(ctx context.Context, req *TokenRefreshRequest) {
 //
 // 返回值：
 //   - *errcode.AppError: 重置失败时返回业务错误
-func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetRequest) *errcode.AppError {
+func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetRequest) error {
 	normalized := normalizeIdentifier(req.IdentifierType, req.Identifier)
 	if err := validateIdentifier(req.IdentifierType, normalized); err != nil {
 		return errcode.ErrBadRequest.WithMsg(err.Error())
@@ -421,8 +421,8 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 	}
 
 	checkResult := s.verifSvc.Verify(ctx, SceneResetPassword, normalized, req.Code)
-	if err := ensureVerificationSuccess(checkResult); err != nil {
-		return err
+	if vErr := ensureVerificationSuccess(checkResult); vErr != nil {
+		return vErr
 	}
 
 	if pwErr := validatePassword(req.NewPassword, s.cfg.Password); pwErr != nil {
@@ -457,7 +457,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 // WHY 抽成单独辅助函数：
 //   - Refresh 与 ResetPassword 需要共享同一把 user 级别锁，避免策略漂移。
 //   - 错误统一映射为内部错误，业务流程只关注"是否拿到锁"。
-func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint64) (*redislock.Lock, context.CancelFunc, *errcode.AppError) {
+func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint64) (*redislock.Lock, context.CancelFunc, error) {
 	if s.redis == nil {
 		return nil, nil, errcode.ErrInternal.WithMsg("Redis 客户端不可用")
 	}
@@ -496,7 +496,7 @@ func (s *AuthService) acquireRefreshSessionLock(ctx context.Context, userID uint
 // 返回值：
 //   - AuthUserResponse: 用户公开资料（不含密码哈希）
 //   - *errcode.AppError: 用户不存在时返回 404
-func (s *AuthService) CurrentUser(ctx context.Context, userID uint64) (AuthUserResponse, *errcode.AppError) {
+func (s *AuthService) CurrentUser(ctx context.Context, userID uint64) (AuthUserResponse, error) {
 	user, err := s.repo.FindUserByID(ctx, userID)
 	if err != nil {
 		s.logger.Warn("CurrentUser查找用户失败", zap.Uint64("userID", userID), zap.Error(err))
@@ -620,7 +620,7 @@ func normalizeIdentifier(idType IdentifierType, identifier string) string {
 //   - StatusMismatch → ErrVerificationMismatch
 //   - StatusTooManyAttempts → ErrVerificationTooManyAttempts
 //   - StatusSuccess → nil（通过）
-func ensureVerificationSuccess(result *VerificationCheckResult) *errcode.AppError {
+func ensureVerificationSuccess(result *VerificationCheckResult) error {
 	if result.Success {
 		return nil
 	}

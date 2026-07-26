@@ -5,32 +5,30 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+)
+
+const (
+	listTypeFollowing = "following"
+	listTypeFollowers = "followers"
 )
 
 // getListWithOffset 读取关注/粉丝列表，使用 offset 分页（三级缓存）。
 func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, listType string, limit, offset int) ([]uint64, error) {
 	isBigV := s.isBigV(ctx, userID)
 	if isBigV {
-		l1Key := s.l1KeyStr(listType, userID)
-		if data, err := s.l1.Get([]byte(l1Key)); err == nil {
-			ids := s.toLongList(string(data))
-			if offset < len(ids) {
-				end := offset + limit
-				if end > len(ids) {
-					end = len(ids)
-				}
-				return ids[offset:end], nil
-			}
+		if ids, ok := s.readOffsetFromL1(listType, userID, limit, offset); ok {
+			return ids, nil
 		}
 	}
 
 	zsetKey := s.zsetKey(listType, userID)
-	exists, err := s.redis.Exists(ctx, zsetKey).Result()
-	if err != nil {
-		s.logger.Warn("redis exists check failed for zset cache warm", zap.String("zsetKey", zsetKey), zap.Error(err))
+	exists, exErr := s.redis.Exists(ctx, zsetKey).Result()
+	if exErr != nil {
+		s.logger.Warn("redis exists check failed for zset cache warm", zap.String("zsetKey", zsetKey), zap.Error(exErr))
 	}
 	if exists == 0 {
 		warmed, err := s.ensureListCacheWarm(ctx, listType, userID)
@@ -53,6 +51,29 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 		return []uint64{}, nil
 	}
 
+	return s.readOffsetFromDB(ctx, listType, userID, limit, offset)
+}
+
+// readOffsetFromL1 尝试大 V 的 L1 本地缓存快路；ok=false 表示未命中或 offset 超出缓存长度。
+func (s *RelationService) readOffsetFromL1(listType string, userID uint64, limit, offset int) ([]uint64, bool) {
+	l1Key := s.l1KeyStr(listType, userID)
+	data, err := s.l1.Get([]byte(l1Key))
+	if err != nil {
+		return nil, false
+	}
+	ids := s.toLongList(string(data))
+	if offset >= len(ids) {
+		return nil, false
+	}
+	end := offset + limit
+	if end > len(ids) {
+		end = len(ids)
+	}
+	return ids[offset:end], true
+}
+
+// readOffsetFromDB 是 offset 分页的 DB 兜底：读前 offset+limit 条后在应用侧切窗口。
+func (s *RelationService) readOffsetFromDB(ctx context.Context, listType string, userID uint64, limit, offset int) ([]uint64, error) {
 	// 防止翻页过深导致 DB 负载线性增长
 	maxOffset := relationMaxOffset(s.cfg)
 	if offset > maxOffset {
@@ -129,20 +150,71 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 	}
 
 	zsetKey := s.zsetKey(listType, userID)
-	exists, err := s.redis.Exists(ctx, zsetKey).Result()
-	if err != nil {
-		s.logger.Warn("redis exists check failed for cursor-based list", zap.String("zsetKey", zsetKey), zap.Error(err))
+	exists, exErr := s.redis.Exists(ctx, zsetKey).Result()
+	if exErr != nil {
+		s.logger.Warn("redis exists check failed for cursor-based list", zap.String("zsetKey", zsetKey), zap.Error(exErr))
 	}
 	if exists == 0 {
-		warmed, err := s.ensureListCacheWarm(ctx, listType, userID)
-		if err != nil {
-			return nil, "", err
+		warmed, wErr := s.ensureListCacheWarm(ctx, listType, userID)
+		if wErr != nil {
+			return nil, "", wErr
 		}
 		if !warmed {
 			return []uint64{}, "", nil
 		}
 	}
 
+	result, lastScore, lastUID, err := s.readCursorPageFromZSet(ctx, zsetKey, cur, limit)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// ZSet 页取不满：可能是真到尾，也可能是缓存覆盖不全——
+	// 预热有 ZSetWarmLimit（默认 2000）截断，事件增量还有 2h TTL 空洞。
+	// 无论哪种，都以最后已产出条目（或请求游标）为复合边界回落 DB 续读一页；
+	// DB 返回空即确证到尾。这使游标翻页不再受缓存容量约束（B 树索引一页查询的代价）。
+	if len(result) < limit && s.repo != nil {
+		if len(result) == 0 && !cur.set {
+			return result, "", nil // 首页且 ZSet 为空：预热路径已确认无数据
+		}
+		result, lastScore, lastUID = s.mergeDBTail(ctx, listType, userID, cur, result, lastScore, lastUID, limit)
+	}
+
+	next := ""
+	if len(result) > 0 {
+		next = encodeListCursor(lastScore, lastUID)
+	}
+	return result, next, nil
+}
+
+// mergeDBTail 以最后已产出条目（或请求游标）为复合边界，从 DB 续读补满本页并去重合并。
+// DB 读失败只记 Warn 并返回已有结果——缓存页照常可用，宁可短页也不 500。
+func (s *RelationService) mergeDBTail(ctx context.Context, listType string, userID uint64, cur listCursor, result []uint64, lastScore int64, lastUID uint64, limit int) ([]uint64, int64, uint64) {
+	beforeMs, beforeUID := lastScore, lastUID
+	if len(result) == 0 {
+		beforeMs, beforeUID = cur.scoreMs, cur.memberUID
+	}
+	dbRows, err := s.listFromDBBefore(ctx, listType, userID, beforeMs, beforeUID, limit-len(result))
+	if err != nil {
+		s.logger.Warn("cursor list db fallback failed", zap.String("listType", listType), zap.Error(err))
+		return result, lastScore, lastUID
+	}
+	seen := make(map[uint64]struct{}, len(result))
+	for _, id := range result {
+		seen[id] = struct{}{}
+	}
+	for _, e := range dbRows {
+		if _, dup := seen[e.UserID]; dup {
+			continue
+		}
+		result = append(result, e.UserID)
+		lastScore, lastUID = e.CreatedAt, e.UserID
+	}
+	return result, lastScore, lastUID
+}
+
+// readCursorPageFromZSet 执行 ZSet 区间读与并列成员的应用侧跳过，返回本页结果与末条复合边界。
+func (s *RelationService) readCursorPageFromZSet(ctx context.Context, zsetKey string, cur listCursor, limit int) ([]uint64, int64, uint64, error) {
 	maxVal := "+inf"
 	fetch := limit
 	if cur.set {
@@ -161,7 +233,7 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 		Count:  int64(fetch),
 	}).Result()
 	if err != nil {
-		return nil, "", err
+		return nil, 0, 0, err
 	}
 
 	result := make([]uint64, 0, limit)
@@ -190,11 +262,32 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 		}
 	}
 
-	next := ""
-	if len(result) > 0 {
-		next = encodeListCursor(lastScore, lastUID)
+	return result, lastScore, lastUID, nil
+}
+
+// listFromDBBefore 按复合边界 (createdMs, uid) 从 DB 续读一页（游标深翻页的缓存外兜底）。
+func (s *RelationService) listFromDBBefore(ctx context.Context, listType string, userID uint64, beforeMs int64, beforeUID uint64, limit int) ([]listEntry, error) {
+	before := time.UnixMilli(beforeMs)
+	if listType == listTypeFollowing {
+		rows, err := s.repo.ListFollowingRowsBefore(ctx, userID, before, beforeUID, limit)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]listEntry, len(rows))
+		for i, r := range rows {
+			out[i] = listEntry{UserID: r.ToUserID, CreatedAt: r.CreatedAt.UnixMilli()}
+		}
+		return out, nil
 	}
-	return result, next, nil
+	rows, err := s.repo.ListFollowerRowsBefore(ctx, userID, before, beforeUID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]listEntry, len(rows))
+	for i, r := range rows {
+		out[i] = listEntry{UserID: r.FromUserID, CreatedAt: r.CreatedAt.UnixMilli()}
+	}
+	return out, nil
 }
 
 // zsetKey 生成 Redis ZSet 缓存键。
@@ -204,7 +297,7 @@ func (s *RelationService) zsetKey(listType string, userID uint64) string {
 
 // readFromDB 从数据库读取用户的关注/粉丝列表。
 func (s *RelationService) readFromDB(ctx context.Context, listType string, userID uint64, limit, offset int) ([]listEntry, error) {
-	if listType == "following" {
+	if listType == listTypeFollowing {
 		if s.repo == nil {
 			return nil, fmt.Errorf("relation: repository is nil")
 		}

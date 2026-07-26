@@ -91,8 +91,7 @@ func buildUpdateSet(req *ProfilePatchRequest) ([]string, []interface{}) {
 			continue
 		}
 		// 利用 switch 解引用不同类型的指针
-		switch v := f.ptr.(type) {
-		case *string:
+		if v, ok := f.ptr.(*string); ok {
 			if v == nil {
 				continue
 			}

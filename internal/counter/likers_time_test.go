@@ -184,3 +184,108 @@ func TestScanCache_ShortCacheFallsThrough(t *testing.T) {
 	}
 	_ = strconv.Itoa(0)
 }
+
+// TestGetLikers_MassiveTies_DeepPagingDoesNotStall 回归：海量并列 score 深翻页不提前终止。
+//
+// 离线重建把历史成员统一写成 score=0，制造成百上千的并列。
+// score 区间 + 固定并列冗余的旧续页方案在第 k 页要跳过 k×limit 个并列成员，
+// 固定冗余覆盖不了，翻几页后整页都是已见成员 → 误判翻尽提前终止。
+// rank 快路按全局排名取页，与并列规模无关。
+func TestGetLikers_MassiveTies_DeepPagingDoesNotStall(t *testing.T) {
+	svc := newLikersTimeService(t)
+	ctx := context.Background()
+
+	zkey := likersZSetKey("like", "knowpost", "77")
+	const total = 300
+	zs := make([]redis.Z, total)
+	for i := 0; i < total; i++ {
+		zs[i] = redisZ(0, strconv.Itoa(10000+i)) // 全部并列 score=0
+	}
+	svc.redis.ZAdd(ctx, zkey, zs...)
+
+	seen := map[uint64]bool{}
+	cursor := ""
+	for page := 0; page < total; page++ {
+		resp, err := svc.GetLikers(ctx, "knowpost", 77, "like", cursor, 20)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		for _, it := range resp.Items {
+			if seen[it.UserID] {
+				t.Fatalf("user %d returned twice", it.UserID)
+			}
+			seen[it.UserID] = true
+		}
+		if !resp.HasMore {
+			break
+		}
+		cursor = resp.Cursor
+	}
+	if len(seen) != total {
+		t.Fatalf("paged %d unique users, want %d (massive ties must not stall deep paging)", len(seen), total)
+	}
+}
+
+// TestGetLikers_CursorMemberUnliked_FallsBackToScorePath 验证游标成员被 unlike 后仍可续页。
+func TestGetLikers_CursorMemberUnliked_FallsBackToScorePath(t *testing.T) {
+	svc := newLikersTimeService(t)
+	ctx := context.Background()
+
+	zkey := likersZSetKey("like", "knowpost", "78")
+	svc.redis.ZAdd(ctx, zkey, redisZ(300, "3"), redisZ(200, "2"), redisZ(100, "1"))
+
+	resp, err := svc.GetLikers(ctx, "knowpost", 78, "like", "", 1)
+	if err != nil || len(resp.Items) != 1 || resp.Items[0].UserID != 3 {
+		t.Fatalf("page1: %+v err=%v", resp, err)
+	}
+	// 游标成员 3 被取消点赞（rank 不可得）
+	svc.redis.ZRem(ctx, zkey, "3")
+
+	resp, err = svc.GetLikers(ctx, "knowpost", 78, "like", resp.Cursor, 10)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(resp.Items) != 2 || resp.Items[0].UserID != 2 || resp.Items[1].UserID != 1 {
+		t.Fatalf("score-path fallback items=%+v, want [2 1]", resp.Items)
+	}
+}
+
+// TestRebuildLikersTimeIndex 验证离线重建：位图成员补进 ZSet（score=0），
+// 不覆盖 toggle 已写入的真实时间；幂等重跑不重复计数。
+func TestRebuildLikersTimeIndex(t *testing.T) {
+	svc := newLikersTimeService(t)
+	ctx := context.Background()
+
+	// 历史数据：位图有 3 人；其中 uid=2 随后又被 toggle 写入了真实时间
+	for _, uid := range []uint64{1, 2, 3} {
+		setLikeBit(t, svc, "knowpost", 9, uid)
+	}
+	zkey := likersZSetKey("like", "knowpost", "9")
+	svc.redis.ZAdd(ctx, zkey, redisZ(1700000000, "2"))
+
+	added, err := svc.RebuildLikersTimeIndex(ctx, "knowpost", 9, "like")
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if added != 2 { // uid 1、3；uid 2 已存在（NX 不覆盖）
+		t.Fatalf("added=%d want 2", added)
+	}
+	if sc, _ := svc.redis.ZScore(ctx, zkey, "2").Result(); int64(sc) != 1700000000 {
+		t.Fatalf("real timestamp overwritten: %v", sc)
+	}
+	if sc, _ := svc.redis.ZScore(ctx, zkey, "1").Result(); sc != 0 {
+		t.Fatalf("historic member score=%v want 0", sc)
+	}
+
+	// 幂等重跑
+	added, err = svc.RebuildLikersTimeIndex(ctx, "knowpost", 9, "like")
+	if err != nil || added != 0 {
+		t.Fatalf("rerun added=%d err=%v, want 0/nil", added, err)
+	}
+
+	// 重建后走时间序主路径：真实时间在前，历史(0)在后
+	resp, err := svc.GetLikers(ctx, "knowpost", 9, "like", "", 10)
+	if err != nil || len(resp.Items) != 3 || resp.Items[0].UserID != 2 {
+		t.Fatalf("post-rebuild list=%+v err=%v", resp, err)
+	}
+}
