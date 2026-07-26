@@ -20,11 +20,6 @@ import (
 // 用于缓存键编码，递增版本号可使旧缓存整体失效。
 const feedLayoutVer = 1
 
-const (
-	publicFeedVersionKey = "feed:public:version"
-	mineFeedVersionKey   = "feed:mine:version:%d"
-)
-
 // KnowPostFeedService 实现基于碎片缓存架构的 Feed 列表流读取。
 //
 // 缓存架构（三级、碎片化）：
@@ -49,13 +44,20 @@ const (
 //
 // TTL / 分页上限统一从 cfg.KnowPost.FeedCache 读取（见 feedCacheTTLValues），
 // ApplyDefaults 保证缺省值与历史硬编码常量一致。
+// feedEngagement 是 Feed 列表对计数模块的最小依赖（消费侧窄接口，理由见 detailEngagement）。
+type feedEngagement interface {
+	GetCountsBatch(ctx context.Context, entityType string, entityIDs, metrics []string) (map[string]map[string]int32, error)
+	BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
+	BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
+}
+
 type KnowPostFeedService struct {
 	repo     Repo
 	redis    *redis.Client
 	l1Public *PrefixCache
 	l1Mine   *PrefixCache
 	hotKey   *cache.HotKeyDetector
-	counter  CounterClient
+	counter  feedEngagement
 	logger   *zap.Logger
 	cfg      *config.KnowPostFeedCacheConfig
 	// homeTimeline 提供关注流的帖子 ID（由扩散模块注入，可为 nil）。
@@ -91,33 +93,30 @@ type feedCacheParams struct {
 // 优先使用 cfg（由 bootstrap 注入 &cfg.KnowPost.FeedCache），
 // cfg 为 nil 时回退到与 ApplyDefaults 一致的历史默认值，保证单测零配置可跑。
 func (s *KnowPostFeedService) feedCacheTTLValues() feedCacheParams {
-	if s != nil && s.cfg != nil {
-		fc := s.cfg
-		return feedCacheParams{
-			safeSize:      fc.SafeSize,
-			l1PublicTTL:   fc.L1TTLSeconds,
-			idListBase:    fc.L2IDListTTLBase,
-			idListJitter:  fc.L2IDListJitter,
-			hasMoreBase:   fc.L2HasMoreTTLBase,
-			hasMoreJitter: fc.L2HasMoreJitter,
-			itemBase:      fc.L2ItemTTLBase,
-			itemJitter:    fc.L2ItemJitter,
-			mineL2Base:    fc.L2MineTTLBase,
-			mineL2Jitter:  fc.L2MineJitter,
-			l1MineTTL:     fc.L1MineTTLSeconds,
-			extendBase:    fc.ExtendTTLBase,
-			ttlLow:        fc.TTLLow,
-			ttlMedium:     fc.TTLMedium,
-			ttlHigh:       fc.TTLHigh,
-		}
+	var cfgPtr *config.KnowPostFeedCacheConfig
+	if s != nil {
+		cfgPtr = s.cfg
 	}
+	// cfg 为 nil 时走与全局装配同一条默认值路径（零值节 + ApplyDefaults），
+	// 默认数字只在 pkg/config 一处维护——此前这里有一张手抄回退表，
+	// 与 ApplyDefaults 的一致性只能靠注释约定。
+	fc := feedCacheConfig(cfgPtr)
 	return feedCacheParams{
-		safeSize: 50, l1PublicTTL: 15,
-		idListBase: 60, idListJitter: 31,
-		hasMoreBase: 10, hasMoreJitter: 11,
-		itemBase: 60, itemJitter: 31,
-		mineL2Base: 30, mineL2Jitter: 21, l1MineTTL: 30,
-		extendBase: 60, ttlLow: 30, ttlMedium: 60, ttlHigh: 300,
+		safeSize:      fc.SafeSize,
+		l1PublicTTL:   fc.L1TTLSeconds,
+		idListBase:    fc.L2IDListTTLBase,
+		idListJitter:  fc.L2IDListJitter,
+		hasMoreBase:   fc.L2HasMoreTTLBase,
+		hasMoreJitter: fc.L2HasMoreJitter,
+		itemBase:      fc.L2ItemTTLBase,
+		itemJitter:    fc.L2ItemJitter,
+		mineL2Base:    fc.L2MineTTLBase,
+		mineL2Jitter:  fc.L2MineJitter,
+		l1MineTTL:     fc.L1MineTTLSeconds,
+		extendBase:    fc.ExtendTTLBase,
+		ttlLow:        fc.TTLLow,
+		ttlMedium:     fc.TTLMedium,
+		ttlHigh:       fc.TTLHigh,
 	}
 }
 
@@ -145,7 +144,7 @@ func NewKnowPostFeedService(
 	l1Public *PrefixCache,
 	l1Mine *PrefixCache,
 	hotKey *cache.HotKeyDetector,
-	counter CounterClient,
+	counter feedEngagement,
 	logger *zap.Logger,
 	cfg *config.KnowPostFeedCacheConfig,
 ) *KnowPostFeedService {
@@ -193,7 +192,7 @@ func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int,
 	safeSize := clamp(size, 1, p.safeSize)
 	safePage := max(page, 1)
 	feedVersion := s.currentPublicFeedVersion(ctx)
-	localPageKey := fmt.Sprintf("feed:public:%d:%d:v%d:%d", safeSize, safePage, feedLayoutVer, feedVersion)
+	localPageKey := publicFeedPageLocalKey(safeSize, safePage, feedVersion)
 
 	// 键里只保留 feedVersion + size + page 三个维度。
 	//
@@ -205,7 +204,7 @@ func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int,
 	//	失效粒度已经是「全部」，再按小时分槽不可能缩小任何影响范围。
 	//	它唯一的实际效果是把同一份流量切碎到更多键上：整点跨越时全部键换名，
 	//	命中率白掉一截。两个失效机制不构成组合关系，因此只保留版本号这一个。
-	idsKey := fmt.Sprintf("feed:public:ids:%d:%d:%d", feedVersion, safeSize, safePage)
+	idsKey := publicFeedIDsKey(feedVersion, safeSize, safePage)
 	hasMoreKey := idsKey + ":hasMore"
 
 	if resp := s.getPublicFeedL1(ctx, localPageKey, currentUserID); resp != nil {
@@ -369,68 +368,51 @@ func (s *KnowPostFeedService) GetMyPublished(ctx context.Context, userID uint64,
 	safeSize := clamp(size, 1, p.safeSize)
 	safePage := max(page, 1)
 	feedVersion := s.currentMineFeedVersion(ctx, userID)
-	key := fmt.Sprintf("feed:mine:%d:%d:%d:%d", userID, safeSize, safePage, feedVersion)
+	key := mineFeedPageKey(userID, safeSize, safePage, feedVersion)
 
-	// L1：freecache
-	if val, err := s.l1Mine.Get([]byte(key)); err == nil {
-		resp, parseErr := s.parseFeedPage(val)
-		if parseErr == nil {
-			if s.hotKey != nil {
-				s.hotKey.Record(key)
-			}
-			return resp, nil
+	// 「我的已发布」是整页缓存（更新频率低、数据量有限，碎片化不划算），
+	// L1→L2→锁内回源的编排复用 cache.Tiered；本方法只提供键、TTL 与加载器。
+	//
+	// 与旧实现的两个行为差异（均为改进）：
+	//  1. 回源加了分布式锁 + double-check——此前该路径无击穿保护；
+	//  2. 返回前统一叠加当前用户的 liked/faved——此前三个列表接口只有部分叠加，
+	//     同一字段是否出现取决于走了哪条代码路径。
+	tiered := &cache.Tiered[*FeedPageResponse]{
+		L1:           s.l1Mine,
+		Redis:        s.redis,
+		Logger:       s.logger,
+		Encode:       func(v *FeedPageResponse) ([]byte, error) { return json.Marshal(v) },
+		Decode:       parseJSON[*FeedPageResponse],
+		L1TTLSeconds: p.l1MineTTL,
+		L2TTL: func() time.Duration {
+			return time.Duration(p.mineL2Base+jitterN(p.mineL2Jitter)) * time.Second
+		},
+		LockKey:     lockKeyFor(key),
+		LockOptions: knowPostLockOptions(),
+		LockRetry:   knowPostLockRetryInterval,
+	}
+
+	shared, _, err := tiered.Get(ctx, key, func(ctx context.Context) (*FeedPageResponse, bool, error) {
+		offset := (safePage - 1) * safeSize
+		rows, dbErr := s.repo.ListMyPublished(ctx, userID, safeSize+1, offset)
+		if dbErr != nil {
+			return nil, false, fmt.Errorf("get my published: list: %w", dbErr)
 		}
-	}
-
-	// L2：Redis（`我的 feed` 直接缓存整页，结构比碎片缓存更简单）
-	cached, err := s.redis.Get(ctx, key).Result()
-	if err == nil && cached != "" {
-		resp, parseErr := s.parseFeedPage([]byte(cached))
-		if parseErr == nil {
-			s.l1Mine.SetOrWarn(s.logger, []byte(key), []byte(cached), p.l1MineTTL)
-			if s.hotKey != nil {
-				s.hotKey.Record(key)
-			}
-			return resp, nil
+		hasMore := len(rows) > safeSize
+		if hasMore {
+			rows = rows[:safeSize]
 		}
-	}
-
-	// 查询数据库
-	offset := (safePage - 1) * safeSize
-	rows, err := s.repo.ListMyPublished(ctx, userID, safeSize+1, offset)
+		items := s.mapRowsToItems(ctx, rows, &userID, true)
+		return &FeedPageResponse{Items: items, Page: safePage, Size: safeSize, HasMore: hasMore}, true, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("get my published: list: %w", err)
+		return nil, err
 	}
 
-	hasMore := len(rows) > safeSize
-	if hasMore {
-		rows = rows[:safeSize]
-	}
-
-	items := s.mapRowsToItems(ctx, rows, &userID, true)
-
-	resp := &FeedPageResponse{
-		Items:   items,
-		Page:    safePage,
-		Size:    safeSize,
-		HasMore: hasMore,
-	}
-
-	// 回填 L2 和 L1
-	jsonBytes, err := json.Marshal(resp)
-	if err != nil {
-		return resp, nil
-	}
-	baseTTL := p.mineL2Base + jitterN(p.mineL2Jitter)
-	if setErr := s.redis.Set(ctx, key, string(jsonBytes), time.Duration(baseTTL)*time.Second).Err(); setErr != nil {
-		s.logger.Warn("failed to set mine feed L2 cache", zap.String("key", key), zap.Error(setErr))
-	}
-	s.l1Mine.SetOrWarn(s.logger, []byte(key), jsonBytes, p.l1MineTTL)
 	if s.hotKey != nil {
 		s.hotKey.Record(key)
 	}
-
-	return resp, nil
+	return s.withUserState(ctx, shared, &userID), nil
 }
 
 // ============================================================================
@@ -480,7 +462,7 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 	// 批量读取条目碎片
 	itemKeys := make([]string, len(idStrs))
 	for i, idStr := range idStrs {
-		itemKeys[i] = "feed:item:" + idStr
+		itemKeys[i] = feedItemKey(idStr)
 	}
 	itemJsons, err := s.redis.MGet(ctx, itemKeys...).Result()
 	if err != nil {
@@ -575,7 +557,7 @@ func (s *KnowPostFeedService) writeFeedItemCaches(ctx context.Context, items []F
 	p := s.feedCacheTTLValues()
 	pipe := s.redis.Pipeline()
 	for _, item := range items {
-		itemKey := "feed:item:" + item.ID
+		itemKey := feedItemKey(item.ID)
 		jsonBytes, err := json.Marshal(item)
 		if err != nil {
 			s.logger.Warn("failed to marshal feed item for cache", zap.String("itemID", item.ID), zap.Error(err))
@@ -623,8 +605,8 @@ func (s *KnowPostFeedService) InvalidateAfterPostMutation(ctx context.Context, p
 	if s.redis == nil || s.logger == nil {
 		return
 	}
-	itemKey := "feed:item:" + strconv.FormatUint(postID, 10)
-	mineKey := fmt.Sprintf(mineFeedVersionKey, creatorID)
+	itemKey := feedItemKeyU(postID)
+	mineKey := mineFeedVersionKey(creatorID)
 
 	if err := invalidateFeedScript.Run(ctx, s.redis, []string{itemKey, publicFeedVersionKey, mineKey}).Err(); err != nil {
 		s.logger.Warn("failed to invalidate feed caches",
@@ -633,6 +615,11 @@ func (s *KnowPostFeedService) InvalidateAfterPostMutation(ctx context.Context, p
 			zap.Error(err),
 		)
 	}
+
+	// 版本号已在 Redis 递增，同步作废本实例的版本号短缓存，保证自写自读立即切换新键。
+	v := s.feedVersions()
+	v.Drop(publicFeedVersionKey)
+	v.Drop(mineKey)
 }
 
 // ============================================================================
@@ -813,7 +800,7 @@ func (s *KnowPostFeedService) recordItemHotKeys(ctx context.Context, items []Fee
 		if target <= baseTTL {
 			continue // 冷键：目标 TTL 不高于基准值，延长是空操作，不值得占一次往返
 		}
-		itemKeys = append(itemKeys, "feed:item:"+items[i].ID)
+		itemKeys = append(itemKeys, feedItemKey(items[i].ID))
 		itemTTLs = append(itemTTLs, target)
 	}
 	if len(itemKeys) == 0 {
@@ -929,7 +916,7 @@ func (s *KnowPostFeedService) currentPublicFeedVersion(ctx context.Context) int6
 //
 // 返回值：int64，当前版本号。若不存在或无效则返回 1。
 func (s *KnowPostFeedService) currentMineFeedVersion(ctx context.Context, userID uint64) int64 {
-	return s.feedVersion(ctx, fmt.Sprintf(mineFeedVersionKey, userID))
+	return s.feedVersion(ctx, mineFeedVersionKey(userID))
 }
 
 // feedVersion 通用的 Feed 版本号读取函数。
@@ -944,11 +931,16 @@ func (s *KnowPostFeedService) currentMineFeedVersion(ctx context.Context, userID
 //
 // 返回值：int64，当前版本号。默认返回 1。
 func (s *KnowPostFeedService) feedVersion(ctx context.Context, key string) int64 {
-	version, err := s.redis.Get(ctx, key).Int64()
-	if err == nil && version > 0 {
-		return version
-	}
-	return 1
+	return s.feedVersions().Get(ctx, key)
+}
+
+// feedVersions 返回 Feed 版本号读取器（带进程内短缓存，无状态可按调用构造）。
+//
+// 公共 Feed 的 L1 整页键编入了版本号：没有本地短缓存时，
+// 每次 L1 命中都要先付一次 Redis GET 才能拼出键——与详情链路当年同款缺陷。
+func (s *KnowPostFeedService) feedVersions() *cache.Versions {
+	var feedCfg *config.KnowPostConfig // 版本短缓存 TTL 与详情共用同一配置项
+	return newFeedVersions(s.redis, s.l1Public, feedCfg)
 }
 
 // ============================================================================

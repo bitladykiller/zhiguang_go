@@ -3,6 +3,7 @@ package knowpost
 import (
 	"context"
 	"errors"
+	"go.uber.org/zap"
 	"sync"
 	"testing"
 	"time"
@@ -111,9 +112,8 @@ func TestPublicURL_NoDomain(t *testing.T) {
 }
 
 func TestParseDetail_Valid(t *testing.T) {
-	svc := &KnowPostService{}
 	data := []byte(`{"id":"1","title":"test","author_id":"42","author_nickname":"nick"}`)
-	resp, err := svc.parseDetail(data)
+	resp, err := parseJSON[*KnowPostDetailResponse](data)
 	if err != nil {
 		t.Fatalf("parseDetail() error = %v", err)
 	}
@@ -123,16 +123,14 @@ func TestParseDetail_Valid(t *testing.T) {
 }
 
 func TestParseDetail_InvalidJSON(t *testing.T) {
-	svc := &KnowPostService{}
-	_, err := svc.parseDetail([]byte(`{invalid json`))
+	_, err := parseJSON[*KnowPostDetailResponse]([]byte(`{invalid json`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
 }
 
 func TestParseDetail_EmptySlice(t *testing.T) {
-	svc := &KnowPostService{}
-	_, err := svc.parseDetail([]byte{})
+	_, err := parseJSON[*KnowPostDetailResponse]([]byte{})
 	if err == nil {
 		t.Fatal("expected error for empty data")
 	}
@@ -197,7 +195,7 @@ func (s *stubCounter) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) 
 }
 
 func TestEnrichDetail_NilCounter(t *testing.T) {
-	svc := &KnowPostService{}
+	svc := &KnowPostDetailService{}
 	base := &KnowPostDetailResponse{ID: "1"}
 	result := svc.enrichDetail(context.Background(), base, ptr(uint64(1)), true)
 	if result != base {
@@ -207,7 +205,7 @@ func TestEnrichDetail_NilCounter(t *testing.T) {
 
 func TestEnrichDetail_LoggedIn(t *testing.T) {
 	counter := &stubCounter{counts: map[string]int32{"like": 5, "fav": 3}, liked: true, faved: false}
-	svc := &KnowPostService{counter: counter}
+	svc := &KnowPostDetailService{counter: counter, logger: zap.NewNop()}
 	base := &KnowPostDetailResponse{ID: "1"}
 
 	result := svc.enrichDetail(context.Background(), base, ptr(uint64(1)), true)
@@ -227,7 +225,7 @@ func TestEnrichDetail_LoggedIn(t *testing.T) {
 
 func TestEnrichDetail_Anonymous(t *testing.T) {
 	counter := &stubCounter{counts: map[string]int32{"like": 5, "fav": 3}}
-	svc := &KnowPostService{counter: counter}
+	svc := &KnowPostDetailService{counter: counter, logger: zap.NewNop()}
 	base := &KnowPostDetailResponse{ID: "1"}
 
 	result := svc.enrichDetail(context.Background(), base, nil, false)
@@ -314,10 +312,9 @@ func BenchmarkToJSON(b *testing.B) {
 }
 
 func BenchmarkParseDetail(b *testing.B) {
-	svc := &KnowPostService{}
 	data := []byte(`{"id":"1","title":"test","author_id":"42","author_nickname":"nick"}`)
 	for i := 0; i < b.N; i++ {
-		_, _ = svc.parseDetail(data)
+		_, _ = parseJSON[*KnowPostDetailResponse](data)
 	}
 }
 

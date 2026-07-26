@@ -920,7 +920,7 @@ func TestPrefixCache_SetOrWarn_LogsOversizedEntry(t *testing.T) {
 
 // TestDetailCacheTTLValues_FromConfig 覆盖 cfg 非 nil 分支。
 func TestDetailCacheTTLValues_FromConfig(t *testing.T) {
-	svc := &KnowPostService{
+	svc := &KnowPostDetailService{
 		cfg: &config.KnowPostConfig{
 			DetailCache: config.KnowPostDetailCacheConfig{
 				L1TTLSeconds: 11, NullTTLBase: 22, NullJitter: 33,
@@ -933,9 +933,22 @@ func TestDetailCacheTTLValues_FromConfig(t *testing.T) {
 	want := detailCacheParams{
 		l1TTL: 11, nullBase: 22, nullJitter: 33,
 		l2Base: 44, l2Jitter: 55,
-		ttlLow: 66, ttlMedium: 77, ttlHigh: 88,
+		ttlMedium: 77,
 	}
 	if got != want {
 		t.Errorf("detailCacheTTLValues() = %+v, want %+v", got, want)
+	}
+}
+
+// TestDetailCacheTTLValues_DefaultsMatchConfigSection 验证零配置回退与
+// pkg/config 的节级默认值走同一条代码路径（默认值单源）。
+func TestDetailCacheTTLValues_DefaultsMatchConfigSection(t *testing.T) {
+	var section config.KnowPostDetailCacheConfig
+	section.ApplyDefaults()
+
+	got := (&KnowPostDetailService{}).detailCacheTTLValues()
+	if got.l1TTL != section.L1TTLSeconds || got.nullBase != section.NullTTLBase ||
+		got.l2Base != section.L2TTLBase || got.ttlMedium != section.TTLMedium {
+		t.Errorf("nil-cfg fallback %+v diverged from config section defaults %+v", got, section)
 	}
 }

@@ -4,242 +4,202 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/zhiguang/app/internal/cache"
+	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/jsonutil"
 )
 
-// detailCacheParams 是知文详情缓存的运行时参数快照。
+// detailEngagement 是详情读取对计数模块的**最小依赖**。
 //
-// WHY 用具名结构体而非多返回值：
+// WHY 在消费侧按需声明接口，而不是引用 counter 包的完整接口：
 //
-//	此前该函数返回 8 个同类型的匿名 int，调用方只能靠位置取值，
-//	写出 `_, _, _, _, _, _, ttlMedium, _ := s.detailCacheTTLValues()` 这样的代码——
-//	读者无法在不跳转函数定义的情况下判断取到的是哪个参数，
-//	而且一旦调整返回顺序，所有调用方都会**静默**取错值（类型相同，编译器无法报错）。
-//	改为结构体后取值即自解释，增删字段也不会破坏既有调用点。
+//	此前这里是 `type CounterClient = counter.CounterServiceInterface`——
+//	把生产者侧的 13 方法胖接口整个别名过来，而详情读取只用其中 2 个。
+//	代价直接体现在测试上：为了测一个 enrich，桩对象被迫实现全部 13 个方法。
+//	Go 的惯用法是「接口定义在使用处，按需声明」：依赖面即真实使用面，
+//	桩只需实现 2 个方法，counter 的无关演进也不再波及本模块。
+type detailEngagement interface {
+	GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
+	IsLikedAndFaved(ctx context.Context, userID uint64, entityType, entityID string) (liked, faved bool, err error)
+}
+
+// KnowPostDetailService 承载知文详情的读取链路。
+//
+// WHY 从 KnowPostService 中拆出：
+//
+//	拆分前 KnowPostService 同时承担写路径、详情读取、缓存协调、Bloom 维护与审计，
+//	13 个依赖字段——想单测详情读取也得面对全部字段的零值语义。
+//	读写路径的依赖面几乎不相交（写侧不需要 hotKey/counter，读侧不需要 db/idGen/outbox），
+//	拆开后各自 8~9 个内聚依赖，构造语义与测试边界都清晰一截。
+//
+// 缓存结构：L1(freecache) → L2(Redis, 含 "NULL" 空值哨兵) → Bloom 预判 → 锁内回源 MySQL。
+// 具体编排复用 cache.Tiered（见 internal/cache/tiered.go），本类型只提供业务件：
+// 键构造、加载器、TTL 策略、热点记录与用户态叠加。
+type KnowPostDetailService struct {
+	repo    Repo
+	redis   *redis.Client
+	l1Cache *PrefixCache
+	hotKey  *cache.HotKeyDetector
+	// bloom：第三方 RedisBloom（CF.*）适配层；nil 表示关闭，fail-open。
+	bloom   *cache.RedisBloom
+	counter detailEngagement
+	logger  *zap.Logger
+	cfg     *config.KnowPostConfig
+}
+
+// NewKnowPostDetailService 创建详情读取服务。counter/hotKey/bloom 均可为 nil（对应能力降级）。
+func NewKnowPostDetailService(
+	repo Repo,
+	redisClient *redis.Client,
+	l1Cache *PrefixCache,
+	hotKey *cache.HotKeyDetector,
+	bloom *cache.RedisBloom,
+	counter detailEngagement,
+	logger *zap.Logger,
+	cfg *config.KnowPostConfig,
+) *KnowPostDetailService {
+	if logger == nil {
+		logger = zap.L()
+	}
+	return &KnowPostDetailService{
+		repo:    repo,
+		redis:   redisClient,
+		l1Cache: l1Cache,
+		hotKey:  hotKey,
+		bloom:   bloom,
+		counter: counter,
+		logger:  logger,
+		cfg:     cfg,
+	}
+}
+
+// detailCacheParams 是详情缓存的运行时参数快照（具名结构体，取值自解释）。
 type detailCacheParams struct {
 	l1TTL      int // L1（freecache）TTL，秒
-	nullBase   int // 空值缓存 TTL 基准，秒
-	nullJitter int // 空值缓存 TTL 抖动上限，秒
+	nullBase   int // 空值哨兵 TTL 基准，秒
+	nullJitter int // 空值哨兵 TTL 抖动上限，秒
 	l2Base     int // L2（Redis）TTL 基准，秒
 	l2Jitter   int // L2（Redis）TTL 抖动上限，秒
-	ttlLow     int // LOW 热度对应的 TTL，秒
-	ttlMedium  int // MEDIUM 热度对应的 TTL，秒
-	ttlHigh    int // HIGH 热度对应的 TTL，秒
+	ttlMedium  int // 热点 TTL 延长的基准档
 }
 
-// detailCacheTTLValues 返回详情缓存参数。
-// cfg 为 nil 时回退到与 ApplyDefaults 一致的默认值，保证零配置单测可跑。
-func (s *KnowPostService) detailCacheTTLValues() detailCacheParams {
-	if s.cfg != nil {
-		dc := s.cfg.DetailCache
-		return detailCacheParams{
-			l1TTL:      dc.L1TTLSeconds,
-			nullBase:   dc.NullTTLBase,
-			nullJitter: dc.NullJitter,
-			l2Base:     dc.L2TTLBase,
-			l2Jitter:   dc.L2Jitter,
-			ttlLow:     dc.TTLLow,
-			ttlMedium:  dc.TTLMedium,
-			ttlHigh:    dc.TTLHigh,
-		}
-	}
+// detailCacheTTLValues 返回详情缓存参数；cfg 为 nil 时使用与配置默认值同源的回退。
+func (s *KnowPostDetailService) detailCacheTTLValues() detailCacheParams {
+	dc := detailCacheConfig(s.cfg)
 	return detailCacheParams{
-		l1TTL: 60, nullBase: 30, nullJitter: 31,
-		l2Base: 60, l2Jitter: 31,
-		ttlLow: 30, ttlMedium: 60, ttlHigh: 300,
+		l1TTL:      dc.L1TTLSeconds,
+		nullBase:   dc.NullTTLBase,
+		nullJitter: dc.NullJitter,
+		l2Base:     dc.L2TTLBase,
+		l2Jitter:   dc.L2Jitter,
+		ttlMedium:  dc.TTLMedium,
 	}
 }
 
-// --- [详情读取链路] --- //
-
-// detailVersionCachePrefix 是版本号进程内缓存在共享 freecache 中的键前缀。
-const detailVersionCachePrefix = "dv:"
-
-// defaultDetailVersionCacheTTL 是版本号进程内缓存的默认存活秒数。
-const defaultDetailVersionCacheTTL = 2
-
-// detailCacheKey 构造知文详情页的缓存键。
-//
-// 功能：缓存键格式为 "knowpost:detail:{id}:v{detailLayoutVer}:ver{postVersion}"。
-//   - detailLayoutVer 是全局布局版本号，用于整体爆破缓存。
-//   - postVersion 是每个知文独立的版本号，每次写操作递增。
-//     当多实例部署时，某实例执行写操作会 INCR 该版本号，
-//     其他实例 L1 中的旧版本键自然失效（键不匹配）。
-func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) string {
-	return fmt.Sprintf("knowpost:detail:%d:v%d:ver%d", id, detailLayoutVer, s.detailVersion(ctx, id))
-}
-
-// detailVersion 读取某篇知文的缓存版本号，优先命中进程内短缓存。
-//
-// WHY 需要这层进程内缓存：
-//
-//	版本号被编码进缓存键，所以「读 L1」必须先「知道版本号」。
-//	而版本号存在 Redis 里，于是每一次详情读取——**包括 L1 命中**——
-//	都要先付一次 Redis 往返。L1 存在的全部意义是不走网络，
-//	这个顺序让它的延迟下限被死死锁在 Redis RTT 上，
-//	文档宣称的「L1 约 50ns」在这条路径上从来没有成立过。
-//
-// 取舍：
-//
-//	版本号只在写操作时变化，因此用极短 TTL（默认 2 秒）缓存是安全的。
-//	代价是「其他实例写入后，本实例最多延迟 TTL 秒才切到新键」。
-//	这个窗口远小于 L1 自身的 TTL（默认 60 秒）——也就是说，
-//	在引入本缓存之前，跨实例读到旧内容的窗口本来就是 60 秒级别的（旧 L1 条目仍在），
-//	版本号的即时性并没有带来端到端的强一致，只是让新键提前生效。
-//	把 detail_cache.version_cache_ttl_seconds 设为 0 可关闭本缓存，退回每次读 Redis。
-//
-// 本实例自己的写操作会在 invalidateCache 中主动清掉该缓存，因此自读自写始终一致。
-func (s *KnowPostService) detailVersion(ctx context.Context, id uint64) int64 {
-	cacheKey := s.detailVersionCacheKey(id)
-	ttl := s.detailVersionCacheTTL()
-
-	if ttl > 0 && s.l1Cache != nil {
-		if raw, err := s.l1Cache.Cache.Get([]byte(cacheKey)); err == nil {
-			if v, parseErr := strconv.ParseInt(string(raw), 10, 64); parseErr == nil {
-				return v
-			}
-		}
-	}
-
-	version, err := s.redis.Get(ctx, fmt.Sprintf("knowpost:ver:%d", id)).Int64()
-	if err != nil {
-		version = detailLayoutVer
-	}
-
-	if ttl > 0 && s.l1Cache != nil {
-		// 写入失败无需处理：下次读取回落 Redis，语义不变。
-		_ = s.l1Cache.Cache.Set([]byte(cacheKey), []byte(strconv.FormatInt(version, 10)), ttl)
-	}
-	return version
-}
-
-// detailVersionCacheKey 返回版本号在共享 freecache 中的键。
-//
-// 直接操作底层 Cache 而不复用 s.l1Cache（前缀 "d:"），是为了让版本号和详情载荷
-// 处于不同的键空间，避免二者前缀相同时相互覆盖。
-func (s *KnowPostService) detailVersionCacheKey(id uint64) string {
-	return detailVersionCachePrefix + strconv.FormatUint(id, 10)
-}
-
-// detailVersionCacheTTL 返回版本号进程内缓存的存活秒数，<=0 表示关闭。
-func (s *KnowPostService) detailVersionCacheTTL() int {
-	if s.cfg == nil {
-		return defaultDetailVersionCacheTTL
-	}
-	if s.cfg.DetailCache.VersionCacheTTLSeconds < 0 {
-		return 0
-	}
-	if s.cfg.DetailCache.VersionCacheTTLSeconds == 0 {
-		return defaultDetailVersionCacheTTL
-	}
-	return s.cfg.DetailCache.VersionCacheTTLSeconds
-}
-
-// dropCachedDetailVersion 清除本实例缓存的版本号。
-// 由 invalidateCache 在本实例写操作后调用，保证自读自写立即可见。
-func (s *KnowPostService) dropCachedDetailVersion(id uint64) {
-	if s.l1Cache != nil {
-		s.l1Cache.Cache.Del([]byte(s.detailVersionCacheKey(id)))
-	}
+// versions 返回详情版本号读取器（无状态，可按调用构造）。
+func (s *KnowPostDetailService) versions() *cache.Versions {
+	return newDetailVersions(s.redis, s.l1Cache, s.cfg)
 }
 
 // GetDetail 返回知文详情，并补充当前用户维度的点赞/收藏状态。
 //
-// 功能：通过三级缓存 + Redis 看门狗分布式锁机制获取知文详情。
-// 先从 L1（freecache 进程内缓存）查找，未命中则查 L2（Redis 分布式缓存），
-// 再未命中则进入 Redis 分布式锁保护区域回源到 L3（MySQL）。
+// 读取顺序（由 cache.Tiered 编排）：
 //
-// 穿透防护（第三方 RedisBloom CF.* + 空值缓存叠加）：
-//  0. 存在性过滤（可选，默认开启；算法在 RedisBloom 模块，非业务自研）：
-//     - MightContain=false → 一定不存在，直接 404，不打 L1/L2/DB。
-//     - MightContain=true  → 可能存在，继续三级缓存。
-//     - 模块缺失/Redis 故障/未预热 → fail-open，退回仅空值缓存路径。
-//  1. L1（freecache）：
-//     - 约 50ns 可返回，不经过网络，性能极高。
-//     - TTL 由上游写缓存时决定（通常是 60s + jitter）。
-//     - 如果 L1 命中，仍会调用 recordHotKeyAndExtendTTL 延长在 Redis 中该 key 的 TTL，
-//     即热数据会在 Layer 2 层级获得更长缓存时间。
-//  2. L2（Redis）：
-//     - 约 1ms 响应，跨服务实例共享。
-//     - 如果缓存值为 "NULL" 特殊标记，说明该 ID 对应的资源不存在，
-//     直接返回 404（空值缓存兜底，吸收 Bloom 误判与软删残留）。
-//     - 如果缓存命中，还会将其写入 L1 以供后续进程内命中。
-//  3. L3（MySQL 回源 + Redis 看门狗分布式锁）：
-//     - 通过 Redis SET NX PX 抢锁，并在持锁期间启动本地看门狗续约，
-//     确保多实例场景下同一时刻只有一个实例回源 DB。
-//     - 其余实例等待缓存被前一个实例回填后直接复用结果。
-//     - 详见 getDetailUnderLock 注释。
+//	L1 → L2（"NULL" 哨兵直接 404）→ Bloom 预判（一定不存在则 404）→ 锁内 double-check → MySQL
 //
-// 权限判定：
-//   - 公开（public）+ 已发布（published）→ 任何人可查看
-//   - 非公开（如 followers、school、private、unlisted）→ 仅作者本人可查看（owner check）
-//   - 已删除（deleted）→ 返回 404
+// 顺序要点：
+//   - Bloom 放在两级缓存**之后**：缓存命中即证明存在，先问 Bloom 是白付一次往返；
+//     扫号请求必然缓存 miss，到达 Bloom 的成本与放在最前完全一样。
+//   - 用户态（liked/faved）在 Get 返回**之后**叠加——Tiered 保证缓存里只有共享视图，
+//     该字段结构上进不了缓存（历史串号事故的结构性防复发）。
 //
-// 参数：
-//   - ctx: context.Context，用于传递请求上下文和控制超时。
-//   - id: uint64，知文的雪花 ID。
-//   - currentUserID: *uint64，当前正在请求的用户 ID（可选）。
-//     传 nil 表示未登录，此时无法获得点赞/收藏状态和私有内容的查看权限。
-//
-// 返回值：
-//   - *KnowPostDetailResponse: 详情响应，包含标题、描述、内容 URL、作者信息、计数等。
-//   - error: 错误对象。可能的值包括 errcode.ErrNotFound（内容不存在/已删除）、
-//     errcode.ErrForbidden（无权限查看）。
-func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
-	pageKey := s.detailCacheKey(ctx, id)
-	l1TTL := s.detailCacheTTLValues().l1TTL
+// 权限：public+published 任何人可看；其余仅作者本人；已删除 404。
+func (s *KnowPostDetailService) GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
+	p := s.detailCacheTTLValues()
+	pageKey := detailPageKey(id, s.versions().Get(ctx, detailVersionKey(id)))
 
-	// 1) L1（freecache）：命中即返回。
-	//
-	// 这里刻意排在 Bloom 之前：L1 命中本身就证明该 ID 存在，
-	// 再问一次「可能存在吗」没有任何信息量，只是白付一次 Redis 往返。
-	// Bloom 的职责是拦住「不存在的 ID 打到 DB」，因此它的正确位置是
-	// L1/L2 都未命中、即将回源之前（见下方第 3 步）。
-	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {
-		resp, parseErr := s.parseDetail(val)
-		if parseErr == nil {
-			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
-			return s.enrichDetail(ctx, resp, currentUserID, false), nil
-		}
+	// forbiddenErr 用于把 403 从 Loader 里带出来：
+	// 它与「不存在」不同——不写空值哨兵（内容存在，只是请求者无权看）。
+	var forbiddenErr error
+
+	tiered := &cache.Tiered[*KnowPostDetailResponse]{
+		L1:           s.l1Cache,
+		Redis:        s.redis,
+		Logger:       s.logger,
+		Encode:       func(v *KnowPostDetailResponse) ([]byte, error) { return json.Marshal(v) },
+		Decode:       parseJSON[*KnowPostDetailResponse],
+		L1TTLSeconds: p.l1TTL,
+		L2TTL: func() time.Duration {
+			base := p.l2Base + jitterN(p.l2Jitter)
+			if s.hotKey != nil {
+				// 热点内容拿更长的 L2 TTL，降低周期性回源。
+				base = s.hotKey.TtlForPublic(ctx, base, hotKeyID(id))
+			}
+			return time.Duration(base) * time.Second
+		},
+		NullSentinel: "NULL",
+		NullTTL: func() time.Duration {
+			return time.Duration(p.nullBase+jitterN(p.nullJitter)) * time.Second
+		},
+		PreLoad: func(ctx context.Context) error {
+			// Bloom：一定不存在 → 直接 404，不打 DB。模块缺失/故障 fail-open。
+			if s.bloom != nil {
+				if ok, _ := s.bloom.MightContainUint64(ctx, id); !ok {
+					return errcode.ErrNotFound.WithMsg("content not found")
+				}
+			}
+			return nil
+		},
+		LockKey:     lockKeyFor(pageKey),
+		LockOptions: knowPostLockOptions(),
+		LockRetry:   knowPostLockRetryInterval,
 	}
 
-	// 2) L2（Redis）：命中回填 L1；"NULL" 是空值缓存标记。
-	cached, err := s.redis.Get(ctx, pageKey).Result()
-	if err == nil && cached != "" {
-		if cached == "NULL" {
-			return nil, errcode.ErrNotFound.WithMsg("content not found")
+	resp, hit, err := tiered.Get(ctx, pageKey, func(ctx context.Context) (*KnowPostDetailResponse, bool, error) {
+		if s.repo == nil {
+			return nil, false, nil // 视为不存在：写哨兵，保持零依赖单测语义
 		}
-		resp, parseErr := s.parseDetail([]byte(cached))
-		if parseErr == nil {
-			s.l1Cache.SetOrWarn(s.logger, []byte(pageKey), []byte(cached), l1TTL)
-			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
-			return s.enrichDetail(ctx, resp, currentUserID, true), nil
+		v, loadErr := s.queryDetailFromDB(ctx, id, currentUserID)
+		if loadErr != nil {
+			if errors.Is(loadErr, errcode.ErrNotFound) {
+				return nil, false, nil // 触发空值哨兵
+			}
+			forbiddenErr = loadErr // 403：不缓存，直接透传
+			return nil, false, loadErr
 		}
+		// 回源确认存在：渐进补齐 Bloom（无需全量预热任务）。
+		if s.bloom != nil {
+			s.bloom.AddUint64(ctx, id)
+		}
+		s.fillCounts(ctx, v)
+		return v, true, nil
+	})
+
+	switch {
+	case errors.Is(err, cache.ErrNullCached):
+		return nil, errcode.ErrNotFound.WithMsg("content not found")
+	case forbiddenErr != nil:
+		return nil, forbiddenErr
+	case err != nil:
+		return nil, err
 	}
 
-	// 3) Bloom 前置：一定不存在则直接 404，避免恶意扫号打穿 DB。
-	// 与空值缓存叠加：Bloom 拦「从未出现过的 ID」；NULL 拦「查过确认不存在/已删」。
-	//
-	// 放在这里不会削弱扫号防护：扫号请求必然在 L1/L2 都未命中，
-	// 到达此处的成本与放在最前面完全一样（同为一次 Redis 往返），
-	// 而正常的缓存命中请求由此少付一次往返。
-	if s.bloom != nil {
-		if ok, _ := s.bloom.MightContainUint64(ctx, id); !ok {
-			return nil, errcode.ErrNotFound.WithMsg("content not found")
-		}
-	}
+	s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 
-	return s.getDetailUnderLock(ctx, id, pageKey, currentUserID)
+	// L2 命中的载荷携带的是写缓存那一刻的计数，可能已过期 → 刷新；
+	// L1 命中窗口极短（秒级）、回源刚查过 → 不刷新。
+	return s.enrichDetail(ctx, resp, currentUserID, hit == cache.HitL2), nil
 }
 
-func (s *KnowPostService) queryDetailFromDB(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
+// queryDetailFromDB 回源查询并做状态/权限判定。
+func (s *KnowPostDetailService) queryDetailFromDB(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
 	row, err := s.repo.FindDetailByID(ctx, id)
 	if err != nil || row == nil || row.Status == KnowPostStatusDeleted {
 		return nil, errcode.ErrNotFound.WithMsg("content not found")
@@ -269,135 +229,25 @@ func (s *KnowPostService) queryDetailFromDB(ctx context.Context, id uint64, curr
 	}, nil
 }
 
-// getDetailUnderLock 在 Redis 看门狗分布式锁保护下从 MySQL 回源查询详情。
-//
-// 功能：这是防止缓存击穿的核心方法。
-// 当 L1、L2 同时未命中时，多个并发请求会竞争同一个 pageKey 对应的 Redis 锁，
-// 只有拿到锁的请求才会真正查询 MySQL，其余请求循环等待并重检 Redis 缓存。
-//
-// 实现细节：
-//  1. 通过 Redis SET NX PX 尝试抢占分布式锁，锁 key 为 `lock:{pageKey}`。
-//     抢锁成功后会启动本地看门狗协程，周期性续租，避免固定 5 秒租期过短。
-//  2. 抢锁成功后再次检查 Redis（double-check）：
-//     如果上一个持有锁的请求已经回填了缓存，则直接返回缓存数据，无需再次查库。
-//  3. 查库使用 s.repo.FindDetailByID，该 SQL JOIN users 表拿到作者信息。
-//  4. 业务状态校验：
-//     - status == "deleted" → 返回 404，并在 Redis 中写入 "NULL" 标记
-//     以防止对已删除内容的重复查询（缓存穿透防护）。
-//     - 非公开且非作者 → 返回 403 Forbidden。
-//  5. 查询 db 成功后，将结果序列化为 JSON 写入 L2（Redis）和 L1（freecache），
-//     TTL 由热点探测器优化：热门内容获得更长的 TTL。
-//  6. 特殊标记 "NULL" 的 TTL 为 30-60 秒随机值（jitter），
-//     避免所有不存在的 key 同时过期，造成周期性的缓存穿透。
-//
-// 参数：
-//   - ctx: context.Context。
-//   - id: uint64，知文 ID。
-//   - pageKey: string，缓存键名（格式："knowpost:detail:{id}:v{version}"）。
-//   - currentUserID: *uint64，当前用户 ID（可选）。
-//
-// 返回值：
-//   - *KnowPostDetailResponse: 详情响应（已追加计数）。
-//   - error: errcode.ErrNotFound（内容不存在或已删除）或 errcode.ErrForbidden（无权限）。
-func (s *KnowPostService) getDetailUnderLock(ctx context.Context, id uint64, pageKey string, currentUserID *uint64) (*KnowPostDetailResponse, error) {
-	lockKey := "lock:" + pageKey
-	return cacheReadThrough(ctx, s.redis, lockKey,
-		func(ctx context.Context) (*KnowPostDetailResponse, bool, error) {
-			l1TTL := s.detailCacheTTLValues().l1TTL
-			cached, _ := s.redis.Get(ctx, pageKey).Result()
-			if cached == "NULL" {
-				return nil, false, errcode.ErrNotFound.WithMsg("content not found")
-			}
-			if cached != "" {
-				resp, parseErr := s.parseDetail([]byte(cached))
-				if parseErr == nil {
-					s.l1Cache.SetOrWarn(s.logger, []byte(pageKey), []byte(cached), l1TTL)
-					return s.enrichDetail(ctx, resp, currentUserID, true), true, nil
-				}
-			}
-			return nil, false, nil
-		},
-		func(ctx context.Context) (*KnowPostDetailResponse, error) {
-			p := s.detailCacheTTLValues()
-			nullTTL := func() time.Duration {
-				return time.Duration(p.nullBase+jitterN(p.nullJitter)) * time.Second
-			}
-			if s.repo == nil {
-				s.redis.Set(ctx, pageKey, "NULL", nullTTL())
-				return nil, errcode.ErrNotFound.WithMsg("content not found")
-			}
-			resp, err := s.queryDetailFromDB(ctx, id, currentUserID)
-			if err != nil {
-				if errors.Is(err, errcode.ErrNotFound) {
-					s.redis.Set(ctx, pageKey, "NULL", nullTTL())
-				}
-				return nil, err
-			}
-
-			// 回源确认存在：写入 Bloom，渐进补齐历史数据（无需全量预热任务）。
-			if s.bloom != nil {
-				s.bloom.AddUint64(ctx, id)
-			}
-
-			idStr := strconv.FormatUint(id, 10)
-
-			if s.counter != nil {
-				counts, err := s.counter.GetCounts(ctx, "knowpost", idStr, []string{"like", "fav"})
-				if err != nil {
-					s.logger.Warn("failed to get detail counts", zap.Uint64("knowpostID", id), zap.Error(err))
-				} else {
-					resp.LikeCount = int64(counts["like"])
-					resp.FavoriteCount = int64(counts["fav"])
-				}
-			}
-
-			jsonBytes, err := json.Marshal(resp)
-			if err != nil {
-				return s.enrichDetail(ctx, resp, currentUserID, false), nil
-			}
-			baseTTL := p.l2Base + jitterN(p.l2Jitter)
-			hotKeyID := "knowpost:" + idStr
-			targetTTL := baseTTL
-			if s.hotKey != nil {
-				targetTTL = s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
-			}
-			s.redis.Set(ctx, pageKey, string(jsonBytes), time.Duration(targetTTL)*time.Second)
-			s.l1Cache.SetOrWarn(s.logger, []byte(pageKey), jsonBytes, p.l1TTL)
-			if s.hotKey != nil {
-				s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
-			}
-
-			return s.enrichDetail(ctx, resp, currentUserID, false), nil
-		},
-	)
+// fillCounts 在回源结果上填充点赞/收藏计数（进入共享缓存的部分）。
+func (s *KnowPostDetailService) fillCounts(ctx context.Context, resp *KnowPostDetailResponse) {
+	if s.counter == nil {
+		return
+	}
+	counts, err := s.counter.GetCounts(ctx, "knowpost", resp.ID, []string{"like", "fav"})
+	if err != nil {
+		s.logger.Warn("failed to get detail counts", zap.String("knowpostID", resp.ID), zap.Error(err))
+		return
+	}
+	resp.LikeCount = int64(counts["like"])
+	resp.FavoriteCount = int64(counts["fav"])
 }
 
-// enrichDetail 在基础详情上叠加实时计数和当前用户的点赞/收藏状态。
+// enrichDetail 在共享视图上叠加实时计数与当前用户的点赞/收藏状态。
 //
-// 功能：由 GetDetail 和 getDetailUnderLock 调用，在已有 KnowPostDetailResponse
-// 的基础上，补充不可缓存的用户维度数据。
-//
-// 为什么这些数据不缓存：
-//   - 点赞数和收藏数是实时变化的，缓存会导致用户看到过期数据。
-//   - 当前用户的点赞/收藏状态是请求维度的（不同用户看到的结果不同），
-//     不能在缓存中共享。
-//
-// 参数：
-//   - ctx: context.Context。
-//   - base: *KnowPostDetailResponse，基础详情响应（不含用户状态和计数）。
-//     函数会直接修改此对象上的字段，不会创建副本。
-//   - currentUserID: *uint64，当前用户 ID（可选）。nil 表示未登录状态。
-//   - refreshCounts: bool，是否重新获取 LikeCount 和 FavoriteCount。
-//     当从缓存读取且希望展示最新计数时为 true；当刚从数据库查询
-//     （已在 getDetailUnderLock 中获取过计数）时为 false 以避免重复查询。
-//
-// 返回值：
-//   - *KnowPostDetailResponse: 指向同一个 base 对象，方便链式调用。
-//
-// 边界情况：
-//   - counter == nil：不查询计数和状态，直接返回 base，不会 panic。
-//   - GetCounts 失败：静默忽略错误，保留旧计数或零值，不阻塞详情页展示。
-func (s *KnowPostService) enrichDetail(ctx context.Context, base *KnowPostDetailResponse, currentUserID *uint64, refreshCounts bool) *KnowPostDetailResponse {
+// 这些字段不进缓存：计数会过期，用户态是请求维度的。
+// refreshCounts 仅在 L2 命中时为 true（载荷计数可能陈旧）。
+func (s *KnowPostDetailService) enrichDetail(ctx context.Context, base *KnowPostDetailResponse, currentUserID *uint64, refreshCounts bool) *KnowPostDetailResponse {
 	if s.counter == nil {
 		return base
 	}
@@ -425,7 +275,62 @@ func (s *KnowPostService) enrichDetail(ctx context.Context, base *KnowPostDetail
 	return base
 }
 
-// parseDetail 将 JSON 字节序列反序列化为 KnowPostDetailResponse。
-func (s *KnowPostService) parseDetail(data []byte) (*KnowPostDetailResponse, error) {
-	return parseJSON[*KnowPostDetailResponse](data)
+// recordHotKeyAndExtendTTL 记录热点访问，并为热点内容延长详情与 Feed 碎片的 TTL。
+//
+// TTL 延长用 Lua 保证只增不减（多实例并发不会把 TTL 改短）；
+// 冷键直接跳过——目标 TTL 不高于基准时延长是空操作，不值得付一次往返。
+func (s *KnowPostDetailService) recordHotKeyAndExtendTTL(ctx context.Context, id uint64, pageKey string) {
+	if s.hotKey == nil {
+		return
+	}
+	s.hotKey.Record(hotKeyID(id)) // 纯本地计数，无 Redis IO
+
+	baseTTL := s.detailCacheTTLValues().ttlMedium
+	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID(id))
+	if target <= baseTTL {
+		return
+	}
+
+	if err := extendTTLDualScript.Run(ctx, s.redis, []string{pageKey, feedItemKeyU(id)}, target).Err(); err != nil {
+		s.logger.Warn("extend dual ttl failed", zap.Uint64("id", id), zap.Error(err))
+	}
+}
+
+// extendTTLDualScript 原子地对两个键做「只增不减」的 TTL 延长。
+var extendTTLDualScript = redis.NewScript(`
+local current = redis.call('TTL', KEYS[1])
+if current > 0 and current < tonumber(ARGV[1]) then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+current = redis.call('TTL', KEYS[2])
+if current > 0 and current < tonumber(ARGV[1]) then
+    redis.call('EXPIRE', KEYS[2], ARGV[1])
+end
+return 1
+`)
+
+// WarmDetailBloom 从数据库游标扫描未删除知文 ID，批量写入 CF 过滤器。
+// 预热失败不阻塞启动（fail-open）；未预热期间 Bloom 判定放行，由空值哨兵兜底。
+func (s *KnowPostDetailService) WarmDetailBloom(ctx context.Context) error {
+	if s == nil || s.bloom == nil || s.repo == nil {
+		return nil
+	}
+	var lastID uint64
+	total := 0
+	for {
+		ids, err := s.repo.ListIDsForBloom(ctx, lastID, 1000)
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		for _, id := range ids {
+			s.bloom.AddUint64(ctx, id)
+		}
+		total += len(ids)
+		lastID = ids[len(ids)-1]
+	}
+	s.logger.Info("detail bloom warmed", zap.Int("count", total))
+	return nil
 }

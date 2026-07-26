@@ -302,7 +302,9 @@ func (s *KnowPostService) UpdateVisibility(ctx context.Context, creatorID, id ui
 	if !isValidVisible(visible) {
 		return errcode.ErrBadRequest.WithMsg("invalid visibility value")
 	}
-	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostVisibilityUpdated, func(txRepo Repo) error {
+	// 载荷带上目标可见性：扩散消费者据此决定是否把该帖从发件箱清除
+	// （转为非公开/非粉丝可见后，拉路不应再把它分发出去）。
+	if err := s.runKnowPostTxWithPayload(ctx, id, outboxTypeKnowPostVisibilityUpdated, map[string]any{"visible": string(visible)}, func(txRepo Repo) error {
 		affected, err := txRepo.UpdateVisibility(ctx, id, creatorID, visible)
 		if err != nil {
 			return err
