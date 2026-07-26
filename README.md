@@ -16,6 +16,7 @@
 - `canal.enabled=false` 时，不启动上述 outbox 异步投影；**不会**自动切换 outbox DirectPoll
 - like/fav 走独立 topic `counter-events`（AggregationConsumer + 进程内 dirty repairLoop）
 - 信息流扩散 `internal/fanout`：**推拉结合已闭环**。普通作者走写扩散（推入粉丝收件箱），大 V 走读扩散（读者读取时拉发件箱），首页归并两路。事件复用 `canal-outbox`（不再有独立 `fanout` topic，避免双写丢事件）。详见 [`docs/modules/14`](docs/modules/14-信息流扩散-读扩散写扩散与推拉结合.md)
+- 设计约定（消费侧窄接口 / Tiered 读穿 / 键注册表 / 默认值单源 / 幂等协议 / 复合游标）：[`docs/modules/15`](docs/modules/15-设计约定与模式.md)
 - 跨模块流程图与接线核对：[`docs/跨模块流程图.md`](docs/跨模块流程图.md)
 - Kafka 本地环境已调整为 3 broker；`counter-events` 与 `canal-outbox` 主题使用 3 副本并要求 `min.insync.replicas=2`
 - `docker-compose.yml` 已包含本地 Canal 服务，默认会订阅 `zhiguang.outbox`
@@ -313,7 +314,7 @@ docker compose build
 | GET | `/api/v1/knowposts/:id` | 知文详情 | 可选登录 |
 | GET | `/api/v1/knowposts/feed/public` | 公共 Feed | 可选登录 |
 | GET | `/api/v1/knowposts/feed/mine` | 我自己发布的内容 | 需登录 |
-| GET | `/api/v1/knowposts/feed/home` | 关注流（我关注的人的内容） | 需登录 |
+| GET | `/api/v1/knowposts/feed/home` | 关注流（游标分页：`cursor` 不透明回传，`next_cursor` 取下一页） | 需登录 |
 
 ### Counter 计数
 
@@ -325,7 +326,7 @@ docker compose build
 | POST | `/api/v1/counter/unfav` | 取消收藏 | 需登录 |
 | GET | `/api/v1/counter/counts` | 获取计数 | 需登录 |
 | GET | `/api/v1/counter/status` | 点赞/收藏状态 | 需登录 |
-| GET | `/api/v1/counter/likers` | 点赞人列表 | 需登录 |
+| GET | `/api/v1/counter/likers` | 点赞人列表（按点赞时间倒序；`cursor` 为不透明复合游标，空为第一页） | 需登录 |
 
 ### Relation 关注关系
 
@@ -487,6 +488,14 @@ Bloom 检查移到 L1/L2 都未命中之后（命中即证明存在，且扫号�
 - TTL 延长统一走 Lua 脚本，语义为**只增不减**（仅当键存在且当前 TTL 小于目标值才 EXPIRE），多实例并发延长不会互相把 TTL 改短。
 - 热度等级缓存（`levels`）**按窗口整体重建**而非累加：每轮 flush 用本轮观测结果整体替换，本轮无流量则清空。这样既让降温的键自动退出热点集合，也使其规模始终受 `max_local_keys` 约束，不会随内容总量无上界增长。
 - 列表场景使用 `TtlForPublicBatch` 批量定级：本地等级缓存未命中的键合并为**一次** MGET，TTL 延长合并为**一次** EVAL，整页无热点时零 Redis 往返。避免逐条 `EXISTS + EVAL` 在 L1 命中路径上产生上百次串行往返。
+
+### 点赞者列表（`internal/counter/likers.go`）
+
+「谁赞了我」按**点赞时间倒序**返回。点赞真值仍是 Bitmap（O(1) 判定、极省内存），
+但 Bitmap 只能按 userID 枚举——早期列表因此按 userID 排序，是「存储选型反向决定 API 语义」的倒置。
+现在 toggle 的 Lua 原子维护 `likers:{metric}:{type}:{id}` ZSet（score=时间）作为时间序索引；
+索引缺失的历史数据回退位图扫描（该路径顺序退化为 userID 序）。
+游标为不透明复合串（`t:{ts}:{uid}` / 回退路径 `u:{uid}`），客户端原样回传，空为第一页。
 
 ### 限流（`pkg/middleware/ratelimit.go`）
 
