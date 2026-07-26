@@ -1,0 +1,240 @@
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.24em;
+  color: var(--moon-600);
+  transition:
+    color 0.25s,
+    gap 0.3s var(--ease-out);
+}
+
+.backLink:hover {
+  color: var(--gold-300);
+  gap: 13px;
+}
+
+/* ---- 卷首封面 ---- */
+
+.heroMedia {
+  position: relative;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+}
+
+.heroMedia img {
+  width: 100%;
+  aspect-ratio: 21 / 9;
+  object-fit: cover;
+  filter: saturate(0.85);
+}
+
+.heroMedia::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(7, 11, 22, 0.1) 20%, rgba(7, 11, 22, 0.88) 92%);
+}
+
+.heroText {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 44px 48px 34px;
+}
+
+.heroText h1 {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 3.4vw, 42px);
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  color: var(--moon-100);
+  max-width: 24ch;
+  text-wrap: balance;
+}
+
+.heroTags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.heroMeta {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--moon-400);
+}
+
+.heroSeal {
+  position: absolute;
+  right: 42px;
+  bottom: 40px;
+  z-index: 1;
+}
+
+/* ---- 正文 + 侧栏 ---- */
+
+.bodyGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 316px;
+  gap: 46px;
+  align-items: start;
+}
+
+.article {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  min-width: 0;
+}
+
+.lead {
+  margin: 0;
+  padding: 4px 0 4px 22px;
+  border-left: 2px solid var(--gold-500);
+  font-family: var(--font-display);
+  font-size: 17.5px;
+  line-height: 1.95;
+  color: var(--moon-200);
+}
+
+.prose {
+  font-size: 16px;
+  line-height: 2.1;
+  letter-spacing: 0.015em;
+  color: var(--moon-200);
+}
+
+.prose::first-letter {
+  float: left;
+  margin: 8px 14px 0 0;
+  font-family: var(--font-display);
+  font-size: 3.4em;
+  line-height: 0.82;
+  color: var(--gold-400);
+  text-shadow: 0 0 24px rgba(226, 185, 109, 0.35);
+}
+
+.signature {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  padding-top: 6px;
+}
+
+.signature em {
+  font-style: normal;
+  font-family: var(--font-display);
+  font-size: 15px;
+  letter-spacing: 0.2em;
+  color: var(--moon-400);
+}
+
+/* ---- 侧栏 ---- */
+
+.rail {
+  position: sticky;
+  top: 92px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.authorCard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px 22px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  background: linear-gradient(172deg, var(--night-2), var(--night-1));
+}
+
+.authorRow {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+.authorAvatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  flex: none;
+  font-family: var(--font-display);
+  font-size: 22px;
+  color: var(--gold-300);
+  background: var(--night-3);
+  border: 1px solid var(--border-strong);
+  box-shadow:
+    inset 0 0 12px rgba(226, 185, 109, 0.16),
+    var(--glow-gold);
+}
+
+.authorRow strong {
+  font-family: var(--font-display);
+  font-size: 17px;
+  letter-spacing: 0.06em;
+  color: var(--moon-100);
+}
+
+.authorRow small {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--moon-600);
+}
+
+.railActions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.railActions button {
+  width: 100%;
+}
+
+@media (max-width: 1024px) {
+  .bodyGrid {
+    grid-template-columns: 1fr;
+    gap: 30px;
+  }
+
+  .rail {
+    position: static;
+  }
+
+  .heroText {
+    padding: 26px 22px 22px;
+  }
+
+  .heroSeal {
+    display: none;
+  }
+
+  .heroMedia img {
+    aspect-ratio: 16 / 9;
+  }
+}

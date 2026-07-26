@@ -1,0 +1,243 @@
+.authPage {
+  position: relative;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.08fr 0.92fr;
+}
+
+/* ---- 左侧：星象视觉区 ---- */
+
+.visual {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 40px;
+  padding: 56px 64px;
+  border-right: 1px solid var(--border-hairline);
+  background:
+    radial-gradient(60rem 40rem at 80% -20%, rgba(40, 62, 112, 0.55), transparent 62%),
+    radial-gradient(40rem 30rem at -10% 110%, rgba(74, 50, 24, 0.4), transparent 60%),
+    linear-gradient(172deg, var(--night-1), var(--night-0));
+  overflow: hidden;
+}
+
+/* 缓慢旋转的双环星盘 */
+.rings {
+  position: absolute;
+  top: 50%;
+  right: -140px;
+  transform: translateY(-50%);
+  width: 520px;
+  height: 520px;
+  pointer-events: none;
+}
+
+.rings i {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px dashed rgba(226, 185, 109, 0.24);
+  animation: spin-slow 70s linear infinite;
+}
+
+.rings i:last-child {
+  inset: 62px;
+  border-color: rgba(122, 162, 216, 0.22);
+  border-style: solid;
+  border-width: 1px;
+  animation: spin-slow-reverse 100s linear infinite;
+  border-top-color: transparent;
+  border-left-color: transparent;
+}
+
+.sky {
+  position: absolute;
+  right: 70px;
+  bottom: 90px;
+  width: 240px;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.visualMark {
+  position: absolute;
+  top: 50%;
+  right: 30px;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.6em;
+  color: var(--moon-600);
+  opacity: 0.85;
+}
+
+.visualText {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 480px;
+}
+
+.visualText h1 {
+  font-family: var(--font-display);
+  font-size: clamp(32px, 3.4vw, 44px);
+  line-height: 1.36;
+  letter-spacing: 0.03em;
+  color: var(--moon-100);
+  text-wrap: balance;
+}
+
+.visualText h1 em {
+  font-style: normal;
+}
+
+.visualText > p {
+  font-size: 14.5px;
+  line-height: 1.95;
+  color: var(--moon-400);
+  max-width: 46ch;
+}
+
+.points {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--moon-400);
+}
+
+.points li::before {
+  content: "✦";
+  flex: none;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--gold-400);
+  text-shadow: 0 0 10px rgba(238, 207, 141, 0.8);
+}
+
+.visualFoot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.visualFoot span {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  color: var(--moon-600);
+}
+
+/* ---- 右侧：登记卡 ---- */
+
+.cardWrap {
+  display: grid;
+  place-items: center;
+  padding: 48px 40px;
+}
+
+.card {
+  position: relative;
+  width: min(432px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 40px 38px 34px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  background: linear-gradient(172deg, var(--night-2), var(--night-1));
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 38px;
+  right: 38px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(226, 185, 109, 0.6), transparent);
+}
+
+.cardHead {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cardHead h2 {
+  font-family: var(--font-display);
+  font-size: 28px;
+  letter-spacing: 0.1em;
+  color: var(--moon-100);
+}
+
+.cardHead p {
+  font-size: 13px;
+  color: var(--moon-600);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 17px;
+}
+
+.linkText {
+  font-size: 13px;
+  color: var(--moon-600);
+  text-align: center;
+}
+
+.linkText a {
+  color: var(--gold-300);
+  border-bottom: 1px solid rgba(226, 185, 109, 0.4);
+  padding-bottom: 1px;
+  transition: color 0.25s;
+}
+
+.linkText a:hover {
+  color: var(--gold-200);
+}
+
+@media (max-width: 960px) {
+  .authPage {
+    grid-template-columns: 1fr;
+  }
+
+  .visual {
+    padding: 44px 26px;
+    gap: 30px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .rings {
+    right: -260px;
+    opacity: 0.5;
+  }
+
+  .sky,
+  .visualMark {
+    display: none;
+  }
+
+  .cardWrap {
+    padding: 36px 20px 56px;
+  }
+}

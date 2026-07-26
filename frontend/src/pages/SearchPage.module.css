@@ -1,0 +1,51 @@
+.searchBar {
+  max-width: 640px;
+}
+
+.topics {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.topicsLabel {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.26em;
+  color: var(--moon-600);
+}
+
+.topicChip {
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-moon);
+  background: rgba(246, 241, 227, 0.03);
+  color: var(--moon-400);
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  transition:
+    color 0.25s,
+    border-color 0.25s,
+    background-color 0.25s,
+    transform 0.25s var(--ease-out);
+}
+
+.topicChip:hover {
+  color: var(--gold-300);
+  border-color: var(--border-strong);
+  background: rgba(226, 185, 109, 0.08);
+  transform: translateY(-1px);
+}
+
+.resultMeta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: var(--moon-600);
+}
+
+.resultMeta em {
+  font-style: normal;
+  color: var(--gold-400);
+}

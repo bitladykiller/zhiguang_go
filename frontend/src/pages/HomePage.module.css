@@ -1,0 +1,146 @@
+/* ---- 卷首英雄区：星夜之下的开卷 ---- */
+
+.hero {
+  position: relative;
+  padding: 58px 62px 54px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  background:
+    radial-gradient(70rem 36rem at 88% -30%, rgba(40, 62, 112, 0.55), transparent 62%),
+    radial-gradient(40rem 26rem at -8% 120%, rgba(74, 50, 24, 0.35), transparent 60%),
+    linear-gradient(172deg, var(--night-2), var(--night-1));
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  pointer-events: none;
+}
+
+.orbGold {
+  composes: orb;
+  top: -80px;
+  right: 160px;
+  width: 260px;
+  height: 260px;
+  background: rgba(226, 185, 109, 0.14);
+  animation: drift 11s ease-in-out infinite;
+}
+
+.orbBlue {
+  composes: orb;
+  bottom: -120px;
+  right: -60px;
+  width: 320px;
+  height: 320px;
+  background: rgba(74, 125, 191, 0.16);
+  animation: drift 14s ease-in-out infinite reverse;
+}
+
+.heroSky {
+  position: absolute;
+  top: 34px;
+  right: 48px;
+  width: 230px;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.heroSeal {
+  position: absolute;
+  right: 64px;
+  bottom: 52px;
+}
+
+.heroInner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 640px;
+}
+
+.heroTitle {
+  font-family: var(--font-display);
+  font-size: clamp(34px, 4vw, 50px);
+  line-height: 1.32;
+  letter-spacing: 0.03em;
+  color: var(--moon-100);
+  text-wrap: balance;
+}
+
+.heroTitle em {
+  font-style: normal;
+}
+
+.heroLede {
+  font-size: 15px;
+  line-height: 2;
+  color: var(--moon-400);
+  max-width: 54ch;
+}
+
+.heroSearch {
+  max-width: 600px;
+  margin-top: 4px;
+}
+
+.heroFoot {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.26em;
+  color: var(--moon-600);
+}
+
+/* ---- 指标带 ---- */
+
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 22px;
+}
+
+/* ---- 主推与学习信号双栏 ---- */
+
+.workspace {
+  display: grid;
+  grid-template-columns: 1.62fr 1fr;
+  gap: 26px;
+  align-items: start;
+}
+
+.signalsPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px 22px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  background: linear-gradient(172deg, var(--night-2), var(--night-1));
+}
+
+@media (max-width: 1180px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .hero {
+    padding: 40px 26px 38px;
+  }
+
+  .heroSky,
+  .heroSeal {
+    display: none;
+  }
+
+  .metricsGrid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+}

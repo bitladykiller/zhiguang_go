@@ -1,24 +1,45 @@
 .tag {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
-  padding: 4px 9px;
+  gap: 5px;
+  padding: 4px 10px;
   border-radius: var(--radius-xs);
-  border: 1px solid var(--border);
-  color: var(--ink-600);
-  background: rgba(255, 253, 248, 0.72);
-  font-size: 12px;
-  font-weight: 800;
+  border: 1px solid var(--border-moon);
+  background: rgba(246, 241, 227, 0.04);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--moon-400);
+  white-space: nowrap;
 }
 
+/* 鎏金标签：菱星领衔 */
 .gold {
-  border-color: rgba(214, 163, 90, 0.36);
-  color: var(--gold-strong);
-  background: rgba(214, 163, 90, 0.12);
+  color: var(--gold-300);
+  border-color: rgba(226, 185, 109, 0.38);
+  background: rgba(226, 185, 109, 0.08);
+}
+
+.gold::before {
+  content: "✦";
+  font-size: 9px;
+  line-height: 1;
 }
 
 .blue {
-  border-color: rgba(37, 99, 235, 0.22);
-  color: var(--blue);
-  background: rgba(37, 99, 235, 0.08);
+  color: var(--lapis);
+  border-color: rgba(122, 162, 216, 0.36);
+  background: rgba(122, 162, 216, 0.08);
+}
+
+.seal {
+  color: #eb9a86;
+  border-color: rgba(207, 79, 54, 0.42);
+  background: rgba(207, 79, 54, 0.1);
+}
+
+.jade {
+  color: var(--jade);
+  border-color: rgba(108, 194, 162, 0.36);
+  background: rgba(108, 194, 162, 0.08);
 }
