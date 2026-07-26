@@ -1,7 +1,12 @@
-import { CheckCircle2, Circle, PlayCircle } from "lucide-react";
+import clsx from "clsx";
+import { PlayCircle, Target } from "lucide-react";
+import Constellation from "@/components/decor/Constellation";
+import Ornament from "@/components/decor/Ornament";
+import Tag from "@/components/ui/Tag";
 import Button from "@/components/ui/Button";
 import AppLayout from "@/layouts/AppLayout";
 import styles from "@/pages/PageStyles.module.css";
+import learn from "@/pages/LearningPage.module.css";
 
 const steps = [
   { title: "建立知识系统", desc: "先理解输入、沉淀和复盘的闭环。", done: true },
@@ -11,43 +16,82 @@ const steps = [
 ];
 
 const LearningPage = () => {
+  const doneCount = steps.filter((step) => step.done).length;
+  const percent = Math.round((doneCount / steps.length) * 100);
+
   return (
     <AppLayout>
       <div className={styles.page}>
-        <section className={styles.header}>
-          <div className={styles.headerText}>
-            <span className={styles.kicker}>学习路径</span>
-            <h1>把阅读变成持续推进的学习项目。</h1>
-            <p>学习页先聚焦路径、进度和下一步行动，后续可以接购买课程、学习记录和完成率接口。</p>
+        <section className={clsx(styles.pageHead, "rise", "d1")}>
+          <div className={styles.pageHeadText}>
+            <span className={styles.kicker}>星轨 · STUDY</span>
+            <h1>把阅读，变成一条持续推进的星轨。</h1>
+            <p>学习页聚焦路径、进度和下一步行动，后续可以接购买课程、学习记录和完成率接口。</p>
           </div>
           <div className={styles.headerActions}>
-            <Button variant="secondary" icon={<PlayCircle size={18} />}>
+            <Button variant="primary" icon={<PlayCircle size={17} />}>
               继续学习
             </Button>
           </div>
+          <Constellation className={styles.pageSky} />
         </section>
 
-        <section className={styles.section}>
-          <div className={styles.sectionHead}>
-            <div className={styles.sectionTitle}>
-              <h2>本周路径</h2>
-              <p>从知识系统到工程输出，逐步闭环。</p>
+        <div className={learn.layout}>
+          <section className={clsx(learn.pathPanel, "rise", "d2")}>
+            <header className={styles.sectionHead}>
+              <div className={styles.sectionTitle}>
+                <span className={styles.chapter}>本周星轨 · PATH</span>
+                <h2>从知识系统到工程输出</h2>
+                <p>每完成一步，就点亮一颗星。</p>
+              </div>
+              <span className={styles.sectionRule} aria-hidden="true" />
+            </header>
+            <div className={learn.steps}>
+              {steps.map((step, index) => (
+                <div key={step.title} className={clsx(learn.step, step.done && learn.stepDone)}>
+                  <span className={step.done ? learn.nodeDone : learn.nodeTodo}>{step.done ? "✦" : index + 1}</span>
+                  <div className={learn.stepBody}>
+                    <strong>{step.title}</strong>
+                    <p>{step.desc}</p>
+                  </div>
+                  <span className={learn.stepState}>{step.done ? "已点亮" : "待点亮"}</span>
+                </div>
+              ))}
             </div>
-          </div>
-          <div className={styles.insightList}>
-            {steps.map((step, index) => (
-              <div key={step.title} className={styles.insight}>
-                <span>{step.done ? <CheckCircle2 size={18} /> : <Circle size={18} />}</span>
+          </section>
+
+          <aside className={clsx(learn.rail, "rise", "d3")}>
+            <div className={learn.progressPanel}>
+              <span className={styles.chapter}>进度 · PROGRESS</span>
+              <span className={learn.fraction}>
+                {doneCount}
+                <small> / {steps.length}</small>
+              </span>
+              <div className={learn.barTrack}>
+                <div className={learn.barFill} style={{ width: `${percent}%` }} />
+              </div>
+              <p className={learn.progressCaption}>
+                已点亮 {doneCount} 颗星，完成度 {percent}%。下一步：{steps.find((step) => !step.done)?.title ?? "全部完成"}。
+              </p>
+            </div>
+
+            <div className={learn.focusPanel}>
+              <Tag tone="jade">本周聚焦</Tag>
+              <strong>后端可靠性专题</strong>
+              <p>缓存穿透、消息幂等与可观测错误处理，是把 Demo 变成生产系统的三道门。</p>
+              <Ornament />
+              <div className={styles.insight}>
+                <span>
+                  <Target size={17} />
+                </span>
                 <div>
-                  <strong>
-                    {index + 1}. {step.title}
-                  </strong>
-                  <p>{step.desc}</p>
+                  <strong>本周目标</strong>
+                  <p>完成「Go 后端可靠性」并输出一篇实践笔记。</p>
                 </div>
               </div>
-            ))}
-          </div>
-        </section>
+            </div>
+          </aside>
+        </div>
       </div>
     </AppLayout>
   );

@@ -1,0 +1,93 @@
+.layout {
+  display: grid;
+  grid-template-columns: 1.72fr 1fr;
+  gap: 26px;
+  align-items: start;
+}
+
+.guidePanel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 26px 24px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  background:
+    radial-gradient(30rem 16rem at 110% -20%, rgba(40, 62, 112, 0.4), transparent 60%),
+    linear-gradient(172deg, var(--night-2), var(--night-1));
+}
+
+.guideHead {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.guideHead strong {
+  font-family: var(--font-display);
+  font-size: 19px;
+  letter-spacing: 0.08em;
+  color: var(--moon-100);
+}
+
+.guideHead span {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  color: var(--gold-500);
+}
+
+.tip {
+  display: flex;
+  gap: 13px;
+  align-items: flex-start;
+}
+
+.tipIndex {
+  flex: none;
+  font-family: var(--font-display);
+  font-size: 15px;
+  color: var(--gold-400);
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-hairline);
+  border-radius: 50%;
+  background: rgba(226, 185, 109, 0.06);
+}
+
+.tip strong {
+  display: block;
+  font-size: 13.5px;
+  color: var(--moon-200);
+}
+
+.tip p {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--moon-600);
+}
+
+.submitRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.submitHint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  color: var(--moon-600);
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}

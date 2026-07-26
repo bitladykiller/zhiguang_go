@@ -1,7 +1,9 @@
 import clsx from "clsx";
 import styles from "@/components/ui/Tag.module.css";
 
-const Tag = ({ children, tone = "default" }: { children: React.ReactNode; tone?: "default" | "gold" | "blue" }) => {
+type TagTone = "default" | "gold" | "blue" | "seal" | "jade";
+
+const Tag = ({ children, tone = "default" }: { children: React.ReactNode; tone?: TagTone }) => {
   return <span className={clsx(styles.tag, styles[tone])}>{children}</span>;
 };
 

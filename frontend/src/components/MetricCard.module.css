@@ -1,26 +1,70 @@
 .metric {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 18px;
-  border: 1px solid var(--border);
+  padding: 24px 26px 20px;
   border-radius: var(--radius-md);
-  background: rgba(255, 253, 248, 0.76);
+  border: 1px solid var(--border-hairline);
+  background: linear-gradient(170deg, var(--night-2), var(--night-1));
+  overflow: hidden;
+  transition:
+    transform 0.3s var(--ease-out),
+    border-color 0.3s,
+    box-shadow 0.3s;
 }
 
-.metric span {
-  color: var(--ink-500);
-  font-size: 13px;
-  font-weight: 700;
+.metric::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 26px;
+  right: 26px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(226, 185, 109, 0.55), transparent);
 }
 
-.metric strong {
-  color: var(--ink-950);
+.metric:hover {
+  transform: translateY(-3px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm), var(--glow-gold);
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.32em;
+  color: var(--gold-500);
+}
+
+.value {
   font-family: var(--font-display);
-  font-size: 30px;
+  font-size: 42px;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  background: var(--gold-sheen);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 8s linear infinite;
 }
 
-.metric small {
-  color: var(--ink-500);
-  line-height: 1.5;
+.caption {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--moon-600);
+}
+
+/* 底部的刻度尺：呼应「知识星图仪器」的意象 */
+.rule {
+  margin-top: 8px;
+  height: 7px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(226, 185, 109, 0.4) 0 1px,
+    transparent 1px 9px
+  );
+  mask-image: linear-gradient(90deg, #000 0%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, transparent 100%);
 }
