@@ -1,7 +1,10 @@
+import clsx from "clsx";
 import { ArrowRight, Edit3, Layers3, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import ArticleCard from "@/components/ArticleCard";
+import Constellation from "@/components/decor/Constellation";
+import SealMark from "@/components/decor/SealMark";
 import MetricCard from "@/components/MetricCard";
 import SearchBox from "@/components/SearchBox";
 import Button from "@/components/ui/Button";
@@ -10,6 +13,7 @@ import AppLayout from "@/layouts/AppLayout";
 import { contentService } from "@/services/contentService";
 import type { Article } from "@/types/domain";
 import styles from "@/pages/PageStyles.module.css";
+import home from "@/pages/HomePage.module.css";
 
 const HomePage = () => {
   const [articles, setArticles] = useState<Article[]>([]);
@@ -40,57 +44,73 @@ const HomePage = () => {
   return (
     <AppLayout>
       <div className={styles.page}>
-        <section className={styles.header}>
-          <div className={styles.headerText}>
-            <span className={styles.kicker}>精选知识工作台</span>
-            <h1>把灵感、课程和工程经验沉淀成高质量知文。</h1>
-            <p>知光面向学习者和创作者，提供搜索、发布、收藏、学习追踪和个人主页的一体化体验。</p>
-            <SearchBox value={query} onChange={setQuery} onSubmit={submitSearch} />
-          </div>
-          <div className={styles.headerActions}>
-            <Button variant="secondary" icon={<Edit3 size={18} />} onClick={() => navigate("/create")}>
-              发布知文
-            </Button>
-            <Button variant="ghost" icon={<ArrowRight size={18} />} onClick={() => navigate("/search")}>
-              探索主题
-            </Button>
+        <section className={clsx(home.hero, "bloom")}>
+          <i className={home.orbGold} aria-hidden="true" />
+          <i className={home.orbBlue} aria-hidden="true" />
+          <Constellation className={home.heroSky} />
+          <SealMark size="lg" className={home.heroSeal} />
+          <div className={home.heroInner}>
+            <span className={clsx(styles.kicker, "rise", "d1")}>卷首 · 今夜开卷</span>
+            <h1 className={clsx(home.heroTitle, "rise", "d2")}>
+              长夜之中，
+              <em className="gilded">知识自有光</em>。
+            </h1>
+            <p className={clsx(home.heroLede, "rise", "d3")}>
+              知光是面向学习者与创作者的星夜书院——把灵感、课程与工程经验，
+              沉淀成可检索、可收藏、可复用的知文。
+            </p>
+            <div className={clsx(home.heroSearch, "rise", "d4")}>
+              <SearchBox value={query} onChange={setQuery} onSubmit={submitSearch} />
+            </div>
+            <div className={clsx(styles.headerActions, "rise", "d5")}>
+              <Button variant="primary" icon={<Edit3 size={17} />} onClick={() => navigate("/create")}>
+                发布知文
+              </Button>
+              <Button variant="secondary" icon={<ArrowRight size={17} />} onClick={() => navigate("/search")}>
+                探索主题
+              </Button>
+            </div>
+            <span className={clsx(home.heroFoot, "rise", "d6")}>SINCE MMXXVI · 以夜为幕，以知为光</span>
           </div>
         </section>
 
-        <div className={styles.metricsGrid}>
-          <MetricCard label="精选知文" value="128" caption="围绕 AI、后端、产品化学习持续更新" />
-          <MetricCard label="平均阅读" value="8.6m" caption="适合通勤、碎片复盘和深度学习前预热" />
-          <MetricCard label="创作者" value="42" caption="工程师、研究者和产品学习者共同沉淀" />
+        <div className={clsx(home.metricsGrid, "rise", "d5")}>
+          <MetricCard label="精选知文 / POSTS" value="128" caption="围绕 AI、后端、产品化学习持续更新" />
+          <MetricCard label="平均阅读 / MINUTES" value="8.6" caption="适合通勤、碎片复盘和深度学习前预热" />
+          <MetricCard label="创作者 / AUTHORS" value="42" caption="工程师、研究者和产品学习者共同沉淀" />
         </div>
 
-        <div className={styles.workspace}>
-          <section className={styles.section}>
-            <div className={styles.sectionHead}>
+        <div className={home.workspace}>
+          <section className={clsx("rise", "d6")}>
+            <header className={styles.sectionHead}>
               <div className={styles.sectionTitle}>
+                <span className={styles.chapter}>卷一 · VOL.I</span>
                 <h2>今日主推</h2>
                 <p>选择一篇先读透，再进入相关主题。</p>
               </div>
-            </div>
+              <span className={styles.sectionRule} aria-hidden="true" />
+            </header>
             {loading ? (
-              <EmptyState title="正在加载内容" description="正在连接知光内容服务。" />
+              <EmptyState busy title="正在点灯" description="正在连接知光内容服务，摘取今夜的星光。" />
             ) : featured ? (
               <ArticleCard article={featured} featured />
             ) : (
-              <EmptyState title="暂无内容" description="发布第一篇知文后会显示在这里。" />
+              <EmptyState title="暂无内容" description="发布第一篇知文后，它会成为今晚的封面故事。" />
             )}
           </section>
 
-          <aside className={styles.section}>
-            <div className={styles.sectionHead}>
+          <aside className={clsx(home.signalsPanel, "rise", "d7")}>
+            <header className={styles.sectionHead} style={{ marginBottom: 0 }}>
               <div className={styles.sectionTitle}>
+                <span className={styles.chapter}>星象 · SIGNALS</span>
                 <h2>学习信号</h2>
-                <p>今天值得关注的三个方向。</p>
+                <p>今夜值得关注的三个方向。</p>
               </div>
-            </div>
+            </header>
             <div className={styles.insightList}>
               <div className={styles.insight}>
                 <span>
-                  <Sparkles size={18} />
+                  <Sparkles size={17} />
                 </span>
                 <div>
                   <strong>Agent 工程</strong>
@@ -99,7 +119,7 @@ const HomePage = () => {
               </div>
               <div className={styles.insight}>
                 <span>
-                  <Layers3 size={18} />
+                  <Layers3 size={17} />
                 </span>
                 <div>
                   <strong>后端可靠性</strong>
@@ -117,18 +137,24 @@ const HomePage = () => {
           </aside>
         </div>
 
-        <section className={styles.section}>
-          <div className={styles.sectionHead}>
+        <section className={clsx("rise", "d8")}>
+          <header className={styles.sectionHead}>
             <div className={styles.sectionTitle}>
+              <span className={styles.chapter}>卷二 · VOL.II</span>
               <h2>最新知文</h2>
               <p>结构清晰、可收藏、能直接进入实践。</p>
             </div>
-          </div>
-          <div className={styles.grid}>
-            {regular.map((article) => (
-              <ArticleCard key={article.id} article={article} />
-            ))}
-          </div>
+            <span className={styles.sectionRule} aria-hidden="true" />
+          </header>
+          {loading ? (
+            <EmptyState busy title="正在加载" description="星光稍候即至。" />
+          ) : (
+            <div className={styles.grid}>
+              {regular.map((article) => (
+                <ArticleCard key={article.id} article={article} />
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </AppLayout>

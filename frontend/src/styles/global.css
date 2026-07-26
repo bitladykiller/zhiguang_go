@@ -12,11 +12,53 @@ body,
 }
 
 body {
-  font-family: var(--font-sans);
-  color: var(--ink-900);
+  font-family: var(--font-body);
+  color: var(--moon-200);
   background:
-    linear-gradient(135deg, rgba(17, 24, 39, 0.04) 0 1px, transparent 1px 18px),
-    var(--paper);
+    radial-gradient(90rem 60rem at 78% -12%, rgba(40, 62, 112, 0.5), transparent 60%),
+    radial-gradient(70rem 50rem at -12% 110%, rgba(74, 50, 24, 0.42), transparent 65%),
+    radial-gradient(46rem 34rem at 98% 90%, rgba(64, 32, 44, 0.3), transparent 60%),
+    var(--night-0);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* 星场：两层平铺的星点，远近疏密不同，整体缓慢明暗呼吸 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1px 1px at 24px 34px, rgba(246, 241, 227, 0.85), transparent 55%),
+    radial-gradient(1px 1px at 176px 128px, rgba(246, 241, 227, 0.5), transparent 55%),
+    radial-gradient(1.5px 1.5px at 318px 62px, rgba(238, 207, 141, 0.75), transparent 55%),
+    radial-gradient(1px 1px at 92px 236px, rgba(246, 241, 227, 0.4), transparent 55%),
+    radial-gradient(1px 1px at 268px 292px, rgba(122, 162, 216, 0.55), transparent 55%),
+    radial-gradient(2px 2px at 388px 208px, rgba(246, 241, 227, 0.6), transparent 55%),
+    radial-gradient(1px 1px at 148px 388px, rgba(246, 241, 227, 0.45), transparent 55%),
+    radial-gradient(1.5px 1.5px at 342px 372px, rgba(238, 207, 141, 0.5), transparent 55%);
+  background-size: 420px 420px;
+  animation: star-breathe 9s ease-in-out infinite;
+}
+
+/* 颗粒：宣纸质感的噪点覆膜 */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.055;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+#root {
+  position: relative;
+  z-index: 1;
 }
 
 button,
@@ -24,10 +66,14 @@ input,
 textarea,
 select {
   font: inherit;
+  color: inherit;
 }
 
 button {
   border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
 }
 
 a {
@@ -38,6 +84,7 @@ a {
 h1,
 h2,
 h3,
+h4,
 p {
   margin: 0;
 }
@@ -48,7 +95,39 @@ img {
 }
 
 ::selection {
-  background: rgba(214, 163, 90, 0.28);
+  background: rgba(226, 185, 109, 0.32);
+  color: var(--moon-100);
+}
+
+:focus-visible {
+  outline: 2px solid rgba(226, 185, 109, 0.75);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* 滚动条：夜色轨道上的鎏金拇指 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(207, 160, 79, 0.32);
+  border-radius: 999px;
+  border: 3px solid var(--night-0);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(207, 160, 79, 0.55);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(207, 160, 79, 0.35) transparent;
 }
 
 .sr-only {
@@ -61,4 +140,116 @@ img {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ---- 关键帧 ---- */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes bloom {
+  from {
+    opacity: 0;
+    transform: scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes shimmer {
+  to {
+    background-position: 200% center;
+  }
+}
+
+@keyframes star-breathe {
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes star-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -22px, 0);
+  }
+}
+
+@keyframes spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spin-slow-reverse {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+/* ---- 全局动效工具类：错峰浮现 ---- */
+
+.rise {
+  animation: rise 0.7s var(--ease-out) both;
+}
+
+.bloom {
+  animation: bloom 0.8s var(--ease-out) both;
+}
+
+.d1 { animation-delay: 0.06s; }
+.d2 { animation-delay: 0.14s; }
+.d3 { animation-delay: 0.22s; }
+.d4 { animation-delay: 0.3s; }
+.d5 { animation-delay: 0.38s; }
+.d6 { animation-delay: 0.46s; }
+.d7 { animation-delay: 0.56s; }
+.d8 { animation-delay: 0.66s; }
+
+/* 鎏金渐变文字：配合 shimmer 缓慢流光 */
+.gilded {
+  background: var(--gold-sheen);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

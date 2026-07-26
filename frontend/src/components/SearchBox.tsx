@@ -17,9 +17,12 @@ const SearchBox = ({ value, placeholder = "搜索知识、作者或主题", onCh
         onSubmit?.();
       }}
     >
-      <Search size={20} strokeWidth={1.8} />
+      <Search className={styles.glyph} size={19} strokeWidth={1.8} />
       <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
-      <button type="submit">搜索</button>
+      <button type="submit">
+        搜索
+        <span aria-hidden="true">✦</span>
+      </button>
     </form>
   );
 };

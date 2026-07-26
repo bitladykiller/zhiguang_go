@@ -1,54 +1,100 @@
 .button {
-  min-height: 42px;
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 16px;
+  height: 42px;
+  padding: 0 22px;
   border-radius: var(--radius-sm);
-  font-weight: 800;
-  color: var(--ink-900);
-  cursor: pointer;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
-}
-
-.button:hover {
-  transform: translateY(-2px);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  overflow: hidden;
+  transition:
+    transform 0.25s var(--ease-out),
+    box-shadow 0.25s var(--ease-out),
+    background-color 0.25s,
+    border-color 0.25s,
+    color 0.25s;
 }
 
 .button:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
-  transform: none;
-}
-
-.primary {
-  background: var(--ink-950);
-  color: var(--paper-strong);
-  box-shadow: 0 16px 30px rgba(17, 24, 39, 0.18);
-}
-
-.primary:hover {
-  box-shadow: 0 22px 42px rgba(17, 24, 39, 0.22);
-}
-
-.secondary {
-  background: var(--gold);
-  color: var(--ink-950);
-  box-shadow: 0 14px 30px rgba(184, 132, 55, 0.22);
-}
-
-.ghost {
-  background: rgba(255, 253, 248, 0.76);
-  color: var(--ink-800);
-  border: 1px solid var(--border);
-}
-
-.danger {
-  background: rgba(194, 65, 58, 0.1);
-  color: var(--red);
+  opacity: 0.45;
+  pointer-events: none;
 }
 
 .icon {
   display: inline-flex;
+}
+
+/* 主按钮：鎏金实心，悬停时一道流光扫过 */
+.primary {
+  background: linear-gradient(158deg, #eecf8d 0%, #cfa04f 55%, #b08334 100%);
+  color: #241a08;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 10px 26px rgba(207, 160, 79, 0.28);
+}
+
+.primary::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, transparent 32%, rgba(255, 255, 255, 0.5) 50%, transparent 68%);
+  transform: translateX(-120%);
+  transition: transform 0.7s var(--ease-out);
+}
+
+.primary:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 14px 34px rgba(207, 160, 79, 0.4);
+}
+
+.primary:hover::after {
+  transform: translateX(120%);
+}
+
+.primary:active {
+  transform: translateY(0);
+}
+
+/* 次按钮：鎏金描边 */
+.secondary {
+  background: rgba(226, 185, 109, 0.04);
+  border: 1px solid var(--border-strong);
+  color: var(--gold-300);
+}
+
+.secondary:hover {
+  background: rgba(226, 185, 109, 0.12);
+  border-color: rgba(226, 185, 109, 0.65);
+  box-shadow: var(--glow-gold);
+  transform: translateY(-1px);
+}
+
+/* 幽灵按钮：月光文字 */
+.ghost {
+  color: var(--moon-400);
+  padding: 0 14px;
+}
+
+.ghost:hover {
+  color: var(--gold-300);
+  background: rgba(246, 241, 227, 0.05);
+}
+
+/* 朱砂按钮 */
+.danger {
+  background: linear-gradient(158deg, var(--seal), var(--seal-deep));
+  color: #fbeee6;
+  box-shadow: 0 10px 26px rgba(166, 58, 38, 0.32);
+}
+
+.danger:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 32px rgba(166, 58, 38, 0.45);
 }

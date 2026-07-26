@@ -1,48 +1,72 @@
 .box {
-  width: 100%;
-  min-height: 54px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 8px 8px 16px;
-  border: 1px solid var(--border);
+  width: 100%;
+  height: 56px;
+  padding: 6px 6px 6px 18px;
   border-radius: var(--radius-md);
-  background: rgba(255, 253, 248, 0.9);
+  border: 1px solid var(--border-hairline);
+  background: linear-gradient(170deg, rgba(20, 31, 56, 0.9), rgba(10, 17, 34, 0.9));
   box-shadow: var(--shadow-sm);
-  color: var(--ink-500);
+  transition:
+    border-color 0.3s,
+    box-shadow 0.3s;
+}
+
+.box:focus-within {
+  border-color: var(--border-strong);
+  box-shadow:
+    0 0 0 3px rgba(226, 185, 109, 0.12),
+    var(--glow-gold),
+    var(--shadow-sm);
+}
+
+.glyph {
+  color: var(--gold-500);
+  flex: none;
 }
 
 .box input {
+  flex: 1;
   min-width: 0;
   border: 0;
-  outline: 0;
   background: transparent;
-  color: var(--ink-950);
+  color: var(--moon-100);
   font-size: 15px;
+  outline: none;
 }
 
 .box input::placeholder {
-  color: var(--ink-500);
+  color: var(--moon-600);
 }
 
 .box button {
-  min-height: 38px;
-  padding: 8px 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 44px;
+  padding: 0 20px;
   border-radius: var(--radius-sm);
-  background: var(--ink-950);
-  color: var(--paper-strong);
-  font-weight: 800;
-  cursor: pointer;
+  background: linear-gradient(158deg, #eecf8d 0%, #cfa04f 55%, #b08334 100%);
+  color: #241a08;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition:
+    transform 0.25s var(--ease-out),
+    box-shadow 0.25s;
+  flex: none;
 }
 
-@media (max-width: 560px) {
-  .box {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
+.box button span {
+  font-size: 10px;
+}
 
-  .box button {
-    grid-column: 1 / -1;
-    width: 100%;
-  }
+.box button:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 10px 24px rgba(207, 160, 79, 0.35);
 }
