@@ -18,8 +18,8 @@ type stubService struct {
 	unfollowFn        func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
 	followingFn       func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
 	followersFn       func(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
-	followingCursorFn func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
-	followersCursorFn func(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	followingCursorFn func(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error)
+	followersCursorFn func(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error)
 	relationStatusFn  func(ctx context.Context, fromUserID, toUserID uint64) (string, error)
 	isFollowingFn     func(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
 }
@@ -40,11 +40,11 @@ func (s *stubService) Followers(ctx context.Context, userID uint64, limit, offse
 	return s.followersFn(ctx, userID, limit, offset)
 }
 
-func (s *stubService) FollowingCursor(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error) {
+func (s *stubService) FollowingCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error) {
 	return s.followingCursorFn(ctx, userID, limit, cursor)
 }
 
-func (s *stubService) FollowersCursor(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error) {
+func (s *stubService) FollowersCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error) {
 	return s.followersCursorFn(ctx, userID, limit, cursor)
 }
 
@@ -476,8 +476,8 @@ func TestHandler_Followers_InternalError(t *testing.T) {
 
 func TestHandler_FollowingCursor_Success(t *testing.T) {
 	stub := &stubService{
-		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{30, 20}, 1000, nil
+		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor string) ([]uint64, string, error) {
+			return []uint64{30, 20}, "s:1000:20", nil
 		},
 	}
 	_, r := setupHandlerTest(stub, 1001)
@@ -491,8 +491,8 @@ func TestHandler_FollowingCursor_Success(t *testing.T) {
 
 func TestHandler_FollowingCursor_LastPage(t *testing.T) {
 	stub := &stubService{
-		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{10}, 0, nil
+		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor string) ([]uint64, string, error) {
+			return []uint64{10}, "", nil
 		},
 	}
 	_, r := setupHandlerTest(stub, 1001)
@@ -506,8 +506,8 @@ func TestHandler_FollowingCursor_LastPage(t *testing.T) {
 
 func TestHandler_FollowingCursor_Empty(t *testing.T) {
 	stub := &stubService{
-		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{}, 0, nil
+		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor string) ([]uint64, string, error) {
+			return []uint64{}, "", nil
 		},
 	}
 	_, r := setupHandlerTest(stub, 1001)
@@ -521,8 +521,8 @@ func TestHandler_FollowingCursor_Empty(t *testing.T) {
 
 func TestHandler_FollowingCursor_InternalError(t *testing.T) {
 	stub := &stubService{
-		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return nil, 0, errors.New("db error")
+		followingCursorFn: func(_ context.Context, _ uint64, limit int, cursor string) ([]uint64, string, error) {
+			return nil, "", errors.New("db error")
 		},
 	}
 	_, r := setupHandlerTest(stub, 1001)
@@ -539,8 +539,8 @@ func TestHandler_FollowingCursor_InternalError(t *testing.T) {
 
 func TestHandler_FollowersCursor_Success(t *testing.T) {
 	stub := &stubService{
-		followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{50, 40}, 2000, nil
+		followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor string) ([]uint64, string, error) {
+			return []uint64{50, 40}, "s:2000:1", nil
 		},
 	}
 	_, r := setupHandlerTest(stub, 1001)
@@ -554,8 +554,8 @@ func TestHandler_FollowersCursor_Success(t *testing.T) {
 
 func TestHandler_FollowersCursor_InternalError(t *testing.T) {
 	stub := &stubService{
-		followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return nil, 0, errors.New("db error")
+		followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor string) ([]uint64, string, error) {
+			return nil, "", errors.New("db error")
 		},
 	}
 	_, r := setupHandlerTest(stub, 1001)
@@ -653,8 +653,8 @@ func TestHandler_Following_MissingUserID(t *testing.T) {
 
 func TestHandler_FollowersCursor_DefaultCursor(t *testing.T) {
 	stub := &stubService{
-		followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
-			return []uint64{}, 0, nil
+		followersCursorFn: func(_ context.Context, _ uint64, limit int, cursor string) ([]uint64, string, error) {
+			return []uint64{}, "", nil
 		},
 	}
 	_, r := setupHandlerTest(stub, 1001)

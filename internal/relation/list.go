@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -76,8 +77,57 @@ func (s *RelationService) getListWithOffset(ctx context.Context, userID uint64, 
 	return ids[offset:end], nil
 }
 
-// getListWithCursor 读取关注/粉丝列表，使用游标分页。
-func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, listType string, limit int, cursor int64) ([]uint64, int64, error) {
+// listCursor 是关注/粉丝列表的复合游标：(关注时间毫秒, 对方用户 ID) 双键。
+//
+// WHY 必须携带 member 而不能只用 score：
+//
+//	score 是毫秒时间戳，并列仍然可能（批量导入、同毫秒双关注）。
+//	旧实现的游标只有 score 且用排除式区间 `("——页边界上与末条并列的成员被整体跳过，
+//	翻页静默丢条目。复合游标改用**包含式**上界 + 应用侧按 (score, member) 精确跳过，
+//	不重不漏。格式 "s:{ms}:{uid}"，对客户端不透明；兼容历史纯数字游标（按旧语义排除式处理）。
+type listCursor struct {
+	set       bool
+	scoreMs   int64
+	memberUID uint64
+	legacy    bool // 历史纯数字游标：无 member 可用，退回排除式语义
+}
+
+func encodeListCursor(scoreMs int64, uid uint64) string {
+	return "s:" + strconv.FormatInt(scoreMs, 10) + ":" + strconv.FormatUint(uid, 10)
+}
+
+func parseListCursor(raw string) (listCursor, error) {
+	if raw == "" || raw == "0" {
+		return listCursor{}, nil
+	}
+	if body, ok := strings.CutPrefix(raw, "s:"); ok {
+		tsStr, uidStr, ok2 := strings.Cut(body, ":")
+		if !ok2 {
+			return listCursor{}, fmt.Errorf("invalid cursor")
+		}
+		ts, err1 := strconv.ParseInt(tsStr, 10, 64)
+		uid, err2 := strconv.ParseUint(uidStr, 10, 64)
+		if err1 != nil || err2 != nil {
+			return listCursor{}, fmt.Errorf("invalid cursor")
+		}
+		return listCursor{set: true, scoreMs: ts, memberUID: uid}, nil
+	}
+	if ts, err := strconv.ParseInt(raw, 10, 64); err == nil && ts > 0 {
+		return listCursor{set: true, scoreMs: ts, legacy: true}, nil
+	}
+	return listCursor{}, fmt.Errorf("invalid cursor")
+}
+
+// cursorTieSlack 是并列毫秒时间戳的取数冗余。
+const cursorTieSlack = 8
+
+// getListWithCursor 读取关注/粉丝列表，复合游标分页。
+func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, listType string, limit int, cursor string) ([]uint64, string, error) {
+	cur, err := parseListCursor(cursor)
+	if err != nil {
+		return nil, "", err
+	}
+
 	zsetKey := s.zsetKey(listType, userID)
 	exists, err := s.redis.Exists(ctx, zsetKey).Result()
 	if err != nil {
@@ -86,43 +136,65 @@ func (s *RelationService) getListWithCursor(ctx context.Context, userID uint64, 
 	if exists == 0 {
 		warmed, err := s.ensureListCacheWarm(ctx, listType, userID)
 		if err != nil {
-			return nil, 0, err
+			return nil, "", err
 		}
 		if !warmed {
-			return []uint64{}, 0, nil
+			return []uint64{}, "", nil
 		}
 	}
 
-	var maxVal string
-	if cursor > 0 {
-		maxVal = "(" + strconv.FormatInt(cursor, 10)
-	} else {
-		maxVal = "+inf"
+	maxVal := "+inf"
+	fetch := limit
+	if cur.set {
+		if cur.legacy {
+			maxVal = "(" + strconv.FormatInt(cur.scoreMs, 10)
+		} else {
+			maxVal = strconv.FormatInt(cur.scoreMs, 10) // 包含式：并列成员在应用侧跳过
+			fetch = limit + cursorTieSlack
+		}
 	}
 
-	members, err := s.redis.ZRevRangeByScore(ctx, zsetKey, &redis.ZRangeBy{
+	zs, err := s.redis.ZRevRangeByScoreWithScores(ctx, zsetKey, &redis.ZRangeBy{
 		Min:    "-inf",
 		Max:    maxVal,
 		Offset: 0,
-		Count:  int64(limit),
+		Count:  int64(fetch),
 	}).Result()
 	if err != nil {
-		return nil, 0, err
+		return nil, "", err
 	}
 
-	result := s.toIDList(members)
-	var nextCursor int64
-	if len(result) > 0 {
-		lastID := strconv.FormatUint(result[len(result)-1], 10)
-		score, err := s.redis.ZScore(ctx, zsetKey, lastID).Result()
-		if err != nil {
-			s.logger.Warn("failed to get zscore for cursor pagination", zap.String("zsetKey", zsetKey), zap.String("lastID", lastID), zap.Error(err))
-			return result, 0, nil
+	result := make([]uint64, 0, limit)
+	var lastScore int64
+	var lastUID uint64
+	curMember := strconv.FormatUint(cur.memberUID, 10)
+	for _, z := range zs {
+		member, ok := z.Member.(string)
+		if !ok {
+			continue
 		}
-		nextCursor = int64(score)
+		uid, parseErr := strconv.ParseUint(member, 10, 64)
+		if parseErr != nil {
+			continue
+		}
+		scoreMs := int64(z.Score)
+		// 并列 score 的精确跳过：ZREVRANGEBYSCORE 对并列成员按 member 逆字典序输出，
+		// 与游标 member 做同序比较即可确定相对位置（含游标本身）。
+		if cur.set && !cur.legacy && scoreMs == cur.scoreMs && member >= curMember {
+			continue
+		}
+		result = append(result, uid)
+		lastScore, lastUID = scoreMs, uid
+		if len(result) == limit {
+			break
+		}
 	}
 
-	return result, nextCursor, nil
+	next := ""
+	if len(result) > 0 {
+		next = encodeListCursor(lastScore, lastUID)
+	}
+	return result, next, nil
 }
 
 // zsetKey 生成 Redis ZSet 缓存键。

@@ -939,8 +939,7 @@ func (s *KnowPostFeedService) feedVersion(ctx context.Context, key string) int64
 // 公共 Feed 的 L1 整页键编入了版本号：没有本地短缓存时，
 // 每次 L1 命中都要先付一次 Redis GET 才能拼出键——与详情链路当年同款缺陷。
 func (s *KnowPostFeedService) feedVersions() *cache.Versions {
-	var feedCfg *config.KnowPostConfig // 版本短缓存 TTL 与详情共用同一配置项
-	return newFeedVersions(s.redis, s.l1Public, feedCfg)
+	return newFeedVersions(s.redis, s.l1Public)
 }
 
 // ============================================================================

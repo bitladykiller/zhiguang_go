@@ -21,8 +21,12 @@ import (
 // ── 键 schema ────────────────────────────────────────────────────────────────
 //
 //	likers:{metric}:{entityType}:{entityID}   ZSet   点赞者按时间索引（score=点赞秒级时间戳）
-//	liker_time:{entityType}:{entityID}:{uid}  String 单人点赞时间（位图回退路径补时间用）
 //	likers_cache:{entityType}:{entityID}:{m}  ZSet   位图扫描结果缓存（仅回退路径使用）
+//
+// 点赞时间的**唯一真源**是 ZSet 的 score。曾存在平行键 liker_time:{...}——
+// 但全仓库只有读取方、从无写入方：回退路径为它逐人发 GET，每次都 miss，
+// LikedAt 恒为 0 还白付一轮 pipeline。一份数据不该有第二个（何况从未生效的）存放处，
+// 该键空间已整体移除；回退路径的 LikedAt 诚实置 0（历史数据的点赞时间本就不可考）。
 //
 // WHY 引入按时间的 ZSet 索引：
 //
@@ -34,10 +38,6 @@ import (
 
 func likersZSetKey(metric, entityType, entityID string) string {
 	return fmt.Sprintf("likers:%s:%s:%s", metric, entityType, entityID)
-}
-
-func likerTimeKey(entityType string, entityID, userID uint64) string {
-	return fmt.Sprintf("liker_time:%s:%d:%d", entityType, entityID, userID)
 }
 
 func likersScanCacheKey(entityType string, entityID uint64, metric string) string {
@@ -287,11 +287,6 @@ func (s *CounterService) scanBitmapForLikers(ctx context.Context, entityType str
 		)
 	}
 
-	if err := s.fillLikedAt(ctx, entityType, entityID, items); err != nil {
-		s.logger.Warn("liker time pipeline exec failed for scan",
-			zap.String("entityType", entityType), zap.Uint64("entityID", entityID), zap.Error(err))
-	}
-
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
@@ -319,28 +314,14 @@ func (s *CounterService) scanBitmapForLikers(ctx context.Context, entityType str
 }
 
 // buildLikersFromCache 用扫描缓存组装一页（已确认缓存取满 limit+1 条）。
-func (s *CounterService) buildLikersFromCache(ctx context.Context, entityType string, entityID uint64, results []string, limit int) (*LikersResponse, error) {
+func (s *CounterService) buildLikersFromCache(_ context.Context, _ string, _ uint64, results []string, limit int) (*LikersResponse, error) {
 	items := make([]LikerItem, 0, len(results))
-	pipe := s.redis.Pipeline()
-	cmds := make([]*redis.StringCmd, len(results))
-	uids := make([]uint64, len(results))
-	for i, uidStr := range results {
+	for _, uidStr := range results {
 		uid, err := strconv.ParseUint(uidStr, 10, 64)
 		if err != nil {
 			continue
 		}
-		uids[i] = uid
-		cmds[i] = pipe.Get(ctx, likerTimeKey(entityType, entityID, uid))
-	}
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
-		s.logger.Warn("liker time pipeline exec failed", zap.String("entityType", entityType), zap.Uint64("entityID", entityID), zap.Error(err))
-	}
-	for i, cmd := range cmds {
-		if cmd == nil || uids[i] == 0 {
-			continue
-		}
-		likedAt, _ := cmd.Int64()
-		items = append(items, LikerItem{UserID: uids[i], LikedAt: likedAt})
+		items = append(items, LikerItem{UserID: uid})
 	}
 
 	hasMore := len(items) > limit
@@ -420,25 +401,4 @@ func appendLikersFromChunk(items []LikerItem, bmStr string, chunk, cursor uint64
 		}
 	}
 	return items
-}
-
-// fillLikedAt 批量补齐每个点赞者的点赞时间（缺失保持 0）。
-func (s *CounterService) fillLikedAt(ctx context.Context, entityType string, entityID uint64, items []LikerItem) error {
-	if len(items) == 0 {
-		return nil
-	}
-	pipe := s.redis.Pipeline()
-	cmds := make([]*redis.StringCmd, len(items))
-	for i, item := range items {
-		cmds[i] = pipe.Get(ctx, likerTimeKey(entityType, entityID, item.UserID))
-	}
-	_, err := pipe.Exec(ctx)
-	for i, cmd := range cmds {
-		likedAt, _ := cmd.Int64()
-		items[i].LikedAt = likedAt
-	}
-	if err != nil && !errors.Is(err, redis.Nil) {
-		return err
-	}
-	return nil
 }

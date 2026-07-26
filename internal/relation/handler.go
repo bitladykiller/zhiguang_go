@@ -163,17 +163,17 @@ func (h *RelationHandler) Followers(c *gin.Context) {
 	response.Success(c, gin.H{"data": data})
 }
 
-// FollowingCursor 处理 GET /relations/following/cursor?user_id=12345&limit=20&cursor=0。
+// FollowingCursor 处理 GET /relations/following/cursor?user_id=12345&limit=20&cursor=。
 //
 // 功能: 查询指定用户关注的人列表，使用游标分页。
 // 注意: 这是一个公开端点，无需身份验证。
 //
-// 游标基于关注时间的毫秒时间戳。cursor=0 表示从头开始（最新的关注）。
-// 响应中包含 next_cursor，可用于后续请求。
+// 游标为不透明复合串（(关注时间, 用户ID) 双键，见 list.go）；空表示第一页。
+// 响应 cursor 字段原样回传取下一页；并列时间戳跨页不重不漏。
 func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
 	limit := httputil.QueryInt(c, "limit", 20)
-	cursor := queryInt64(c, "cursor")
+	cursor := c.Query("cursor")
 
 	data, nextCursor, err := h.svc.FollowingCursor(c.Request.Context(), userID, limit, cursor)
 	if err != nil {
@@ -184,14 +184,14 @@ func (h *RelationHandler) FollowingCursor(c *gin.Context) {
 	response.Success(c, gin.H{"data": data, "cursor": nextCursor, "has_more": len(data) >= limit})
 }
 
-// FollowersCursor 处理 GET /relations/followers/cursor?user_id=12345&limit=20&cursor=0。
+// FollowersCursor 处理 GET /relations/followers/cursor?user_id=12345&limit=20&cursor=。
 //
 // 功能: 查询指定用户的粉丝列表，使用游标分页。
 // 注意: 这是一个公开端点，无需身份验证。
 func (h *RelationHandler) FollowersCursor(c *gin.Context) {
 	userID := queryUint64(c, "user_id")
 	limit := httputil.QueryInt(c, "limit", 20)
-	cursor := queryInt64(c, "cursor")
+	cursor := c.Query("cursor")
 
 	data, nextCursor, err := h.svc.FollowersCursor(c.Request.Context(), userID, limit, cursor)
 	if err != nil {

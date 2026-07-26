@@ -3,8 +3,9 @@
 // 本文件专门处理用户维度的计数指标（following、follower、posts），
 // 与实体维度的 toggle 操作（like、fav）分离到不同文件。
 //
-// 用户计数通过 INCR_SDS_FIELD_LUA 原子递增 SDS 中的槽位，
-// 不经过 Kafka 异步链路（因为 relation.EventProcessor 已在消费端直接调用）。
+// 关注/粉丝计数经 ApplyFollowDeltaOnce（去重落标 + 双向 HINCRBY 同段 Lua）由
+// relation 消费端触发；早期的裸 IncrementFollowings/IncrementFollowers 已随
+// 幂等协议纠序移除——裸增量无法与去重标记原子绑定，正是旧协议丢事件的根源。
 package counter
 
 import (
@@ -27,25 +28,6 @@ type UserCounter struct {
 // NewUserCounter 创建一个用户维度计数操作器。
 func NewUserCounter(svc *CounterService) *UserCounter {
 	return &UserCounter{svc: svc}
-}
-
-// IncrementFollowings 增量更新用户维度的关注数。
-func (u *UserCounter) IncrementFollowings(ctx context.Context, userID uint64, delta int) error {
-	return u.incrementUserMetric(ctx, userID, "following", delta)
-}
-
-// IncrementFollowers 增量更新用户维度的粉丝数。
-func (u *UserCounter) IncrementFollowers(ctx context.Context, userID uint64, delta int) error {
-	return u.incrementUserMetric(ctx, userID, "follower", delta)
-}
-
-// incrementUserMetric 增量更新用户维度的计数指标。
-func (u *UserCounter) incrementUserMetric(ctx context.Context, userID uint64, metric string, delta int) error {
-	if _, ok := nameToIdx[metric]; !ok {
-		return fmt.Errorf("unknown metric: %s", metric)
-	}
-	key := SdsKey("user", strconv.FormatUint(userID, 10))
-	return u.svc.redis.HIncrBy(ctx, key, metric, int64(delta)).Err()
 }
 
 // FollowerCount 返回用户的粉丝数。

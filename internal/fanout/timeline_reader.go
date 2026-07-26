@@ -241,7 +241,7 @@ func (r *TimelineReader) followedCelebrities(ctx context.Context, userID uint64)
 	}
 
 	celebs := make([]uint64, 0, 8)
-	var cursor int64
+	var cursor string
 	for page := 0; page < followingScanMaxPages; page++ {
 		batch, next, err := r.followingLister.FollowingCursor(ctx, userID, followingScanPageSize, cursor)
 		if err != nil {
@@ -262,7 +262,7 @@ func (r *TimelineReader) followedCelebrities(ctx context.Context, userID uint64)
 			}
 		}
 
-		if next == 0 || next == cursor || len(batch) < followingScanPageSize {
+		if next == "" || next == cursor || len(batch) < followingScanPageSize {
 			return celebs, nil
 		}
 		cursor = next

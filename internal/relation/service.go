@@ -173,13 +173,14 @@ func (s *RelationService) Followers(ctx context.Context, userID uint64, limit, o
 	return s.getListWithOffset(ctx, userID, "followers", limit, offset)
 }
 
-// FollowingCursor 返回基于游标分页的关注列表。
-func (s *RelationService) FollowingCursor(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error) {
+// FollowingCursor 返回基于复合游标分页的关注列表。
+// cursor 为不透明串（"s:{ms}:{uid}"），空为第一页；兼容历史纯数字游标。
+func (s *RelationService) FollowingCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error) {
 	return s.getListWithCursor(ctx, userID, "following", limit, cursor)
 }
 
-// FollowersCursor 返回基于游标分页的粉丝列表。
-func (s *RelationService) FollowersCursor(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error) {
+// FollowersCursor 返回基于复合游标分页的粉丝列表。语义同 FollowingCursor。
+func (s *RelationService) FollowersCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error) {
 	return s.getListWithCursor(ctx, userID, "followers", limit, cursor)
 }
 

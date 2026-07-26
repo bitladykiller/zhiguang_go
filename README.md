@@ -337,8 +337,8 @@ docker compose build
 | GET | `/api/v1/relations/status` | 关系状态 | 需登录 |
 | GET | `/api/v1/relations/following` | 关注列表 | 需登录 |
 | GET | `/api/v1/relations/followers` | 粉丝列表 | 需登录 |
-| GET | `/api/v1/relations/following/cursor` | 关注列表（游标） | 需登录 |
-| GET | `/api/v1/relations/followers/cursor` | 粉丝列表（游标） | 需登录 |
+| GET | `/api/v1/relations/following/cursor` | 关注列表（`cursor` 为不透明复合游标，空为第一页） | 需登录 |
+| GET | `/api/v1/relations/followers/cursor` | 粉丝列表（同上，复合游标） | 需登录 |
 
 ### Search 搜索
 

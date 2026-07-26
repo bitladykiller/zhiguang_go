@@ -1,4 +1,4 @@
-// Package cache 提供热点键识别（HotKeyDetector）能力。
+// 本文件：热点键识别（HotKeyDetector）。
 //
 // HotKeyDetector：使用本地 map + Redis Hash 实现跨实例滑动窗口热点检测。
 // 每次缓存访问仅递增本地计数（零 Redis IO），每 6 秒批量 flush 到 Redis Hash 完成跨实例聚合。

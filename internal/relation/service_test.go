@@ -350,15 +350,84 @@ func TestGetListWithCursor_WithData(t *testing.T) {
 	svc.redis.ZAdd(context.Background(), zkey, redis.Z{Score: 2000, Member: "20"})
 	svc.redis.ZAdd(context.Background(), zkey, redis.Z{Score: 1000, Member: "10"})
 
-	ids, cursor, err := svc.getListWithCursor(context.Background(), 1, "following", 2, 0)
+	ids, cursor, err := svc.getListWithCursor(context.Background(), 1, "following", 2, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(ids) != 2 || ids[0] != 30 || ids[1] != 20 {
 		t.Fatalf("expected [30 20], got %v", ids)
 	}
-	if cursor == 0 {
-		t.Fatal("expected non-zero cursor")
+	if cursor != "s:2000:20" {
+		t.Fatalf("cursor = %q, want s:2000:20", cursor)
+	}
+
+	// 第二页：复合游标衔接
+	ids, cursor, err = svc.getListWithCursor(context.Background(), 1, "following", 2, cursor)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != 10 {
+		t.Fatalf("page2 = %v, want [10]", ids)
+	}
+	_ = cursor
+}
+
+// TestGetListWithCursor_TiesAcrossPageBoundary 验证并列毫秒时间戳横跨页边界不丢条目。
+//
+// 旧实现的游标只有 score 且用排除式区间：与末条并列的成员被整页跳过（静默丢条目）。
+// 复合游标（包含式上界 + (score,member) 应用侧跳过）修复该缺陷。
+func TestGetListWithCursor_TiesAcrossPageBoundary(t *testing.T) {
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	svc := newTestService(rdb)
+	zkey := svc.zsetKey("following", 2)
+	svc.redis.ZAdd(context.Background(), zkey, redis.Z{Score: 3000, Member: "50"})
+	// 三人同一毫秒关注：并列 score 恰好横跨 limit=2 的页边界
+	for _, m := range []string{"31", "32", "33"} {
+		svc.redis.ZAdd(context.Background(), zkey, redis.Z{Score: 2000, Member: m})
+	}
+	svc.redis.ZAdd(context.Background(), zkey, redis.Z{Score: 1000, Member: "10"})
+
+	seen := map[uint64]bool{}
+	cursor := ""
+	for page := 0; page < 6; page++ {
+		ids, next, err := svc.getListWithCursor(context.Background(), 2, "following", 2, cursor)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if len(ids) == 0 {
+			break
+		}
+		for _, id := range ids {
+			if seen[id] {
+				t.Fatalf("user %d returned twice", id)
+			}
+			seen[id] = true
+		}
+		cursor = next
+	}
+	if len(seen) != 5 {
+		t.Fatalf("paged %d unique users, want all 5 (ties at page boundary must not be skipped)", len(seen))
+	}
+}
+
+// TestGetListWithCursor_LegacyNumericCursor 验证历史纯数字游标仍可翻页（排除式旧语义）。
+func TestGetListWithCursor_LegacyNumericCursor(t *testing.T) {
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	svc := newTestService(rdb)
+	zkey := svc.zsetKey("following", 3)
+	svc.redis.ZAdd(context.Background(), zkey, redis.Z{Score: 3000, Member: "30"})
+	svc.redis.ZAdd(context.Background(), zkey, redis.Z{Score: 1000, Member: "10"})
+
+	ids, _, err := svc.getListWithCursor(context.Background(), 3, "following", 10, "3000")
+	if err != nil {
+		t.Fatalf("legacy cursor: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != 10 {
+		t.Fatalf("legacy page = %v, want [10]", ids)
 	}
 }
 

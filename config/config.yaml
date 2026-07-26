@@ -170,6 +170,9 @@ relation:
 
 knowpost:
   detail_cache:
+    # 版本号进程内短缓存秒数：0=默认 2 秒；负数=关闭（每次读 Redis）。
+    # 让 L1 命中真正零 Redis 往返；代价是跨实例写入最多延迟该秒数才切新键。
+    version_cache_ttl_seconds: 0
     l1_ttl_seconds: 60
     null_ttl_base: 30
     null_jitter: 31
