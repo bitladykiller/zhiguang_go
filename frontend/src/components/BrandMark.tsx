@@ -3,12 +3,15 @@ import styles from "@/components/BrandMark.module.css";
 const BrandMark = ({ compact = false }: { compact?: boolean }) => {
   return (
     <div className={styles.brand} aria-label="知光">
-      <div className={styles.mark}>知</div>
+      <span className={styles.mark}>
+        知
+        <i className={styles.spark} aria-hidden="true" />
+      </span>
       {!compact ? (
-        <div className={styles.text}>
+        <span className={styles.text}>
           <strong>知光</strong>
-          <span>ZhiGuang</span>
-        </div>
+          <small>ZHIGUANG · 星夜书院</small>
+        </span>
       ) : null}
     </div>
   );

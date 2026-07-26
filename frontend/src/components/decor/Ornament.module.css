@@ -1,0 +1,44 @@
+.ornament {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+
+.start .line:last-child {
+  flex: 1;
+}
+
+.start .line:first-child {
+  flex: 0 0 28px;
+}
+
+.line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(226, 185, 109, 0.4), transparent);
+}
+
+.start .line:first-child {
+  background: linear-gradient(90deg, rgba(226, 185, 109, 0.5), rgba(226, 185, 109, 0.2));
+}
+
+.diamond {
+  width: 7px;
+  height: 7px;
+  background: var(--gold-400);
+  transform: rotate(45deg);
+  box-shadow: 0 0 12px rgba(226, 185, 109, 0.65);
+  flex: none;
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-size: 11px;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  color: var(--gold-500);
+  white-space: nowrap;
+  flex: none;
+}

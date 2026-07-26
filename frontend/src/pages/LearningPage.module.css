@@ -1,0 +1,202 @@
+.layout {
+  display: grid;
+  grid-template-columns: 1.55fr 1fr;
+  gap: 26px;
+  align-items: start;
+}
+
+/* ---- 星轨学习路径 ---- */
+
+.pathPanel {
+  padding: 30px 30px 26px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  background: linear-gradient(172deg, var(--night-2), var(--night-1));
+  box-shadow: var(--shadow-sm);
+}
+
+.steps {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+/* 连接每颗星的虚线星轨 */
+.steps::before {
+  content: "";
+  position: absolute;
+  left: 17px;
+  top: 18px;
+  bottom: 18px;
+  width: 1px;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(226, 185, 109, 0.38) 0 4px,
+    transparent 4px 10px
+  );
+}
+
+.step {
+  position: relative;
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.node {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 35px;
+  height: 35px;
+  flex: none;
+  border-radius: 50%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.nodeDone {
+  composes: node;
+  color: #241a08;
+  background: linear-gradient(158deg, #eecf8d, #cfa04f);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 0 18px rgba(226, 185, 109, 0.5);
+}
+
+.nodeTodo {
+  composes: node;
+  color: var(--moon-600);
+  background: var(--night-1);
+  border: 1px solid var(--border-moon);
+}
+
+.stepBody strong {
+  display: block;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  color: var(--moon-100);
+}
+
+.stepBody p {
+  margin-top: 5px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--moon-600);
+}
+
+.stepState {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  color: var(--moon-600);
+  padding-top: 9px;
+}
+
+.stepDone .stepState {
+  color: var(--gold-500);
+}
+
+.stepDone strong {
+  color: var(--moon-200);
+}
+
+/* ---- 进度侧栏 ---- */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.progressPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px 26px 24px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  background:
+    radial-gradient(26rem 16rem at 110% -30%, rgba(40, 62, 112, 0.5), transparent 60%),
+    linear-gradient(172deg, var(--night-2), var(--night-1));
+}
+
+.fraction {
+  font-family: var(--font-display);
+  font-size: 52px;
+  line-height: 1;
+  background: var(--gold-sheen);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 8s linear infinite;
+}
+
+.fraction small {
+  font-size: 24px;
+}
+
+.barTrack {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--night-4);
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--gold-600), var(--gold-300));
+  box-shadow: 0 0 14px rgba(226, 185, 109, 0.6);
+  transition: width 0.8s var(--ease-out);
+}
+
+.progressCaption {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--moon-600);
+}
+
+.focusPanel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 24px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  background: linear-gradient(172deg, var(--night-2), var(--night-1));
+}
+
+.focusPanel strong {
+  font-family: var(--font-display);
+  font-size: 17px;
+  letter-spacing: 0.06em;
+  color: var(--moon-100);
+}
+
+.focusPanel p {
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--moon-600);
+}
+
+.focusPanel > * {
+  width: 100%;
+}
+
+.focusPanel > span:first-child {
+  width: auto;
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}

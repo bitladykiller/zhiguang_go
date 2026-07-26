@@ -1,10 +1,13 @@
-import { Send } from "lucide-react";
+import clsx from "clsx";
+import { Feather, Send } from "lucide-react";
 import { useState } from "react";
+import Ornament from "@/components/decor/Ornament";
 import Button from "@/components/ui/Button";
 import AppLayout from "@/layouts/AppLayout";
 import { contentService } from "@/services/contentService";
 import type { PublishDraft } from "@/types/domain";
 import styles from "@/pages/PageStyles.module.css";
+import create from "@/pages/CreatePage.module.css";
 
 const initialDraft: PublishDraft = {
   title: "",
@@ -13,6 +16,13 @@ const initialDraft: PublishDraft = {
   tags: [],
   visibility: "public"
 };
+
+const GUIDE = [
+  { title: "标题表达观点", desc: "一句话立场，比「关于 X 的一些思考」更值得点开。" },
+  { title: "摘要说明价值", desc: "读者读完能带走什么？先在摘要里承诺清楚。" },
+  { title: "正文沉淀方法", desc: "背景、问题、方法、验证、风险，五段自成闭环。" },
+  { title: "标签便于检索", desc: "两到三个准确标签，胜过十个宽泛标签。" }
+];
 
 const CreatePage = () => {
   const [draft, setDraft] = useState<PublishDraft>(initialDraft);
@@ -45,70 +55,105 @@ const CreatePage = () => {
   return (
     <AppLayout>
       <div className={styles.page}>
-        <section className={styles.header}>
-          <div className={styles.headerText}>
-            <span className={styles.kicker}>创作中心</span>
-            <h1>写一篇结构清楚、值得收藏的知文。</h1>
+        <section className={clsx(styles.pageHead, "rise", "d1")}>
+          <div className={styles.pageHeadText}>
+            <span className={styles.kicker}>灯下 · WRITE</span>
+            <h1>研好墨，写一篇值得收藏的知文。</h1>
             <p>标题表达观点，摘要说明价值，正文沉淀方法。页面先提供稳定工程化表单，后续可接图片上传和草稿 API。</p>
           </div>
         </section>
 
-        <section className={styles.formPanel}>
-          <div className={styles.formGrid}>
-            <div className={styles.field}>
-              <label htmlFor="title">标题</label>
-              <input
-                id="title"
-                className={styles.input}
-                value={draft.title}
-                placeholder="例如：如何设计一个可靠的 Agent 工作流"
-                onChange={(event) => setDraft((prev) => ({ ...prev, title: event.target.value }))}
-              />
+        <div className={create.layout}>
+          <section className={clsx(styles.formPanel, "rise", "d2")}>
+            <div className={styles.formGrid}>
+              <div className={styles.field}>
+                <label htmlFor="title">标题 · TITLE</label>
+                <input
+                  id="title"
+                  className={styles.input}
+                  value={draft.title}
+                  placeholder="例如：如何设计一个可靠的 Agent 工作流"
+                  onChange={(event) => setDraft((prev) => ({ ...prev, title: event.target.value }))}
+                />
+              </div>
+              <div className={styles.field}>
+                <label htmlFor="visibility">可见性 · SCOPE</label>
+                <select
+                  id="visibility"
+                  className={styles.select}
+                  value={draft.visibility}
+                  onChange={(event) =>
+                    setDraft((prev) => ({ ...prev, visibility: event.target.value as PublishDraft["visibility"] }))
+                  }
+                >
+                  <option value="public">公开</option>
+                  <option value="private">私密</option>
+                </select>
+              </div>
+              <div className={styles.fullField}>
+                <label htmlFor="summary">摘要 · SUMMARY</label>
+                <input
+                  id="summary"
+                  className={styles.input}
+                  value={draft.summary}
+                  placeholder="用一句话说明读者能获得什么"
+                  onChange={(event) => setDraft((prev) => ({ ...prev, summary: event.target.value }))}
+                />
+              </div>
+              <div className={styles.fullField}>
+                <label htmlFor="tags">标签 · TAGS</label>
+                <input id="tags" className={styles.input} value={tagText} onChange={(event) => setTagText(event.target.value)} />
+                <span className={styles.helper}>用英文逗号分隔，例如：RAG, Go, 工程化</span>
+              </div>
+              <div className={styles.fullField}>
+                <label htmlFor="content">正文 · BODY</label>
+                <span className={styles.count}>{draft.content.length} 字</span>
+                <textarea
+                  id="content"
+                  className={styles.textarea}
+                  value={draft.content}
+                  placeholder="写下背景、问题、方法、验证和风险……"
+                  onChange={(event) => setDraft((prev) => ({ ...prev, content: event.target.value }))}
+                />
+              </div>
             </div>
-            <div className={styles.field}>
-              <label htmlFor="visibility">可见性</label>
-              <select
-                id="visibility"
-                className={styles.select}
-                value={draft.visibility}
-                onChange={(event) => setDraft((prev) => ({ ...prev, visibility: event.target.value as PublishDraft["visibility"] }))}
-              >
-                <option value="public">公开</option>
-                <option value="private">私密</option>
-              </select>
+            {message ? <div className={styles.message}>{message}</div> : null}
+            {error ? <div className={styles.error}>{error}</div> : null}
+            <div className={create.submitRow}>
+              <span className={create.submitHint}>灯下所写，皆可成光</span>
+              <Button icon={<Send size={17} />} onClick={publish}>
+                发布知文
+              </Button>
             </div>
-            <div className={styles.fullField}>
-              <label htmlFor="summary">摘要</label>
-              <input
-                id="summary"
-                className={styles.input}
-                value={draft.summary}
-                placeholder="用一句话说明读者能获得什么"
-                onChange={(event) => setDraft((prev) => ({ ...prev, summary: event.target.value }))}
-              />
+          </section>
+
+          <aside className={clsx(create.guidePanel, "rise", "d3")}>
+            <div className={create.guideHead}>
+              <span>笔 意 · CRAFT</span>
+              <strong>创作四则</strong>
             </div>
-            <div className={styles.fullField}>
-              <label htmlFor="tags">标签</label>
-              <input id="tags" className={styles.input} value={tagText} onChange={(event) => setTagText(event.target.value)} />
-              <span className={styles.helper}>用英文逗号分隔，例如：RAG, Go, 工程化</span>
+            <Ornament />
+            {GUIDE.map((item, index) => (
+              <div key={item.title} className={create.tip}>
+                <span className={create.tipIndex}>{["壹", "贰", "叁", "肆"][index]}</span>
+                <div>
+                  <strong>{item.title}</strong>
+                  <p>{item.desc}</p>
+                </div>
+              </div>
+            ))}
+            <Ornament />
+            <div className={create.tip}>
+              <span className={create.tipIndex}>
+                <Feather size={14} />
+              </span>
+              <div>
+                <strong>写不出来？</strong>
+                <p>先写「我今天解决了什么问题」，方法自然会跟着流出来。</p>
+              </div>
             </div>
-            <div className={styles.fullField}>
-              <label htmlFor="content">正文</label>
-              <textarea
-                id="content"
-                className={styles.textarea}
-                value={draft.content}
-                placeholder="写下背景、问题、方法、验证和风险..."
-                onChange={(event) => setDraft((prev) => ({ ...prev, content: event.target.value }))}
-              />
-            </div>
-          </div>
-          {message ? <div className={styles.message}>{message}</div> : null}
-          {error ? <div className={styles.error}>{error}</div> : null}
-          <Button icon={<Send size={18} />} onClick={publish}>
-            发布知文
-          </Button>
-        </section>
+          </aside>
+        </div>
       </div>
     </AppLayout>
   );
