@@ -1,3 +1,4 @@
+// Package model 存放跨模块共享的领域模型（用户、扩散事件等纯数据结构，不含行为）。
 package model
 
 import "time"

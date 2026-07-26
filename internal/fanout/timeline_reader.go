@@ -235,13 +235,16 @@ const followingScanMaxPages = 40
 // *关注对象*（而非大 V）后就停止，实际只检查了最近关注的一页——
 // 关注超过 500 人且大 V 是早年关注的用户，那些大 V 的内容会从首页凭空消失。
 // MaxPullAuthors 只应约束**产出**（要拉多少个大 V），不应约束**扫描范围**。
+//
+// 数据源覆盖：relation 的游标接口在 ZSet 页取不满时会按复合边界回落 DB 续读，
+// 因此本扫描不再受其预热上限（ZSetWarmLimit=2000）约束，可达全量关注列表。
 func (r *TimelineReader) followedCelebrities(ctx context.Context, userID uint64) ([]uint64, error) {
 	if r.celebrities == nil || r.followingLister == nil {
 		return nil, nil
 	}
 
 	celebs := make([]uint64, 0, 8)
-	var cursor int64
+	var cursor string
 	for page := 0; page < followingScanMaxPages; page++ {
 		batch, next, err := r.followingLister.FollowingCursor(ctx, userID, followingScanPageSize, cursor)
 		if err != nil {
@@ -262,7 +265,7 @@ func (r *TimelineReader) followedCelebrities(ctx context.Context, userID uint64)
 			}
 		}
 
-		if next == 0 || next == cursor || len(batch) < followingScanPageSize {
+		if next == "" || next == cursor || len(batch) < followingScanPageSize {
 			return celebs, nil
 		}
 		cursor = next

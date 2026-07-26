@@ -61,10 +61,10 @@ func CacheReadThrough[T any](
 		}
 
 		if !locked {
-			result, hit, err := checkCache(ctx)
-			if err != nil {
+			result, hit, chkErr := checkCache(ctx)
+			if chkErr != nil {
 				var zero T
-				return zero, err
+				return zero, chkErr
 			}
 			if hit {
 				return result, nil

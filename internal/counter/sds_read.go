@@ -2,7 +2,6 @@ package counter
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
@@ -14,16 +13,6 @@ var sdsReadLogger *zap.Logger
 // SetSdsReadLogger 注入日志器，用于记录 Pipeline 单命令错误。
 func SetSdsReadLogger(l *zap.Logger) {
 	sdsReadLogger = l
-}
-
-// readInt32BE 从字节数组中按大端序读取 int32 值。
-func readInt32BE(b []byte, offset int) int32 {
-	return int32(binary.BigEndian.Uint32(b[offset:]))
-}
-
-// writeInt32BE 将 int32 值按大端序写入字节数组的指定偏移位置。
-func writeInt32BE(b []byte, offset int, val int32) {
-	binary.BigEndian.PutUint32(b[offset:], uint32(val))
 }
 
 // emptyCounts 为请求的指标列表生成全零的计数值映射。

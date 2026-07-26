@@ -22,34 +22,34 @@ import (
 )
 
 type mockAuthService struct {
-	sendCodeFn      func(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, *errcode.AppError)
-	registerFn      func(ctx context.Context, req *RegisterRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError)
-	loginFn         func(ctx context.Context, req *LoginRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError)
-	refreshFn       func(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, *errcode.AppError)
+	sendCodeFn      func(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, error)
+	registerFn      func(ctx context.Context, req *RegisterRequest, clientInfo ClientInfo) (AuthResponse, error)
+	loginFn         func(ctx context.Context, req *LoginRequest, clientInfo ClientInfo) (AuthResponse, error)
+	refreshFn       func(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, error)
 	logoutFn        func(ctx context.Context, req *TokenRefreshRequest)
-	resetPasswordFn func(ctx context.Context, req *PasswordResetRequest) *errcode.AppError
-	currentUserFn   func(ctx context.Context, userID uint64) (AuthUserResponse, *errcode.AppError)
+	resetPasswordFn func(ctx context.Context, req *PasswordResetRequest) error
+	currentUserFn   func(ctx context.Context, userID uint64) (AuthUserResponse, error)
 }
 
-func (m *mockAuthService) SendCode(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, *errcode.AppError) {
+func (m *mockAuthService) SendCode(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, error) {
 	return m.sendCodeFn(ctx, req)
 }
-func (m *mockAuthService) Register(ctx context.Context, req *RegisterRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError) {
+func (m *mockAuthService) Register(ctx context.Context, req *RegisterRequest, clientInfo ClientInfo) (AuthResponse, error) {
 	return m.registerFn(ctx, req, clientInfo)
 }
-func (m *mockAuthService) Login(ctx context.Context, req *LoginRequest, clientInfo ClientInfo) (AuthResponse, *errcode.AppError) {
+func (m *mockAuthService) Login(ctx context.Context, req *LoginRequest, clientInfo ClientInfo) (AuthResponse, error) {
 	return m.loginFn(ctx, req, clientInfo)
 }
-func (m *mockAuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, *errcode.AppError) {
+func (m *mockAuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, error) {
 	return m.refreshFn(ctx, req)
 }
 func (m *mockAuthService) Logout(ctx context.Context, req *TokenRefreshRequest) {
 	m.logoutFn(ctx, req)
 }
-func (m *mockAuthService) ResetPassword(ctx context.Context, req *PasswordResetRequest) *errcode.AppError {
+func (m *mockAuthService) ResetPassword(ctx context.Context, req *PasswordResetRequest) error {
 	return m.resetPasswordFn(ctx, req)
 }
-func (m *mockAuthService) CurrentUser(ctx context.Context, userID uint64) (AuthUserResponse, *errcode.AppError) {
+func (m *mockAuthService) CurrentUser(ctx context.Context, userID uint64) (AuthUserResponse, error) {
 	return m.currentUserFn(ctx, userID)
 }
 
@@ -71,7 +71,7 @@ func TestHandler_SendCode(t *testing.T) {
 	r, mock, _ := setupHandlerTest(t)
 
 	t.Run("success", func(t *testing.T) {
-		mock.sendCodeFn = func(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, *errcode.AppError) {
+		mock.sendCodeFn = func(ctx context.Context, req *SendCodeRequest) (SendCodeResponse, error) {
 			return SendCodeResponse{Identifier: req.Identifier, Scene: req.Scene, ExpireSeconds: 300}, nil
 		}
 		body := `{"identifier":"13800138000","identifier_type":"PHONE","scene":"REGISTER"}`
@@ -113,7 +113,7 @@ func TestHandler_Register(t *testing.T) {
 	r, mock, _ := setupHandlerTest(t)
 
 	t.Run("success", func(t *testing.T) {
-		mock.registerFn = func(ctx context.Context, req *RegisterRequest, ci ClientInfo) (AuthResponse, *errcode.AppError) {
+		mock.registerFn = func(ctx context.Context, req *RegisterRequest, ci ClientInfo) (AuthResponse, error) {
 			return AuthResponse{
 				User:  AuthUserResponse{ID: 1, Nickname: "test"},
 				Token: TokenResponse{AccessToken: "at", RefreshToken: "rt"},
@@ -144,7 +144,7 @@ func TestHandler_Login(t *testing.T) {
 	r, mock, _ := setupHandlerTest(t)
 
 	t.Run("success", func(t *testing.T) {
-		mock.loginFn = func(ctx context.Context, req *LoginRequest, ci ClientInfo) (AuthResponse, *errcode.AppError) {
+		mock.loginFn = func(ctx context.Context, req *LoginRequest, ci ClientInfo) (AuthResponse, error) {
 			return AuthResponse{
 				User:  AuthUserResponse{ID: 1, Nickname: "test"},
 				Token: TokenResponse{AccessToken: "at", RefreshToken: "rt"},
@@ -175,7 +175,7 @@ func TestHandler_Refresh(t *testing.T) {
 	r, mock, _ := setupHandlerTest(t)
 
 	t.Run("success", func(t *testing.T) {
-		mock.refreshFn = func(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, *errcode.AppError) {
+		mock.refreshFn = func(ctx context.Context, req *TokenRefreshRequest) (AuthResponse, error) {
 			return AuthResponse{
 				User:  AuthUserResponse{ID: 1, Nickname: "test"},
 				Token: TokenResponse{AccessToken: "new_at", RefreshToken: "new_rt"},
@@ -232,7 +232,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 	r, mock, _ := setupHandlerTest(t)
 
 	t.Run("success", func(t *testing.T) {
-		mock.resetPasswordFn = func(ctx context.Context, req *PasswordResetRequest) *errcode.AppError {
+		mock.resetPasswordFn = func(ctx context.Context, req *PasswordResetRequest) error {
 			return nil
 		}
 		body := `{"identifier":"13800138000","identifier_type":"PHONE","code":"123456","new_password":"abc123"}`
@@ -265,7 +265,7 @@ func TestHandler_Me(t *testing.T) {
 		if err != nil {
 			t.Fatalf("issue token: %v", err)
 		}
-		mock.currentUserFn = func(ctx context.Context, userID uint64) (AuthUserResponse, *errcode.AppError) {
+		mock.currentUserFn = func(ctx context.Context, userID uint64) (AuthUserResponse, error) {
 			if userID != 42 {
 				t.Fatalf("expected userID 42, got %d", userID)
 			}
@@ -308,7 +308,7 @@ func TestHandler_Me(t *testing.T) {
 		if err != nil {
 			t.Fatalf("issue token: %v", err)
 		}
-		mock.currentUserFn = func(ctx context.Context, userID uint64) (AuthUserResponse, *errcode.AppError) {
+		mock.currentUserFn = func(ctx context.Context, userID uint64) (AuthUserResponse, error) {
 			return AuthUserResponse{}, errcode.ErrIdentifierNotFound
 		}
 		w := httptest.NewRecorder()
@@ -383,7 +383,7 @@ func createTempKeyPair() (string, string, string) {
 
 func BenchmarkRegisterHandler(b *testing.B) {
 	r, mock, _ := setupHandlerTest(b)
-	mock.registerFn = func(ctx context.Context, req *RegisterRequest, ci ClientInfo) (AuthResponse, *errcode.AppError) {
+	mock.registerFn = func(ctx context.Context, req *RegisterRequest, ci ClientInfo) (AuthResponse, error) {
 		return AuthResponse{
 			User:  AuthUserResponse{ID: 1, Nickname: "test"},
 			Token: TokenResponse{AccessToken: "at", RefreshToken: "rt"},
@@ -403,7 +403,7 @@ func BenchmarkRegisterHandler(b *testing.B) {
 
 func BenchmarkLoginHandler(b *testing.B) {
 	r, mock, _ := setupHandlerTest(b)
-	mock.loginFn = func(ctx context.Context, req *LoginRequest, ci ClientInfo) (AuthResponse, *errcode.AppError) {
+	mock.loginFn = func(ctx context.Context, req *LoginRequest, ci ClientInfo) (AuthResponse, error) {
 		return AuthResponse{
 			User:  AuthUserResponse{ID: 1, Nickname: "test"},
 			Token: TokenResponse{AccessToken: "at", RefreshToken: "rt"},

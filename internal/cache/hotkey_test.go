@@ -287,7 +287,7 @@ func TestGetLevel_FallbackToRedis(t *testing.T) {
 	}
 }
 
-func TestTtlForPublic(t *testing.T) {
+func TestTTLForPublic(t *testing.T) {
 	cfg := defaultHotKeyConfig()
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
@@ -297,10 +297,10 @@ func TestTtlForPublic(t *testing.T) {
 	d.levels["mykey"] = LevelMedium
 	d.levelMu.Unlock()
 
-	ttl := d.TtlForPublic(context.Background(), 60, "mykey")
+	ttl := d.TTLForPublic(context.Background(), 60, "mykey")
 	want := 60 + cfg.ExtendMediumSeconds
 	if ttl != want {
-		t.Fatalf("TtlForPublic = %d, want %d", ttl, want)
+		t.Fatalf("TTLForPublic = %d, want %d", ttl, want)
 	}
 }
 
@@ -317,10 +317,10 @@ func TestReadLevelCache_NotFound(t *testing.T) {
 }
 
 // ============================================================================
-// TtlForPublicBatch：批量热度定级
+// TTLForPublicBatch：批量热度定级
 // ============================================================================
 
-func TestTtlForPublicBatch_MixedSources(t *testing.T) {
+func TestTTLForPublicBatch_MixedSources(t *testing.T) {
 	cfg := defaultHotKeyConfig()
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
@@ -335,7 +335,7 @@ func TestTtlForPublicBatch_MixedSources(t *testing.T) {
 		t.Fatalf("seed hot mark: %v", err)
 	}
 
-	got := d.TtlForPublicBatch(context.Background(), 60, []string{"k1", "k2", "k3"})
+	got := d.TTLForPublicBatch(context.Background(), 60, []string{"k1", "k2", "k3"})
 	want := []int{
 		60 + cfg.ExtendHighSeconds,
 		60 + cfg.ExtendMediumSeconds,
@@ -353,13 +353,13 @@ func TestTtlForPublicBatch_MixedSources(t *testing.T) {
 	}
 }
 
-func TestTtlForPublicBatch_EmptyAndAllCached(t *testing.T) {
+func TestTTLForPublicBatch_EmptyAndAllCached(t *testing.T) {
 	cfg := defaultHotKeyConfig()
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
 
 	d := NewHotKeyDetector(cfg, rdb, nil)
-	if got := d.TtlForPublicBatch(context.Background(), 60, nil); len(got) != 0 {
+	if got := d.TTLForPublicBatch(context.Background(), 60, nil); len(got) != 0 {
 		t.Fatalf("empty keys should yield empty result, got %v", got)
 	}
 
@@ -368,14 +368,14 @@ func TestTtlForPublicBatch_EmptyAndAllCached(t *testing.T) {
 	d.levels["b"] = LevelLow
 	d.levelMu.Unlock()
 
-	got := d.TtlForPublicBatch(context.Background(), 30, []string{"a", "b"})
+	got := d.TTLForPublicBatch(context.Background(), 30, []string{"a", "b"})
 	if got[0] != 30 || got[1] != 30+cfg.ExtendLowSeconds {
-		t.Fatalf("TtlForPublicBatch = %v", got)
+		t.Fatalf("TTLForPublicBatch = %v", got)
 	}
 }
 
-// TestTtlForPublicBatch_MatchesTtlForPublic 保证批量与单键版本定级结果一致。
-func TestTtlForPublicBatch_MatchesTtlForPublic(t *testing.T) {
+// TestTTLForPublicBatch_MatchesTTLForPublic 保证批量与单键版本定级结果一致。
+func TestTTLForPublicBatch_MatchesTTLForPublic(t *testing.T) {
 	cfg := defaultHotKeyConfig()
 	rdb, shutdown := startTestRedis(t)
 	defer shutdown()
@@ -386,9 +386,9 @@ func TestTtlForPublicBatch_MatchesTtlForPublic(t *testing.T) {
 		t.Fatalf("seed hot mark: %v", err)
 	}
 
-	batch := d.TtlForPublicBatch(context.Background(), 45, keys)
+	batch := d.TTLForPublicBatch(context.Background(), 45, keys)
 	for i, k := range keys {
-		if single := d.TtlForPublic(context.Background(), 45, k); single != batch[i] {
+		if single := d.TTLForPublic(context.Background(), 45, k); single != batch[i] {
 			t.Errorf("key %q: batch=%d single=%d", k, batch[i], single)
 		}
 	}

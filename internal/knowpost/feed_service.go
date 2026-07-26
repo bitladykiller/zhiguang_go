@@ -20,6 +20,9 @@ import (
 // 用于缓存键编码，递增版本号可使旧缓存整体失效。
 const feedLayoutVer = 1
 
+// maxPublicFeedPage 是公共 Feed 可翻页数上界（防无界 OFFSET 慢查询）。
+const maxPublicFeedPage = 1000
+
 // KnowPostFeedService 实现基于碎片缓存架构的 Feed 列表流读取。
 //
 // 缓存架构（三级、碎片化）：
@@ -190,7 +193,10 @@ func NewKnowPostFeedService(
 func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
 	p := s.feedCacheTTLValues()
 	safeSize := clamp(size, 1, p.safeSize)
-	safePage := max(page, 1)
+	// page 同样需要上界：offset = (page-1)*size 直接进 SQL 的 OFFSET，
+	// 无界的页码等于允许任意大的 offset 扫描（一次恶意翻页就是一条慢查询）。
+	// 公共信息流本就无深翻价值，1000 页 × 50 条已远超任何真实浏览深度。
+	safePage := clamp(page, 1, maxPublicFeedPage)
 	feedVersion := s.currentPublicFeedVersion(ctx)
 	localPageKey := publicFeedPageLocalKey(safeSize, safePage, feedVersion)
 
@@ -464,7 +470,7 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 	for i, idStr := range idStrs {
 		itemKeys[i] = feedItemKey(idStr)
 	}
-	itemJsons, err := s.redis.MGet(ctx, itemKeys...).Result()
+	itemJSONs, err := s.redis.MGet(ctx, itemKeys...).Result()
 	if err != nil {
 		s.logger.Warn("failed to MGet feed item cache entries", zap.Strings("itemKeys", itemKeys), zap.Error(err))
 		return nil
@@ -472,11 +478,11 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 
 	// 解析条目内容
 	items := make([]FeedItemResponse, 0, len(idStrs))
-	for _, itemJson := range itemJsons {
-		if itemJson == nil {
+	for _, itemJSON := range itemJSONs {
+		if itemJSON == nil {
 			return nil // 任意碎片缺失则视为缓存未命中
 		}
-		itemStr, ok := itemJson.(string)
+		itemStr, ok := itemJSON.(string)
 		if !ok {
 			return nil
 		}
@@ -676,7 +682,7 @@ func (s *KnowPostFeedService) mapRowsToItems(ctx context.Context, rows []KnowPos
 			Tags:           tags,
 			AuthorAvatar:   r.AuthorAvatar,
 			AuthorNickname: r.AuthorNickname,
-			TagJson:        r.AuthorTagJson,
+			TagJSON:        r.AuthorTagJSON,
 		}
 
 		if countsBatch != nil {
@@ -792,7 +798,7 @@ func (s *KnowPostFeedService) recordItemHotKeys(ctx context.Context, items []Fee
 	}
 
 	baseTTL := s.feedCacheTTLValues().extendBase
-	targets := s.hotKey.TtlForPublicBatch(ctx, baseTTL, hotKeyIDs)
+	targets := s.hotKey.TTLForPublicBatch(ctx, baseTTL, hotKeyIDs)
 
 	itemKeys := make([]string, 0, len(items))
 	itemTTLs := make([]any, 0, len(items))
@@ -939,8 +945,7 @@ func (s *KnowPostFeedService) feedVersion(ctx context.Context, key string) int64
 // 公共 Feed 的 L1 整页键编入了版本号：没有本地短缓存时，
 // 每次 L1 命中都要先付一次 Redis GET 才能拼出键——与详情链路当年同款缺陷。
 func (s *KnowPostFeedService) feedVersions() *cache.Versions {
-	var feedCfg *config.KnowPostConfig // 版本短缓存 TTL 与详情共用同一配置项
-	return newFeedVersions(s.redis, s.l1Public, feedCfg)
+	return newFeedVersions(s.redis, s.l1Public)
 }
 
 // ============================================================================

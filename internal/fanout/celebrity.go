@@ -93,6 +93,12 @@ func (r *CelebrityRegistry) Mark(ctx context.Context, authorID uint64) {
 }
 
 // demote 把掉粉的作者移出名单（惰性触发，见 IsCelebrity）。
+//
+// 已知边界——**降级内容空窗**：该作者大 V 时期发的帖子只存在于发件箱
+// （当时刻意不推送）；降级后读者不再拉取其发件箱，这批帖子会从关注流中消失，
+// 直到被新帖自然稀释。修复需要在降级时对现存粉丝补一轮回填（O(粉丝数×箱深)，
+// 与混合方案要消除的写放大同量级），在"降级是罕见事件"的前提下不值得。
+// 诚实取舍：接受空窗，靠 0.8 滞回带把降级频率压到可忽略。
 func (r *CelebrityRegistry) demote(ctx context.Context, authorID uint64, count int64) {
 	if err := r.redis.SRem(ctx, celebritySetKey, authorID).Err(); err != nil {
 		r.logger.Warn("failed to demote celebrity", zap.Uint64("authorID", authorID), zap.Error(err))

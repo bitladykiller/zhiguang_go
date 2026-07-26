@@ -55,14 +55,15 @@ import (
 // FollowerLister 提供按游标分页的粉丝列表。
 //
 // 用游标而非 offset：写扩散要遍历的是一个持续变动的集合，
-// offset 分页在集合变化时会漏读或重读；游标（按关注时间）不受插入影响。
+// offset 分页在集合变化时会漏读或重读。游标为不透明串（relation 的复合游标），
+// 空串表示第一页；本模块只负责原样回传，不解释其内容。
 type FollowerLister interface {
-	FollowersCursor(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	FollowersCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error)
 }
 
 // FollowingLister 提供按游标分页的关注列表，供读路径求「我关注的大 V」。
 type FollowingLister interface {
-	FollowingCursor(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	FollowingCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error)
 }
 
 // Service 承载扩散的写路径。
@@ -163,7 +164,7 @@ func (s *Service) pushToFollowers(ctx context.Context, event *model.FanoutEvent)
 	score := float64(event.CreatedAt)
 
 	var (
-		cursor  int64
+		cursor  string
 		reached int
 	)
 
@@ -205,7 +206,7 @@ func (s *Service) pushToFollowers(ctx context.Context, event *model.FanoutEvent)
 			return nil
 		}
 
-		if next == 0 || next == cursor || len(fans) < s.cfg.FanoutBatchSize {
+		if next == "" || next == cursor || len(fans) < s.cfg.FanoutBatchSize {
 			break // 游标没有推进或已取完最后一页
 		}
 		cursor = next

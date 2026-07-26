@@ -26,11 +26,11 @@ func TestUpsertFollowing(t *testing.T) {
 
 	repo := NewRelationRepository(db)
 
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO following (id, from_user_id, to_user_id, rel_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(updated_at)")).
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO following")).
 		WithArgs(uint64(1), uint64(10), uint64(20), 1, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	err := repo.UpsertFollowing(context.Background(), 1, 10, 20, 1)
+	_, err := repo.UpsertFollowing(context.Background(), 1, 10, 20, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestUpsertFollowing_DBError(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO following")).
 		WillReturnError(timeoutError("connection timeout"))
 
-	err := repo.UpsertFollowing(context.Background(), 1, 10, 20, 1)
+	_, err := repo.UpsertFollowing(context.Background(), 1, 10, 20, 1)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -65,11 +65,11 @@ func TestUpsertFollower(t *testing.T) {
 
 	repo := NewRelationRepository(db)
 
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO follower (id, to_user_id, from_user_id, rel_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE rel_status = VALUES(rel_status), updated_at = VALUES(updated_at)")).
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO follower")).
 		WithArgs(uint64(1), uint64(20), uint64(10), 1, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	err := repo.UpsertFollower(context.Background(), 1, 20, 10, 1)
+	_, err := repo.UpsertFollower(context.Background(), 1, 20, 10, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestUpsertFollower_DBError(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO follower")).
 		WillReturnError(timeoutError("connection timeout"))
 
-	err := repo.UpsertFollower(context.Background(), 1, 20, 10, 1)
+	_, err := repo.UpsertFollower(context.Background(), 1, 20, 10, 1)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -553,4 +553,38 @@ type timeoutError string
 
 func (e timeoutError) Error() string {
 	return string(e)
+}
+
+// TestUpsertFollowing_TransitionSemantics 验证迁移判定的 affected-rows 语义。
+//
+// 事件只能在真实迁移（插入=1 / 0→1 复关注=2）时发出；重复 Follow（无变更=0）
+// 必须被识别为"未迁移"——updated_at 仅在 rel_status 变化时更新是该判定成立的前提，
+// 若无条件写 updated_at，重复 Follow 也会 affected=2，计数漂移缺陷即复活。
+func TestUpsertFollowing_TransitionSemantics(t *testing.T) {
+	db, mock := newMockDB(t)
+	repo := NewRelationRepository(db)
+
+	cases := []struct {
+		name     string
+		affected int64
+		want     bool
+	}{
+		{"首次插入", 1, true},
+		{"复关注 0→1", 2, true},
+		{"重复 Follow 无变更", 0, false},
+	}
+	for _, c := range cases {
+		mock.ExpectExec(`INSERT INTO following`).
+			WillReturnResult(sqlmock.NewResult(0, c.affected))
+		got, err := repo.UpsertFollowing(context.Background(), 1, 10, 20, 1)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got != c.want {
+			t.Errorf("%s: transitioned=%v want %v", c.name, got, c.want)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
 }

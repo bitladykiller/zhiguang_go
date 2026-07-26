@@ -8,5 +8,5 @@ type ProfilePatchRequest struct {
 	Gender   *string `json:"gender"`
 	Birthday *string `json:"birthday"`
 	School   *string `json:"school"`
-	TagsJson *string `json:"tags_json"`
+	TagsJSON *string `json:"tags_json"`
 }

@@ -55,8 +55,6 @@ type AggregationConsumer struct {
 	repairInterval   time.Duration
 	repairBatch      int
 
-	partitionMask uint8
-
 	flushCh   chan *counterBatch
 	closeOnce sync.Once
 
@@ -509,8 +507,8 @@ func (c *AggregationConsumer) repairDirtyMembers(ctx context.Context) error {
 		if err := c.repairDirtyMember(ctx, member); err != nil {
 			if !errors.Is(err, errLockNotAcquired) {
 				// 锁竞争跳过的成员已被 SPOP 移除，需加回
-				if err := c.service.redis.SAdd(ctx, DirtySetKey(), member).Err(); err != nil {
-					c.logger.Warn("repair re-add dirty member failed", zap.String("member", member), zap.Error(err))
+				if addErr := c.service.redis.SAdd(ctx, DirtySetKey(), member).Err(); addErr != nil {
+					c.logger.Warn("repair re-add dirty member failed", zap.String("member", member), zap.Error(addErr))
 				}
 			}
 			if firstErr == nil {
@@ -553,39 +551,15 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 
 	rebuildMarker := RebuildMarkerKey(entityType, entityID)
 
-	watchCtx, watchCancel := context.WithCancel(ctx)
-	watchDone := make(chan struct{})
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				c.logger.Error("watchdog panic", zap.Any("recover", r))
-			}
-		}()
-		defer close(watchDone)
-		ticker := time.NewTicker(defaultExpireExtendInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-watchCtx.Done():
-				return
-			case <-ticker.C:
-				expireCtx, expireCancel := context.WithTimeout(watchCtx, time.Second)
-				if err := c.service.redis.Expire(expireCtx, rebuildMarker, defaultRebuildMarkerTTL).Err(); err != nil {
-					c.logger.Warn("watchdog expire rebuild marker failed", zap.Error(err))
-				}
-				expireCancel()
-			}
-		}
-	}()
-	if err := c.service.redis.Set(ctx, rebuildMarker, "1", defaultRebuildMarkerTTL).Err(); err != nil {
-		c.logger.Warn("set rebuild marker failed", zap.Error(err))
+	stopWatchdog := c.startRebuildMarkerWatchdog(ctx, rebuildMarker)
+	if setErr := c.service.redis.Set(ctx, rebuildMarker, "1", defaultRebuildMarkerTTL).Err(); setErr != nil {
+		c.logger.Warn("set rebuild marker failed", zap.Error(setErr))
 	}
 	defer func() {
-		watchCancel()
-		<-watchDone
+		stopWatchdog()
 		lock.Release()
-		if err := c.service.redis.Del(ctx, rebuildMarker).Err(); err != nil {
-			c.logger.Warn("delete rebuild marker failed", zap.Error(err))
+		if delErr := c.service.redis.Del(ctx, rebuildMarker).Err(); delErr != nil {
+			c.logger.Warn("delete rebuild marker failed", zap.Error(delErr))
 		}
 	}()
 
@@ -606,6 +580,40 @@ func (c *AggregationConsumer) repairDirtyMember(ctx context.Context, member stri
 	}
 	c.service.resetBackoff(ctx, entityType, entityID)
 	return nil
+}
+
+// startRebuildMarkerWatchdog 启动一个看门狗 goroutine，周期性为重建标记续期，
+// 防止重建耗时超过标记 TTL 导致写路径误判「重建已结束」。
+// 返回的 stop 函数会取消看门狗并等待其真正退出（同步语义，调用后可安全删除标记）。
+func (c *AggregationConsumer) startRebuildMarkerWatchdog(ctx context.Context, rebuildMarker string) (stop func()) {
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.logger.Error("watchdog panic", zap.Any("recover", r))
+			}
+		}()
+		defer close(watchDone)
+		ticker := time.NewTicker(defaultExpireExtendInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-ticker.C:
+				expireCtx, expireCancel := context.WithTimeout(watchCtx, time.Second)
+				if expErr := c.service.redis.Expire(expireCtx, rebuildMarker, defaultRebuildMarkerTTL).Err(); expErr != nil {
+					c.logger.Warn("watchdog expire rebuild marker failed", zap.Error(expErr))
+				}
+				expireCancel()
+			}
+		}
+	}()
+	return func() {
+		watchCancel()
+		<-watchDone
+	}
 }
 
 func (c *AggregationConsumer) logWarn(msg string, err error) {

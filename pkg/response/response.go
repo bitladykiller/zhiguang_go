@@ -28,9 +28,9 @@ const (
 	ResponseMessageCreated = "created"
 )
 
-// ApiResponse 是所有 API 接口统一使用的 JSON 响应结构。
+// APIResponse 是所有 API 接口统一使用的 JSON 响应结构。
 // 当 Code == 0 时表示请求成功；非 0 则表示发生错误。
-type ApiResponse[T any] struct {
+type APIResponse[T any] struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    T      `json:"data,omitempty"`
@@ -57,7 +57,7 @@ type ApiResponse[T any] struct {
 //   - data 为 nil 时 JSON 序列化为 null（而非缺失字段）
 //   - 如果 data 实现了 json.Marshaler 接口，使用自定义序列化逻辑
 func Success[T any](c *gin.Context, data T) {
-	c.JSON(http.StatusOK, ApiResponse[T]{
+	c.JSON(http.StatusOK, APIResponse[T]{
 		Code:    0,
 		Message: ResponseMessageSuccess,
 		Data:    data,
@@ -83,7 +83,7 @@ func Success[T any](c *gin.Context, data T) {
 //
 //	HTTP 状态码为 201 而非 200，语义上表示"资源已创建"而非"请求已处理"。
 func Created[T any](c *gin.Context, data T) {
-	c.JSON(http.StatusCreated, ApiResponse[T]{
+	c.JSON(http.StatusCreated, APIResponse[T]{
 		Code:    0,
 		Message: ResponseMessageCreated,
 		Data:    data,
@@ -132,7 +132,7 @@ func NoContent(c *gin.Context) {
 //	能感知到请求已被中止（Aborted 状态），不会继续执行后续 handler 链。
 func Error(c *gin.Context, appErr *errcode.AppError) {
 	httpStatus := errcode.HTTPStatusFromCode(appErr.Code)
-	c.AbortWithStatusJSON(httpStatus, ApiResponse[any]{
+	c.AbortWithStatusJSON(httpStatus, APIResponse[any]{
 		Code:    int(appErr.Code),
 		Message: appErr.Message,
 	})
@@ -162,16 +162,16 @@ func Error(c *gin.Context, appErr *errcode.AppError) {
 //
 //	虽然 code 字段的值等于 HTTP 状态码，但客户端应使用 code 而非 HTTP 状态码来判断业务结果。
 func Fail(c *gin.Context, httpStatus int, msg string) {
-	c.AbortWithStatusJSON(httpStatus, ApiResponse[any]{
+	c.AbortWithStatusJSON(httpStatus, APIResponse[any]{
 		Code:    httpStatus,
 		Message: msg,
 	})
 }
 
-// Abort 使用 AppError 直接中止请求，不包裹 ApiResponse 结构。
+// Abort 使用 AppError 直接中止请求，不包裹 APIResponse 结构。
 //
 // 与 Error 的区别：
-//   - Error 返回标准的 ApiResponse 包裹体（{ code, message }）
+//   - Error 返回标准的 APIResponse 包裹体（{ code, message }）
 //   - Abort 直接将 AppError 结构体作为 JSON 返回（{ code, message }，不含 data）
 //
 // 适用场景：

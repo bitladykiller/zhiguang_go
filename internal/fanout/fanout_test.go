@@ -24,20 +24,23 @@ type stubFollowers struct {
 	err  error
 }
 
-func (s *stubFollowers) FollowersCursor(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
+func (s *stubFollowers) FollowersCursor(_ context.Context, _ uint64, limit int, cursor string) ([]uint64, string, error) {
 	if s.err != nil {
-		return nil, 0, s.err
+		return nil, "", s.err
 	}
-	// cursor 用作已返回条数（测试内部约定，语义上等价于「按关注时间递减翻页」）。
-	start := int(cursor)
+	// 测试内部约定：游标即“已返回条数”的十进制串（真实实现为不透明复合串）。
+	start := 0
+	if cursor != "" {
+		start, _ = strconv.Atoi(cursor)
+	}
 	if start >= len(s.fans) {
-		return nil, 0, nil
+		return nil, "", nil
 	}
 	end := start + limit
 	if end > len(s.fans) {
 		end = len(s.fans)
 	}
-	return s.fans[start:end], int64(end), nil
+	return s.fans[start:end], strconv.Itoa(end), nil
 }
 
 // stubFollowing 返回固定的关注列表。
@@ -46,19 +49,22 @@ type stubFollowing struct {
 	err     error
 }
 
-func (s *stubFollowing) FollowingCursor(_ context.Context, _ uint64, limit int, cursor int64) ([]uint64, int64, error) {
+func (s *stubFollowing) FollowingCursor(_ context.Context, _ uint64, limit int, cursor string) ([]uint64, string, error) {
 	if s.err != nil {
-		return nil, 0, s.err
+		return nil, "", s.err
 	}
-	start := int(cursor)
+	start := 0
+	if cursor != "" {
+		start, _ = strconv.Atoi(cursor)
+	}
 	if start >= len(s.authors) {
-		return nil, 0, nil
+		return nil, "", nil
 	}
 	end := start + limit
 	if end > len(s.authors) {
 		end = len(s.authors)
 	}
-	return s.authors[start:end], int64(end), nil
+	return s.authors[start:end], strconv.Itoa(end), nil
 }
 
 // stubFollowerCount 返回预置的粉丝数；known=false 模拟计数缺失。

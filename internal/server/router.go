@@ -132,6 +132,15 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 		})
 	}
 
+	registerDebugRoutes(r, cfg)
+
+	registerAPIRoutes(r, handlers)
+
+	return r
+}
+
+// registerDebugRoutes 在 debug 模式下挂载 pprof（拆出以压平 NewRouter 的圈复杂度）。
+func registerDebugRoutes(r *gin.Engine, cfg *config.Config) {
 	if cfg != nil && cfg.Server.Mode == "debug" {
 		dbg := r.Group("/debug/pprof")
 		{
@@ -155,6 +164,10 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 		r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	}
 
+}
+
+// registerAPIRoutes 按模块注册 /api/v1 业务路由（nil handler 跳过）。
+func registerAPIRoutes(r *gin.Engine, handlers *HandlerSet) {
 	// --- API v1 路由 ---
 	// 按模块注册路由，每个处理器可选（可能因配置不完整而返回 nil）
 	v1 := r.Group("/api/v1")
@@ -185,5 +198,4 @@ func NewRouter(handlers *HandlerSet, logger *zap.Logger, tokenValidator middlewa
 		}
 	}
 
-	return r
 }

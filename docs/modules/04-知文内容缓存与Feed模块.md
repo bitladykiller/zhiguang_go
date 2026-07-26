@@ -146,47 +146,58 @@ flowchart TD
 
 知文详情页是整个系统中吞吐量最高、面对网络攻击与高并发压力最大的入口之一。为了同时解决“缓存穿透（查不存在的数据）”、“缓存击穿（热点 Key 突然过期）”和“多实例本地缓存脏数据”三大工程难题，本项目设计了**四道递进式防护体系**。
 
-### 3.2.0 四道防线全景解析
+### 3.2.0 四道防线全景解析（对齐 `detail_service.go` 的真实顺序）
 
 > **💡 现实工程场景：**
 > 如果某个恶意黑客使用自动化脚本，以每秒 5000 次的频率轮询随机生成的废 ID（如 `99999999`），如果没有前置过滤器和空值哨兵，这些请求会全部打穿缓存直奔 MySQL，瞬间导致数据库 CPU 满载、连接池枯竭，引发整站崩溃。
 
+**先记住一个容易讲错的点：四道防线的编排顺序是 `L1 → L2(含 NULL 哨兵) → Bloom → 锁内回源`，Bloom 不在最前面。**
+
+早期实现确实把 Bloom 放在第一位——直觉上"先拦住不存在的"。但推演一下成本：
+
+- 正常用户读热点内容：L1 本可 50ns 返回，却先付一次 Bloom 的 Redis 往返——**热路径为冷场景买单**；
+- 扫号攻击者：请求的 ID 必然 L1/L2 全 miss，无论 Bloom 排第几，到达它的成本完全一样。
+
+结论：**缓存命中本身就证明存在**，先问"可能存在吗"没有信息量。Bloom 的正确位置是"两级缓存都 miss、即将碰 DB 之前"。这一顺序调整让 L1 命中路径的 Redis 往返从 3 次降到 0 次（配合版本号本地短缓存，见 3.2.6）。
+
 ```mermaid
 flowchart TD
-    A[详情读请求] --> B[防线 1: RedisBloom CF.* 存在性过滤]
-    B -->|MightContain=false| Z1[100% 确定不存在 -> 直接 404]
-    B -->|MightContain=true / fail-open| C[防线 2: L1 FreeCache 本地内存缓存]
-    C -->|命中 50ns| U[补充用户态 like/fav -> 返回]
-    C -->|miss| D[防线 3: L2 Redis 共享缓存]
-    D -->|命中 NULL 哨兵| Z2[确认不存在 -> 直接 404]
-    D -->|命中详情 json| C2[回填 L1] --> U
-    D -->|miss| E[防线 4: L3 DB + 看门狗分布式锁回源]
-    E -->|未抢到锁| F[休眠 10ms -> 重查 L2] --> D
-    E -->|抢到锁| G[double check L2 -> 回源 MySQL]
-    G -->|DB 存在| H[回填 L1/L2 + CF.ADD] --> U
-    G -->|DB 不存在| I[写 NULL 哨兵短 TTL] --> Z2
+    A[详情读请求] --> V["cache.Versions 取版本号<br/>(进程内短缓存, 默认 2s)"]
+    V --> K["拼缓存键 knowpost:detail:id:vL:verN"]
+    K --> C["防线 1: L1 freecache<br/>命中≈50ns, 零网络"]
+    C -->|"命中且解码成功"| U["记录热点 + enrichDetail 补用户态"] --> R[返回]
+    C -->|miss| D["防线 2: L2 Redis"]
+    D -->|"命中 NULL 哨兵"| Z2[确认不存在 → 404]
+    D -->|"命中详情 JSON"| C2[解码成功才回填 L1] --> U
+    D -->|miss| B["防线 3: RedisBloom CF.EXISTS"]
+    B -->|"MightContain=false"| Z1["数学上 100% 不存在 → 404<br/>DB 一次都不碰"]
+    B -->|"true / fail-open"| E["防线 4: 分布式锁 + 看门狗"]
+    E -->|"未抢到锁"| F[等待后重查 L2] --> D
+    E -->|"抢到锁"| G[double check L2 → 回源 MySQL]
+    G -->|"DB 存在"| H["填计数 → 回填 L2/L1 + CF.ADD"] --> U
+    G -->|"DB 不存在"| I["写 NULL 哨兵 (30~60s 随机 TTL)"] --> Z2
+    G -->|"403 无权限"| Z3["直接透传, 不写任何缓存"]
 ```
 
 #### Step-by-Step 四道防线工作机制：
 
-1. **防线 1：第三方 RedisBloom Cuckoo Filter (`CF.*`) 前置**
-   - **原理**：在请求接触自由内存与 Redis 缓存之前，先通过 RedisBloom 的布隆/布谷鸟过滤器检查 ID 是否存在。
-   - **教学结论**：如果 `CF.EXISTS` 返回 `false`（即 `MightContain=false`），在数学上可以 **100% 保证该知文从未存在过**，系统直接返回 `404`，连本地内存与 Redis L2 都不必读取。
-   - **优点**：能够以几 KB 的极小内存消耗，把 99% 以上的盲目扫号攻击隔绝在最外层。
+1. **防线 1：L1 freecache 进程内缓存**
+   - **原理**：Go 进程内内存，约 50ns 返回，零网络往返。解码失败视为 miss（可能是旧布局残留），**不会**把解不开的字节回填。
+   - **教学结论**：热点文章的绝大多数流量在单个 API 节点内存中直接消化。注意 L1 能做到"零 Redis IO"的前提是版本号也有进程内短缓存——版本号编码在键里，"读 L1"必须先"知道版本号"（详见 3.2.6）。
 
-2. **防线 2：L1 FreeCache 进程内内存缓存**
-   - **原理**：基于 Go 进程内内存（FreeCache）实现，响应时间仅需大约 50 纳秒（ns）。
-   - **教学结论**：热点文章在被频繁访问时，99.9% 的流量在单个 API 节点的内存中就被直接消化，极大地减轻了 Redis 的网络与单线程命令处理压力。
+2. **防线 2：L2 Redis 共享缓存 + NULL 空值哨兵**
+   - **原理**：跨实例共享。命中 `"NULL"` 哨兵串直接 404；命中 JSON 则**先解码成功再回填 L1**。
+   - **教学结论**：NULL 哨兵吸收三类流量——回源确认过不存在的 ID、Cuckoo Filter 的假阳性、过滤器未预热期间的真实 miss。随机短 TTL（30~60s）防止同批哨兵同时过期造成周期性穿透。
 
-3. **防线 3：L2 Redis 共享缓存 + NULL 空值哨兵**
-   - **原理**：跨 API 实例共享的二级缓存。如果回源 MySQL 后发现资源真的不存在，绝不静默丢弃，而是在 Redis 中写入一个特殊的 `"NULL"` 哨兵字符串，并赋予 30s~60s 的随机短 TTL。
-   - **教学结论**：NULL 哨兵专门吸收 Cuckoo Filter 的假阳性（False Positive）、删除残留或过滤器尚未完成预热时的真实 miss 请求，是防止穿透的第二道保险。
+3. **防线 3：RedisBloom Cuckoo Filter（`CF.*`）存在性预判**
+   - **原理**：两级缓存都 miss 后、抢锁之前执行 `CF.EXISTS`。返回 false 在数学上保证该 ID 从未存在，直接 404，DB 一次都不碰。模块缺失 / Redis 故障 / 未预热一律 **fail-open** 放行，由 NULL 哨兵兜底。
+   - **教学结论**：位置在缓存之后不削弱防护——扫号请求本来就到不了缓存命中分支；而正常请求由此免付一次往返。
 
-4. **防线 4：L3 DB 回源 + Redis看门狗（Watchdog）分布式锁**
-   - **原理**：当 L1/L2 均未命中时，系统不会允许所有并发协程同时冲向 MySQL（即缓存击穿），而是通过 Redis `SET NX PX` 争抢独占回源锁。
-   - **教学结论**：抢到锁的协程开启本地看门狗（每 `TTL/3` 时间自动续期），防止数据库长查询导致锁超时释放；未抢到锁的协程休眠等待后重新读取 Redis L2，直接复用前者的回填结果。
+4. **防线 4：L3 DB 回源 + Redis 看门狗分布式锁**
+   - **原理**：`SET NX PX` 抢独占回源锁；持锁者每 `TTL/3` 续期（看门狗），防长查询导致锁提前失效；未抢到锁的协程等待后重查 L2 复用回填结果；抢到锁后先 double check L2。
+   - **教学结论**：击穿防护的本质是"同一 key 同一时刻至多一个回源者"。注意 **403（无权限）不写任何缓存**——内容存在、只是请求者无权看，写哨兵会把它对所有人变成 404。
 
----
+> 以上编排不再是手写流程，而是 `cache.Tiered[T]` 组件的一次配置化调用——详见 3.2.5。
 
 ### 3.2.0.1 第三方 RedisBloom（Cuckoo CF.*）适配层
 
@@ -315,6 +326,104 @@ sequenceDiagram
 因为这些是用户维度数据，不是公共数据。  
 如果把它们塞进共享缓存，会导致不同用户互相污染。
 
+### 3.2.5 Tiered：把"读穿舞步"沉淀成组件（教学深度拆解）
+
+> **💡 为什么值得单独一节：**
+> "L1 查 → L2 查 → 抢锁 double-check → 回源 → 回填"这套舞步曾在详情、我的列表等处**各手写一遍**，
+> 细节各有微差——历史上的公共 Feed 跨用户串号事故，根因正是其中一份在叠加用户态**之后**才写缓存。
+> 复制粘贴的模式没有结构可言，正确性只能逐处人工核对。`cache.Tiered[T]`（internal/cache/tiered.go）
+> 把这套编排一次写对、处处复用。
+
+**调用方只需提供 5 类"业务件"，编排完全交给组件：**
+
+| 业务件 | 详情场景的取值 | 说明 |
+|---|---|---|
+| 键 | `detailPageKey(id, version)` | 由 keys.go 统一构造 |
+| Loader | 查 DB + 权限判定 + 填计数 + CF.ADD | 契约见下表 |
+| TTL 策略 | `L2TTL` 闭包内叠加热点延长 | 每次写 L2 时调用，可带 jitter |
+| PreLoad | Bloom `CF.EXISTS` | 两级 miss 后、抢锁前执行 |
+| 锁参数 | `lock:{pageKey}` + 看门狗选项 | LockKey 为空则不加锁直接回源 |
+
+**Loader 契约（三种返回的语义严格区分）：**
+
+| 返回 | 语义 | 组件行为 |
+|---|---|---|
+| `(v, true, nil)` | 数据存在 | Encode → 写 L2 → 回填 L1 → 返回 v |
+| `(_, false, nil)` | **确认**不存在 | 写 NULL 哨兵 → 返回 `ErrNullCached` |
+| `(_, _, err)` | 加载失败/无权限 | **不写任何缓存**，错误原样透传 |
+
+**结构性防串号（本组件最重要的一条不变量）：**
+
+> 缓存中只会出现 Loader 的原始产物或 L2 的原始字节。`Get` 在返回**之前**就完成了全部缓存写入，
+> 用户态（liked/faved）由调用方在拿到返回值**之后**叠加——即便调用方随手改返回值，也污染不了缓存。
+> "共享视图进缓存、用户态读后叠加"从纪律变成了结构，有专门测试演练这条不变量
+> （`TestTiered_CacheStoresLoaderOutputOnly`）。
+
+```mermaid
+sequenceDiagram
+    participant Caller as 调用方(GetDetail)
+    participant T as Tiered.Get
+    participant L1 as freecache
+    participant L2 as Redis
+    participant Lock as 分布式锁
+    participant Loader as Loader(DB)
+
+    Caller->>T: Get(key, loader)
+    T->>L1: Get(key)
+    alt L1 命中且解码成功
+        T-->>Caller: (v, HitL1)
+    else miss
+        T->>L2: GET key
+        alt NULL 哨兵
+            T-->>Caller: ErrNullCached
+        else JSON 命中
+            T->>L1: 回填原始字节
+            T-->>Caller: (v, HitL2)
+        else miss
+            T->>T: PreLoad (Bloom)
+            T->>Lock: 抢锁+看门狗
+            T->>L2: double check
+            T->>Loader: 回源
+            T->>L2: Set(Encode(v), L2TTL())
+            T->>L1: 回填
+            T-->>Caller: (v, HitLoad)
+        end
+    end
+    Note over Caller: 拿到返回值后才 enrichDetail 补用户态<br/>此刻缓存已定格, 用户态进不去
+```
+
+**命中级（HitLevel）驱动的差异化处理**——这是返回三元组的价值：
+
+| 命中级 | 计数是否刷新 | 原因 |
+|---|---|---|
+| `HitL1` | 否 | L1 窗口极短（秒级），载荷计数足够新 |
+| `HitL2` | **是** | 载荷携带的是写缓存那一刻的计数，可能已陈旧 |
+| `HitLoad` | 否 | Loader 刚查过计数 |
+
+### 3.2.6 Versions：版本号读取端（以及 L1 为什么曾经"名存实亡"）
+
+版本号失效模式的写侧很简单（INCR 一下），**读侧**才藏着坑：版本号编码在缓存键里，
+"读 L1"必须先"知道版本号"，而版本号在 Redis——于是每次详情读取（**包括 L1 命中**）
+都要先付一次 Redis 往返。L1 的意义是零网络，这个顺序把它的延迟下限锁死在 Redis RTT 上，
+文档曾宣称的"L1 约 50ns"在这条路径上从未成立过。
+
+`cache.Versions` 统一了三处版本号变体（详情 per-post / 公共 Feed 全局 / mine per-user）的读取端：
+
+```mermaid
+flowchart LR
+    A[Get verKey] --> B{进程内短缓存<br/>默认 2s}
+    B -->|命中| R[返回版本号]
+    B -->|miss| C[Redis GET]
+    C --> D[写回短缓存] --> R
+    W[本实例写操作] --> X[Redis INCR 版本] --> Y[Drop 本地短缓存]
+    Y -.保证.-> Z[自写自读立即切新键]
+```
+
+**取舍的推演（面试高频）**：短缓存引入"其他实例写入后，本实例最多延迟 2s 才切新键"的窗口——
+但在引入它之前，跨实例读到旧内容的窗口本来就是 **L1 TTL（60s）级别**的（旧 L1 条目仍在、无人通知）。
+版本号的"即时性"从来没带来端到端强一致，它带来的只是"新键提前生效"；
+用 2s 窗口换掉每次读取的一个 RTT，是净赚。配置项 `detail_cache.version_cache_ttl_seconds`（0=默认 2s，负数=关闭）。
+
 ## 3.3 Feed 读路径流程
 
 ### 3.3.1 公共 Feed
@@ -358,7 +467,12 @@ flowchart TD
 
 这是一个非常典型的“按访问模式选缓存模型”的例子。
 
-不过接口命名和 SQL 语义有一处需要按源码说明：`GetMyPublished` 最终查询条件是 `creator_id = ? AND status != deleted`，因此当前会返回草稿和已发布内容，不是严格意义的“我的已发布列表”。由于该接口要求登录、且只允许读取当前用户自己的数据，这不会泄露草稿，但前端产品语义与方法名不一致；若产品确实只要已发布内容，应将 SQL 条件收紧为 `status = published`，或拆出明确的草稿列表接口。
+重构后本路径同样跑在 `cache.Tiered` 上（键 `feed:mine:{uid}:{size}:{page}:{ver}`，整页 JSON），
+由此带来两个行为改进：**回源有了分布式锁 + double check**（此前该路径无击穿保护），
+以及**返回前统一叠加当前用户 liked/faved**（此前三个列表接口只有部分叠加，
+同一字段是否出现取决于走了哪条代码路径——契约不该依赖实现路径）。
+
+接口命名与 SQL 语义曾有一处偏差，**现已修复**：`GetMyPublished` 的查询条件曾是 `creator_id = ? AND status != deleted`，会把草稿也混进“我的已发布列表”。由于接口要求登录且只读自己的数据，这不泄露草稿，但方法名与返回内容不一致。现在 `ListMyPublished` 的条件已收紧为 `creator_id = ? AND status = published`（`internal/knowpost/repository.go`），语义与命名对齐；草稿如需列表可另开明确的草稿接口。
 
 ```mermaid
 flowchart TD
@@ -388,6 +502,57 @@ flowchart TD
     C --> E
     D --> E
 ```
+
+### 3.3.4 关注流 `/feed/home`（游标分页 + 可见性档位）
+
+关注流的帖子 **ID 序列由扩散模块给出**（推拉归并，机制详见
+[14-信息流扩散](14-信息流扩散-读扩散写扩散与推拉结合.md)），本模块只做三件事：
+按 ID 批量补详情、按时间线顺序重排、叠加用户态。两个模块通过一个窄接口解耦：
+
+```go
+type HomeTimelineReader interface {
+    HomeTimelinePage(ctx, userID, cursor string, limit int) (ids []uint64, nextCursor string, hasMore bool, err error)
+}
+```
+
+```mermaid
+flowchart TD
+    A["GET /feed/home?cursor=&size=20"] --> B[HomeTimelinePage<br/>fanout 推拉归并 + 游标]
+    B -->|"ids 为空"| Z[返回空列表]
+    B --> C["FindFeedRowsByIDs(ids, {public, followers})"]
+    C --> D[按时间线顺序重排 rows<br/>SQL 排序与信息流顺序无关]
+    D --> E[mapRowsToItems 公共视图]
+    E --> F[withUserState 叠加 liked/faved]
+    F --> G["返回 items + next_cursor + has_more"]
+```
+
+三个教学点：
+
+1. **游标不透明**：`cursor`/`next_cursor` 原样回传（`t:{发布时间}:{postID}` 双键，
+   动态列表用 offset 会跳条/重条，复合游标不重不漏——项目统一约定，见 15 篇第 6 条）。
+2. **可见性档位按场景传参**：`FindFeedRowsByIDs(ids, visibilities)`——关注流按定义只含
+   "我关注的作者"，`followers` 档内容对关注者**应当可见**；公共 Feed 维持仅 `public`。
+   早期关注流复用 public-only 查询，followers 这一档对粉丝形同虚设。
+3. **时间线顺序是权威顺序**：DB 批查的 ORDER BY 只是取数便利，返回前必须按 ids 重排；
+   已删除/降可见性的帖子在此处被过滤，实际条数可能少于请求页长（正常现象）。
+
+## 3.4 键注册表（对齐 `internal/knowpost/keys.go`）
+
+模块占用的全部 Redis 键集中一处定义——键名是模块的公共契约，散落的 `fmt.Sprintf`
+改一处漏一处只能靠全文搜索（`feed:item:` 曾散落 3 个文件）。
+
+| 键 | 类型 | 用途 |
+|---|---|---|
+| `knowpost:ver:{id}` | String | 详情缓存版本号（写操作 INCR） |
+| `knowpost:detail:{id}:v{L}:ver{N}` | String | 详情页 JSON / `"NULL"` 空值哨兵 |
+| `feed:public:version` | String | 公共 Feed 全局版本号 |
+| `feed:mine:version:{userID}` | String | 「我的已发布」版本号 |
+| `feed:public:ids:{ver}:{size}:{page}` | List | 公共 Feed 某页的有序帖子 ID |
+| `feed:item:{id}` | String | Feed 条目碎片 JSON |
+| `lock:{cacheKey}` | String | 回源分布式锁 |
+
+L1（共享 freecache）前缀由 bootstrap 分配：`d:` 详情、`fp:` 公共页、`fm:` 我的页；
+版本号本地短缓存另用 `dv:` / `fv:` 前缀，与载荷键空间隔离。
 
 ## 4. 设计亮点
 
@@ -715,24 +880,22 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[客户端请求知文详情] --> B{布隆是否已预热?}
-    B -->|否或故障| C[放行 fail-open]
-    B -->|是| D{可能存在?}
-    D -->|一定不存在| E[直接返回不存在]
-    D -->|可能存在| C
-    C --> F{一级缓存命中?}
+    A[客户端请求知文详情] --> V[版本号: 进程内短缓存优先]
+    V --> F{一级缓存命中?}
     F -->|是| G[记录热点并补齐用户态]
     F -->|否| H{二级缓存命中?}
-    H -->|空值| E
-    H -->|正常内容| I[回写一级并刷新计数]
-    H -->|未命中| J[读穿锁回源]
+    H -->|空值哨兵| E[直接返回不存在]
+    H -->|正常内容| I[解码成功才回写一级 并刷新计数]
+    H -->|未命中| B{布隆判定}
+    B -->|一定不存在| E
+    B -->|可能存在或故障放行| J[读穿锁回源]
     J --> K[再次检查二级]
     K -->|已回填| I
     K -->|仍未命中| L[查数据库]
-    L -->|不存在或已删| M[写空值缓存]
-    M --> E
-    L -->|存在| N[查计数并写回缓存]
-    N --> O[CF.ADD]
+    L -->|不存在或已删| M[写空值哨兵] --> E
+    L -->|无权限| X[403 不写任何缓存]
+    L -->|存在| N[填计数 写回二级一级]
+    N --> O[CF.ADD 渐进补齐过滤器]
     O --> P[补齐点赞收藏状态]
     G --> Q[返回响应]
     I --> Q
@@ -741,10 +904,10 @@ flowchart TD
 
 ### 讲解要点
 
-1. **CF.EXISTS 在最前**：专门拦扫号 ID，减少无效 L1/L2/DB；软删 `CF.DEL`。
-2. **NULL 在 L2**：吸收误判、删除失败、模块缺失、预热未完成窗口。
-3. **读穿锁**：防击穿，不是防穿透。
-4. **用户态后置**：liked/faved 永不进共享缓存。
+1. **CF.EXISTS 在两级缓存之后**：缓存命中即证明存在，先问布隆是白付往返；扫号请求本就缓存全 miss，到达布隆的成本不变（历史版本曾放最前，见 3.2.0 的推演）。
+2. **NULL 在 L2**：吸收误判、删除残留、模块缺失、预热未完成窗口；403 与"不存在"严格区分，前者不写任何缓存。
+3. **读穿锁**：防击穿，不是防穿透；持锁看门狗续期，锁内先 double check。
+4. **用户态后置**：liked/faved 永不进共享缓存——由 Tiered 的结构保证（3.2.5）。
 5. **冷启动 / Redis 故障 fail-open**：宁可多打一次缓存，也不误拦真实内容。
 
 ## A3. 写路径 + 失效 + 事件（中文流程图）
@@ -1004,3 +1167,164 @@ flowchart TD
   - *提示*：不会，适配层实现了 `fail-open` 机制，错误时视作“可能存在”，自动退回 L1 -> L2 (NULL) -> L3 DB 防线。
 - **思考题 2**：公共 Feed 中如果某帖子被作者删除，为什么要递增 `feed version` 而不是直接清空全站的分页缓存 key？
   - *提示*：帖子可能分布在成百上千个分页 key 中，精确清理复杂度是 $O(N)$ 且容易死锁；递增版本号让新请求自然切换新 key，旧页在 TTL 后自动被 Redis 淘汰。
+
+---
+
+# 附录F：函数级源码走读（与源码同步维护）
+
+> 按文件组织；每个函数给出签名、职责、逐步逻辑与边界。琐碎工具函数以表格收尾。
+> 行号会漂移，函数名不会——检索函数名即可定位。
+
+## F1. `detail_service.go` — 详情读取（KnowPostDetailService）
+
+#### `NewKnowPostDetailService(repo, redisClient, l1Cache, hotKey, bloom, counter, logger, cfg) *KnowPostDetailService`
+- **职责**：装配详情读取服务。`counter`（窄接口 detailEngagement，仅 2 方法）、`hotKey`、`bloom` 均可为 nil → 对应能力降级（不查计数 / 不记热点 / 不做存在性预判）。
+- **边界**：`logger` 为 nil 时兜底 `zap.L()`，保证任何路径的 `logger.Warn` 不 panic。
+
+#### `detailCacheTTLValues() detailCacheParams`
+- **职责**：把配置节拍平成具名参数快照（l1TTL / nullBase / nullJitter / l2Base / l2Jitter / ttlMedium）。
+- **逐步**：`detailCacheConfig(s.cfg)` → cfg 为 nil 时走「零值节 + 节级 ApplyDefaults」同一条默认值路径 → 映射到结构体。
+- **历史**：曾返回 8 个匿名 int，调用方写 `_, _, _, _, _, _, ttlMedium, _ :=`——同类型位置取值，调序即静默取错。
+
+#### `versions() *cache.Versions`
+- **职责**：构造详情版本号读取器（无状态，按调用构造零负担）。Local 挂共享 freecache（前缀 `dv:`），Default=detailLayoutVer，TTL 来自 `version_cache_ttl_seconds`（0→2s，负→关闭）。
+
+#### `GetDetail(ctx, id, currentUserID) (*KnowPostDetailResponse, error)`
+- **职责**：详情读取唯一入口。编排＝配置一次 `cache.Tiered` + 提供 Loader。
+- **逐步**：
+  1. `versions().Get(detailVersionKey(id))` 取版本号（进程内短缓存优先）→ `detailPageKey(id, ver)` 拼键；
+  2. 组装 `Tiered`：Decode=parseJSON、`L2TTL` 闭包内叠加热点延长（`hotKey.TTLForPublic`）、NullSentinel="NULL"、`PreLoad`=Bloom 预判、LockKey=`lock:{pageKey}`；
+  3. `tiered.Get(pageKey, loader)`；Loader：repo 为 nil → found=false（写哨兵，零依赖单测语义）；`queryDetailFromDB` 返回 ErrNotFound → found=false；**ErrForbidden → 存入闭包变量 `forbiddenErr` 并作为 err 返回（不写任何缓存）**；成功 → `bloom.AddUint64`（渐进补齐过滤器）→ `fillCounts` → found=true；
+  4. 错误翻译：`ErrNullCached` → `errcode.ErrNotFound`；`forbiddenErr` 非 nil → 原样 403；
+  5. `recordHotKeyAndExtendTTL`（本地计数 + 冷键零往返）；
+  6. `enrichDetail(…, refreshCounts = hit==HitL2)`——只有 L2 命中才刷计数（载荷计数可能陈旧；L1 窗口极短、Load 刚查过）。
+- **边界**：403 与 404 的缓存语义严格区分——404 写哨兵吸收重复探测，403 什么都不写（内容存在，只是无权）。
+
+#### `queryDetailFromDB(ctx, id, currentUserID) (*KnowPostDetailResponse, error)`
+- **职责**：回源 + 状态/权限判定 + 行→DTO 映射。
+- **逐步**：`repo.FindDetailByID`（JOIN users 取作者）→ err/nil/已删除 → ErrNotFound；`isPublic = published && visible==public`，`isOwner = currentUserID==CreatorID`；两者皆否 → ErrForbidden；映射（`jsonutil.ParseStringArray` 解 tags/imgs，uint64 → string 防前端精度丢失）。
+
+#### `fillCounts(ctx, resp)`
+- **职责**：回源结果上填 like/fav 计数（这部分**进**共享缓存——计数是公共数据）。counter 为 nil 或查询失败：记 Warn 保零值，不阻塞。
+
+#### `enrichDetail(ctx, base, currentUserID, refreshCounts) *KnowPostDetailResponse`
+- **职责**：叠加**不进缓存**的两类数据：实时计数（refreshCounts=true 时重查）与当前用户 liked/faved（`IsLikedAndFaved` 一次往返拿两态）。
+- **边界**：直接改 `base` 并返回同一指针（Tiered 已在返回前定格缓存，改它污染不了缓存）；counter nil / 查询失败均静默降级。
+
+#### `recordHotKeyAndExtendTTL(ctx, id, pageKey)`
+- **逐步**：`hotKey.Record(hotKeyID(id))` 纯本地计数（零 Redis IO）→ `TTLForPublic` 取目标 TTL → **target<=base 直接 return**（冷键不付 Lua 往返，绝大多数键是冷的）→ `extendTTLDualScript` 原子只增不减地延长 pageKey 与 `feed:item:{id}` 两键。
+
+#### `WarmDetailBloom(ctx) error`
+- **职责**：启动期预热过滤器。`repo.ListIDsForBloom(lastID, 1000)` 游标批扫未删除 ID → 逐个 `CF.ADD`；失败不阻塞启动（fail-open，未预热期间由 NULL 哨兵兜底）。bootstrap 以独立 goroutine + 2 分钟超时调用。
+
+## F2. `write_service.go` — 写路径（KnowPostService）
+
+#### `CreateDraft(ctx, creatorID, idempotencyKey) (uint64, error)`
+- **职责**：幂等创建草稿。
+- **逐步**：
+  1. key 为空 → 直接建（无幂等诉求）；
+  2. `claimDraftIdempotency`：`SET idem:{key} "pending" NX EX`——抢到=首次；没抢到读值：数字=已完成返回旧 ID；"pending"=并发中 → 409；
+  3. 建草稿（雪花 ID，事务内含 outbox）；
+  4. 成功把幂等键改写为草稿 ID（长 TTL）；失败删除 pending 标记让后续重试。
+- **边界**：pending 标记短 TTL——持有者崩溃后自动解锁，不会永久卡死该幂等键。
+
+#### `claimDraftIdempotency(ctx, idemKey, pendingMarker) (existingID uint64, alreadyDone bool, err error)`
+- **返回三态**：`(0,false,nil)`=首次抢占成功；`(id,true,nil)`=历史已完成；err=并发进行中（409）或 Redis 故障。
+
+#### `ConfirmContent / UpdateMetadata / Publish / UpdateTop / UpdateVisibility / Delete`
+- **共同骨架**：`runKnowPostTx*(eventType, mutate)` → 事务内执行 repo 变更并校验 `affected>0`（0 → 404「不存在或无权」，owner 校验下沉到 SQL 的 `creator_id=?` 条件）→ 事务外 `invalidateCache`（详情版本 +1）+ `invalidateFeedCaches`（Feed 版本 +1 + item 碎片删）→ 审计。
+- **各自特有**：
+  - `Publish`：载荷追加 `creator_id`/`published_at`（扩散消费者免回查 DB——事件要自描述）；
+  - `UpdateVisibility`：载荷追加 `visible` + `creator_id`（可见性收紧时扩散侧清发件箱）；
+  - `Delete`：软删 + `bloom.DeleteUint64`（CF 支持删除正是选 Cuckoo 而非经典 Bloom 的原因）+ 载荷带 `creator_id`。
+
+#### `runKnowPostTx(ctx, id, eventType, mutate, extraEvents...) error` / `runKnowPostTxWithPayload(..., extra map[string]any, ...)`
+- **职责**：知文域事务模板。基础载荷 `{entity:"knowpost", id, op, type}`；WithPayload 变体合并 extra 字段。
+- **逐步**：构造 OutboxEvent（雪花 ID）→ `outbox.RunInTx(db, mutate(repo.WithDB(tx)), events)`——业务行与 outbox 行同事务落库。
+- **`knowPostOutboxOp`**：Deleted → "delete"，其余 → "upsert"（搜索投影按 op 分流软删/重建）。
+
+## F3. `feed_service.go` — 列表读取（KnowPostFeedService）核心函数
+
+#### `GetPublicFeed(ctx, page, size, currentUserID) (*FeedPageResponse, error)`
+- **逐步**：clamp 参数（page 同时有**上界** `maxPublicFeedPage=1000`——公共 Feed 回源是 `LIMIT size OFFSET page*size`，无上界的 page 等于让任意请求驱动 MySQL 扫描任意深的 OFFSET；截断到千页对产品无损，对 DB 是硬保护）→ `currentPublicFeedVersion`（Versions，含本地短缓存）→ 拼 `localPageKey`（L1 整页）与 `idsKey`（L2 碎片）→ 依次 `getPublicFeedL1` / `getPublicFeedL2` / `getPublicFeedUnderLock`。
+- **键设计**：ids 键只含 `{ver}:{size}:{page}` 三维——曾多编一个 hourSlot，但全局版本号失效粒度已是"全部"，分槽只降低命中率（两机制不构成组合）。
+
+#### `getPublicFeedL1(ctx, localPageKey, currentUserID) *FeedPageResponse`
+- **逐步**：L1 Get → parse 失败按 miss → `recordItemHotKeys`（整页批量热点）→ `withUserState` 叠用户态后返回。缓存里是**公共视图**，用户态每次读后现算。
+
+#### `getPublicFeedL2(...)` 
+- **逐步**：`assembleFromCache` 组装公共视图 → 成功则 `cacheFeedPage` 回填 L1（回填的是 **shared**，enrich 前！）→ 记热点 → `withUserState`。**回填先于 enrich 是防串号的关键顺序**——历史事故正是某处顺序相反。
+
+#### `withUserState(ctx, shared, currentUserID) *FeedPageResponse`
+- **职责**：产出「共享视图 + liked/faved」的响应副本；空 items 归一为 `[]`（JSON 输出 `[]` 而非 null）。所有公共 Feed 出口统一走这里。
+
+#### `getPublicFeedUnderLock(ctx, idsKey, hasMoreKey, localPageKey, page, size, currentUserID)`
+- **逐步**：`cacheReadThrough`（分布式锁+看门狗）：checkCache=锁内重试 `assembleFromCache`（拿到锁的可能是等待者，前者大概率已回填）；miss handler=`repo.ListFeedPublic(size+1, offset)`（多查 1 条判 hasMore，免 COUNT）→ `mapRowsToItems`（公共视图）→ `writeFragmentCaches` + `cacheFeedPage` **先落缓存** → `withUserState` 返回。
+
+#### `assembleFromCache(ctx, idsKey, hasMoreKey, page, size) *FeedPageResponse`
+- **职责**：从碎片缓存组装整页公共视图。
+- **逐步**：LRange 取 ID 列表（空→nil）→ 拼 `feed:item:*` 键 MGet → **任一碎片缺失/解码失败 → 整页判 miss**（宁可回源，不返回缺条目的页）→ hasMore 软缓存（缺失时降级"满页即可能有更多"）。
+- **返回**：nil=未命中；非 nil=纯公共视图（用户态由调用方叠）。
+
+#### `writeFragmentCaches / writeFeedIDListCache / writeFeedItemCaches`
+- **分工**：前者是编排壳；IDList：RPush 全部 ID + Expire（base+jitter）+ hasMore 软缓存（短 TTL）；Item：pipeline 批量 Set 每条 `feed:item:{id}`（各自独立 jitter TTL，避免同刻雪崩）。
+
+#### `GetMyPublished(ctx, userID, page, size)`
+- **职责**：「我的已发布」，整页缓存跑在 `cache.Tiered` 上（键 `feed:mine:{uid}:{size}:{page}:{ver}`）。
+- **两个刻意的行为差异**（对旧实现）：回源加了锁+double check（旧路径无击穿保护）；返回统一 `withUserState`（旧实现三个列表只有部分叠用户态——契约不该取决于走了哪条代码路径）。
+- **诚实注记**：SQL 条件是 `status != deleted`，因此含草稿；仅本人可见故不泄露，但方法名与语义有出入（见 3.3.2）。
+
+#### `GetHomeFeed(ctx, userID, cursor, size) (*HomeFeedResponse, error)`
+- **逐步**：`homeTimeline.HomeTimelinePage`（fanout 推拉归并，游标不透明穿透）→ 空 → 空响应；→ `FindFeedRowsByIDs(ids, {public, followers})`（关注流放行 followers 档）→ `reorderRowsByIDs`（时间线顺序是权威，SQL 排序无关）→ `mapRowsToItems` → `withUserState` → 组装 `{Items, NextCursor, HasMore}`。
+- **边界**：`homeTimeline` 未注入（扩散未装配）→ 空列表不报错；已删/降可见帖被 DB 过滤，条数可短于页长。
+
+#### `InvalidateAfterPostMutation(ctx, postID, creatorID)`
+- **逐步**：单段 Lua（`invalidateFeedScript`）原子执行：DEL `feed:item:{post}` + INCR 公共版本 + INCR 作者 mine 版本 → 本地 `feedVersions().Drop` 两个版本键（自写自读立即切新键）。
+
+#### `mapRowsToItems(ctx, rows, userID, includeIsTop) []FeedItemResponse`
+- **逐步**：批量 `GetCountsBatch` 一次拿全页 like/fav 计数（失败整体降级零值）→ 逐行映射（首图为封面、tags/imgs 解 JSON、includeIsTop 仅"我的"场景带置顶位）。产物是**公共视图**。
+
+#### `enrichItems(ctx, items, userID) []FeedItemResponse`
+- **逐步**：userID 或 counter 为 nil → 原样返回；`BatchIsLiked`+`BatchIsFaved` 两次批量（失败各自记 Warn、字段留 nil）→ 拷贝出**新切片**逐条指针赋值。返回新切片，调用方必须用返回值。
+
+#### `recordItemHotKeys(ctx, items)`
+- **职责**：整页批量热点记录 + 热点碎片 TTL 延长。
+- **逐步**：逐条 `hotKey.Record`（纯本地）→ `TTLForPublicBatch` 一次 MGET 定级全页 → 过滤出 target>base 的热点 → 一次 `batchExtendFeedItemTTLScript`（EVAL）延长。整页全冷 → **零 Redis 往返**。旧实现逐条 EXISTS+EVAL，一页 50 条上百次串行往返压在 L1 命中路径上。
+
+#### `currentPublicFeedVersion / currentMineFeedVersion / feedVersion / feedVersions`
+- **职责**：Feed 版本号读取，统一走 `cache.Versions`（前缀 `fv:`、Default=1、固定 2s 本地 TTL——feed 服务只持有 FeedCache 节，拿不到 detail 的 TTL 配置项，诚实固定而非传假参数）。
+
+## F4. `cache.go` + `keys.go` — 写后失效与键构造
+
+#### `invalidateCache(ctx, id)`（写侧）
+- **逐步**：`invalidateCacheScript` Lua：INCR `knowpost:ver:{id}`（<1 时校正为 1）+ DEL 新版本页键（防御残留）→ `versions.Drop(verKey)` 作废本实例短缓存——否则本实例在 2s 窗口内仍用旧版本拼键，"自己写完自己读不到"。
+
+#### `invalidateFeedCaches(ctx, id, creatorID)`（写侧）
+- **职责**：经 `FeedCacheInvalidator` 接口委派给 FeedService 的 `InvalidateAfterPostMutation`；feedCache 为 nil 仅零值单测出现（bootstrap 中是构造参数）。
+
+#### `keys.go` 速查（全部为纯函数，无 IO）
+
+| 函数 | 产出 |
+|---|---|
+| `detailVersionKey(id)` | `knowpost:ver:{id}` |
+| `detailPageKey(id, ver)` | `knowpost:detail:{id}:v{L}:ver{N}` |
+| `mineFeedVersionKey(uid)` | `feed:mine:version:{uid}` |
+| `feedItemKey(id)` / `feedItemKeyU` | `feed:item:{id}`（string / uint64 入参两形态） |
+| `publicFeedIDsKey(ver,size,page)` | `feed:public:ids:{ver}:{size}:{page}` |
+| `publicFeedPageLocalKey(size,page,ver)` | `feed:public:{size}:{page}:v{L}:{ver}`（L1 整页） |
+| `mineFeedPageKey(uid,size,page,ver)` | `feed:mine:{uid}:{size}:{page}:{ver}` |
+| `lockKeyFor(k)` / `hotKeyID(id)` | `lock:{k}` / `knowpost:{id}` |
+| `versionLocalTTL(cfg)` | 0→默认 2s；负→0（关闭） |
+| `newDetailVersions / newFeedVersions` | 组装 cache.Versions（dv:/fv: 前缀隔离） |
+| `detailCacheConfig / feedCacheConfig` | cfg 为 nil → 零值节+节级 ApplyDefaults（默认值单源） |
+
+#### 琐碎工具
+
+| 函数 | 说明 |
+|---|---|
+| `jitterN(n)` | `[0,n)` 随机；n<=0 返回 0（防 rand.Intn(0) panic） |
+| `clamp(v,lo,hi)` | `min(max(v,lo),hi)`（复用 Go1.21 内建；曾有自定义 max 遮蔽内建，已删） |
+| `boolToStr(b)` | hasMore 软缓存的 "1"/"0" 编码 |
+| `parseFeedPage / parseJSON[T]` | 统一 JSON 解码入口，失败即缓存 miss |
+| `reorderRowsByIDs(rows, ids)` | map 索引后按 ids 序重排，丢弃不在 ids 中的行 |
+| `logWarn(msg, err)` | logger 为 nil 时静默（零值 service 安全） |

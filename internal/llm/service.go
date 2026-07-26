@@ -1,3 +1,4 @@
+// Package llm 封装大模型能力：内容描述生成与基于向量检索的 RAG 流式问答。
 package llm
 
 import (

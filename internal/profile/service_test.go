@@ -172,12 +172,12 @@ func TestSvcUpdateProfile_SchoolOnly(t *testing.T) {
 	}
 }
 
-func TestSvcUpdateProfile_TagsJsonOnly(t *testing.T) {
+func TestSvcUpdateProfile_TagsJSONOnly(t *testing.T) {
 	mock := &mockRepo{}
 	svc := NewProfileService(mock)
 
 	tags := `["go","rust"]`
-	req := &ProfilePatchRequest{TagsJson: &tags}
+	req := &ProfilePatchRequest{TagsJSON: &tags}
 	err := svc.UpdateProfile(context.Background(), 1, 1, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

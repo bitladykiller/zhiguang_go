@@ -125,12 +125,15 @@ func newDetailVersions(rdb *redis.Client, l1 *cache.PrefixCache, cfg *config.Kno
 //
 // 公共 Feed 的 L1 整页键同样编入版本号——没有本地缓存时，
 // 每次 L1 命中都要为版本号付一次 Redis 往返，与详情当年同款缺陷。
-func newFeedVersions(rdb *redis.Client, l1 *cache.PrefixCache, cfg *config.KnowPostConfig) *cache.Versions {
+// Feed 侧固定用默认短缓存 TTL：feed 服务只持有 FeedCache 配置节，
+// 拿不到 DetailCache 的 version_cache_ttl_seconds；与其传一个永远为 nil 的
+// cfg 假装可配（此前正是如此），不如诚实固定——需要调节时再为 FeedCache 增设同名字段。
+func newFeedVersions(rdb *redis.Client, l1 *cache.PrefixCache) *cache.Versions {
 	v := &cache.Versions{
 		Redis:           rdb,
 		LocalPrefix:     feedVersionLocalPrefix,
 		Default:         1,
-		LocalTTLSeconds: versionLocalTTL(cfg),
+		LocalTTLSeconds: defaultVersionLocalTTLSeconds,
 	}
 	if l1 != nil {
 		v.Local = l1.Cache

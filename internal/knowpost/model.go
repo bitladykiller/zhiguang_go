@@ -53,7 +53,7 @@ type KnowPost struct {
 	Tags             *string            `db:"tags" json:"tags,omitempty"`
 	Title            *string            `db:"title" json:"title,omitempty"`
 	Description      *string            `db:"description" json:"description,omitempty"`
-	ContentUrl       *string            `db:"content_url" json:"content_url,omitempty"`
+	ContentURL       *string            `db:"content_url" json:"content_url,omitempty"`
 	ContentObjectKey *string            `db:"content_object_key" json:"content_object_key,omitempty"`
 	ContentEtag      *string            `db:"content_etag" json:"content_etag,omitempty"`
 	ContentSize      *uint64            `db:"content_size" json:"content_size,omitempty"`
@@ -63,7 +63,7 @@ type KnowPost struct {
 	Type             string             `db:"type" json:"type"`
 	Visible          KnowPostVisibility `db:"visible" json:"visible"`
 	ImgUrls          *string            `db:"img_urls" json:"img_urls,omitempty"`
-	VideoUrl         *string            `db:"video_url" json:"video_url,omitempty"`
+	VideoURL         *string            `db:"video_url" json:"video_url,omitempty"`
 	Status           KnowPostStatus     `db:"status" json:"status"`
 	CreateTime       time.Time          `db:"create_time" json:"create_time"`
 	UpdateTime       time.Time          `db:"update_time" json:"update_time"`
@@ -75,13 +75,13 @@ type KnowPostDetailRow struct {
 	ID             uint64             `db:"id" json:"id"`
 	Title          *string            `db:"title" json:"title"`
 	Description    *string            `db:"description" json:"description"`
-	ContentUrl     *string            `db:"content_url" json:"content_url"`
+	ContentURL     *string            `db:"content_url" json:"content_url"`
 	ImgUrls        *string            `db:"img_urls" json:"img_urls"`
 	Tags           *string            `db:"tags" json:"tags"`
 	CreatorID      uint64             `db:"creator_id" json:"creator_id"`
 	AuthorAvatar   *string            `db:"author_avatar" json:"author_avatar"`
 	AuthorNickname string             `db:"author_nickname" json:"author_nickname"`
-	AuthorTagJson  *string            `db:"author_tag_json" json:"author_tag_json"`
+	AuthorTagJSON  *string            `db:"author_tag_json" json:"author_tag_json"`
 	IsTop          bool               `db:"is_top" json:"is_top"`
 	Visible        KnowPostVisibility `db:"visible" json:"visible"`
 	Type           string             `db:"type" json:"type"`
@@ -98,6 +98,6 @@ type KnowPostFeedRow struct {
 	Tags           *string `db:"tags" json:"tags"`
 	AuthorAvatar   *string `db:"author_avatar" json:"author_avatar"`
 	AuthorNickname string  `db:"author_nickname" json:"author_nickname"`
-	AuthorTagJson  *string `db:"author_tag_json" json:"author_tag_json"`
+	AuthorTagJSON  *string `db:"author_tag_json" json:"author_tag_json"`
 	IsTop          bool    `db:"is_top" json:"is_top"`
 }

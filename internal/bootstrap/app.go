@@ -1,3 +1,4 @@
+// Package bootstrap 负责应用装配：按依赖顺序初始化配置、存储、各业务模块与后台任务，产出可运行的 App。
 package bootstrap
 
 import (
@@ -29,8 +30,8 @@ func InitializeApp(configPath string) (*server.App, error) {
 		return nil, err
 	}
 	cfg.ApplyDefaults()
-	if err := cfg.Validate(); err != nil {
-		return nil, err
+	if vErr := cfg.Validate(); vErr != nil {
+		return nil, vErr
 	}
 
 	db, err := database.NewDB(&cfg.Database, logger)
@@ -42,8 +43,8 @@ func InitializeApp(configPath string) (*server.App, error) {
 		return nil, err
 	}
 
-	if err := database.RunMigrations(db, logger); err != nil {
-		return nil, fmt.Errorf("database migration: %w", err)
+	if mErr := database.RunMigrations(db, logger); mErr != nil {
+		return nil, fmt.Errorf("database migration: %w", mErr)
 	}
 
 	kafkaWriter := messaging.NewKafkaWriter(&cfg.Kafka)

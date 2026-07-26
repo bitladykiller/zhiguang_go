@@ -186,7 +186,7 @@ func (s *KnowPostService) ConfirmContent(ctx context.Context, creatorID, id uint
 		ContentEtag:      &etag,
 		ContentSize:      &size,
 		ContentSha256:    &sha256,
-		ContentUrl:       jsonutil.StrPtr(s.publicURL(objectKey)),
+		ContentURL:       jsonutil.StrPtr(s.publicURL(objectKey)),
 		UpdateTime:       time.Now(),
 	}
 
@@ -397,9 +397,14 @@ func (s *KnowPostService) runKnowPostTxWithPayload(
 	}, allEvents)
 }
 
+const (
+	outboxOpUpsert = "upsert"
+	outboxOpDelete = "delete"
+)
+
 func knowPostOutboxOp(eventType string) string {
 	if eventType == outboxTypeKnowPostDeleted {
-		return "delete"
+		return outboxOpDelete
 	}
-	return "upsert"
+	return outboxOpUpsert
 }

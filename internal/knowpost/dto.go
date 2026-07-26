@@ -16,13 +16,13 @@ type KnowPostDetailResponse struct {
 	ID             string     `json:"id"`
 	Title          *string    `json:"title"`
 	Description    *string    `json:"description"`
-	ContentUrl     *string    `json:"content_url"`
+	ContentURL     *string    `json:"content_url"`
 	Images         []string   `json:"images"`
 	Tags           []string   `json:"tags"`
 	AuthorID       string     `json:"author_id"`
 	AuthorAvatar   *string    `json:"author_avatar"`
 	AuthorNickname string     `json:"author_nickname"`
-	AuthorTagJson  *string    `json:"author_tag_json"`
+	AuthorTagJSON  *string    `json:"author_tag_json"`
 	LikeCount      int64      `json:"like_count"`
 	FavoriteCount  int64      `json:"favorite_count"`
 	Liked          *bool      `json:"liked,omitempty"` // 当前用户是否已点赞（动态补齐，不入缓存）
@@ -43,7 +43,7 @@ type FeedItemResponse struct {
 	Tags           []string `json:"tags"`
 	AuthorAvatar   *string  `json:"author_avatar"`
 	AuthorNickname string   `json:"author_nickname"`
-	TagJson        *string  `json:"tag_json"`
+	TagJSON        *string  `json:"tag_json"`
 	LikeCount      int64    `json:"like_count"`
 	FavoriteCount  int64    `json:"favorite_count"`
 	Liked          *bool    `json:"liked,omitempty"`  // 当前用户是否点赞（动态补齐）

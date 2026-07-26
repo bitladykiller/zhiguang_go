@@ -52,46 +52,55 @@ func RunMigrations(db *sqlx.DB, logger *zap.Logger) error {
 			continue
 		}
 
-		path := filepath.Join(migrationDir, f)
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read migration file %s: %w", f, err)
+		if err := applyMigration(ctx, db, migrationDir, f, version, logger); err != nil {
+			return err
 		}
-
-		tx, err := db.BeginTxx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin tx for %s: %w", version, err)
-		}
-		committed := false
-		defer func() {
-			if r := recover(); r != nil {
-				if rbErr := tx.Rollback(); rbErr != nil {
-					logger.Warn("migration rollback on panic failed", zap.String("version", version), zap.Error(rbErr))
-				}
-				panic(r) // re-panic after rollback
-			}
-			if !committed {
-				if rbErr := tx.Rollback(); rbErr != nil {
-					logger.Warn("migration rollback failed", zap.String("version", version), zap.Error(rbErr))
-				}
-			}
-		}()
-
-		if _, err := tx.ExecContext(ctx, string(content)); err != nil {
-			return fmt.Errorf("apply migration %s: %w", version, err)
-		}
-
-		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations (version) VALUES (?)", version); err != nil {
-			return fmt.Errorf("record migration %s: %w", version, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration %s: %w", version, err)
-		}
-		committed = true
-
 		logger.Info("applied database migration", zap.String("version", version))
 	}
 
+	return nil
+}
+
+// applyMigration 在一个事务里执行单个迁移文件并记录版本号。
+//
+// 单独成函数还有一个正确性收益：defer 的回滚在**本次迁移**结束时就会触发，
+// 而不是像原先写在循环体里那样，堆积到 RunMigrations 整体返回时才依次执行。
+func applyMigration(ctx context.Context, db *sqlx.DB, dir, file, version string, logger *zap.Logger) error {
+	content, err := os.ReadFile(filepath.Join(dir, file))
+	if err != nil {
+		return fmt.Errorf("read migration file %s: %w", file, err)
+	}
+
+	tx, err := db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx for %s: %w", version, err)
+	}
+	committed := false
+	defer func() {
+		if r := recover(); r != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				logger.Warn("migration rollback on panic failed", zap.String("version", version), zap.Error(rbErr))
+			}
+			panic(r) // re-panic after rollback
+		}
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				logger.Warn("migration rollback failed", zap.String("version", version), zap.Error(rbErr))
+			}
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx, string(content)); err != nil {
+		return fmt.Errorf("apply migration %s: %w", version, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations (version) VALUES (?)", version); err != nil {
+		return fmt.Errorf("record migration %s: %w", version, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %s: %w", version, err)
+	}
+	committed = true
 	return nil
 }

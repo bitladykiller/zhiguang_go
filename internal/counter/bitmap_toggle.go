@@ -3,7 +3,7 @@
 // Like / Unlike / Fav / Unfav 委托给 toggle() 统一处理。
 // toggle() 执行原子 Lua 脚本切换位图，并在状态变化时异步发布 Kafka 事件。
 //
-// 用户维度的 IncrementFollowings / IncrementFollowers 已迁移到 user_counter.go。
+// 用户维度的关注/粉丝计数见 user_counter.go 的 ApplyFollowDeltaOnce。
 package counter
 
 import (
@@ -41,7 +41,7 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 	zKey := likersZSetKey(metric, entityType, entityID)
 	now := time.Now().Unix()
 
-	changed, err := s.redis.Eval(ctx, TOGGLE_LUA,
+	changed, err := s.redis.Eval(ctx, toggleLua,
 		[]string{bmKey, zKey},
 		offset, op, strconv.FormatUint(userID, 10), now,
 	).Int()

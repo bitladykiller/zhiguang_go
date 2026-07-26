@@ -12,8 +12,8 @@ type RelationServiceInterface interface {
 	IsFollowing(ctx context.Context, fromUserID, toUserID uint64) (bool, error)
 	Following(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
 	Followers(ctx context.Context, userID uint64, limit, offset int) ([]uint64, error)
-	FollowingCursor(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
-	FollowersCursor(ctx context.Context, userID uint64, limit int, cursor int64) ([]uint64, int64, error)
+	FollowingCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error)
+	FollowersCursor(ctx context.Context, userID uint64, limit int, cursor string) ([]uint64, string, error)
 	RelationStatus(ctx context.Context, fromUserID, toUserID uint64) (string, error)
 }
 

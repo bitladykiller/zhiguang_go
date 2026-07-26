@@ -1,4 +1,4 @@
-// Package cache 提供热点键识别（HotKeyDetector）能力。
+// 本文件：热点键识别（HotKeyDetector）。
 //
 // HotKeyDetector：使用本地 map + Redis Hash 实现跨实例滑动窗口热点检测。
 // 每次缓存访问仅递增本地计数（零 Redis IO），每 6 秒批量 flush 到 Redis Hash 完成跨实例聚合。
@@ -16,6 +16,7 @@
 //
 //	如果每次 Record() 都 HINCRBY，QPS 高时 Redis 压力大（写放大）。
 //	本地 map 先聚合，每 6 秒一次批量 flush，Redis 写入量降低数个数量级。
+
 package cache
 
 import (
@@ -422,17 +423,17 @@ func (d *HotKeyDetector) calcLevel(total int64) HotKeyLevel {
 	}
 }
 
-// TtlForPublic 返回公共缓存键根据热度调整后的 TTL。
-func (d *HotKeyDetector) TtlForPublic(ctx context.Context, baseTTL int, key string) int {
+// TTLForPublic 返回公共缓存键根据热度调整后的 TTL。
+func (d *HotKeyDetector) TTLForPublic(ctx context.Context, baseTTL int, key string) int {
 	return d.ttlForLevel(baseTTL, d.getLevel(ctx, key))
 }
 
-// TtlForPublicBatch 批量返回一组键按热度调整后的 TTL，返回值下标与 keys 一一对应。
+// TTLForPublicBatch 批量返回一组键按热度调整后的 TTL，返回值下标与 keys 一一对应。
 //
-// 与逐个调用 TtlForPublic 的区别在于 Redis 访问次数：
+// 与逐个调用 TTLForPublic 的区别在于 Redis 访问次数：
 // 本地等级缓存未命中的键会被合并成**一次** MGET，而不是每个键一次 EXISTS。
 // 列表类场景（一页 Feed 几十个条目）由此把 N 次串行往返压缩为至多 1 次。
-func (d *HotKeyDetector) TtlForPublicBatch(ctx context.Context, baseTTL int, keys []string) []int {
+func (d *HotKeyDetector) TTLForPublicBatch(ctx context.Context, baseTTL int, keys []string) []int {
 	ttls := make([]int, len(keys))
 	if len(keys) == 0 {
 		return ttls

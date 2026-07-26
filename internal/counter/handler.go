@@ -271,7 +271,7 @@ func (h *CounterHandler) Status(c *gin.Context) {
 //   - entity_type: string, 必须 — 实体类型
 //   - entity_id:   uint64, 必须 — 实体 ID
 //   - metric:      string, "like"|"favorite"，默认 "like"
-//   - cursor:      uint64, 分页游标（上一页最后一个 user_id），默认 0
+//   - cursor:      string, 不透明复合游标（t:{ts}:{uid} 时间序 / u:{uid} 位图回退序），空为第一页
 //   - limit:       int, 每页数量，默认 20，最大 50
 //
 // 权限：要求登录

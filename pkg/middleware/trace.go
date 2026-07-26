@@ -3,8 +3,9 @@ package middleware
 
 import (
 	"context"
-	"github.com/zhiguang/app/pkg/contextutil"
 	"time"
+
+	"github.com/zhiguang/app/pkg/contextutil"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"

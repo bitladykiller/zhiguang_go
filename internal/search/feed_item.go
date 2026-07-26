@@ -19,7 +19,7 @@ type FeedItem struct {
 	Tags           []string `json:"tags,omitempty"`
 	AuthorAvatar   *string  `json:"author_avatar,omitempty"`
 	AuthorNickname string   `json:"author_nickname"`
-	TagJson        *string  `json:"tag_json,omitempty"`
+	TagJSON        *string  `json:"tag_json,omitempty"`
 	LikeCount      int64    `json:"like_count"`
 	FavoriteCount  int64    `json:"favorite_count"`
 	Liked          *bool    `json:"liked,omitempty"`

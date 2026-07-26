@@ -1,3 +1,4 @@
+// Package errcode 定义业务错误码与 AppError 类型，是 API 错误响应的唯一词汇表。
 package errcode
 
 import "fmt"
@@ -108,7 +109,7 @@ var (
 // HTTPStatusFromCode 根据错误码获取对应的 HTTP 状态码。
 func HTTPStatusFromCode(code ErrorCode) int {
 	if code >= 1000 {
-		code = code / 100
+		code /= 100
 	}
 	switch {
 	case code == CodeSuccess:

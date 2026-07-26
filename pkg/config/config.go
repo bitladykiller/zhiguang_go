@@ -484,7 +484,7 @@ type BootstrapConfig struct {
 	RelationOutboxIntervalMs int `yaml:"relation_outbox_interval_ms"`
 }
 
-// Validate 校验配置中的关键字段是否合法。
+// ApplyDefaults 为未设置的字段填入默认值（先于 Validate 调用）。
 func (c *Config) ApplyDefaults() {
 	if c.Server.Port <= 0 {
 		c.Server.Port = DefaultServerPort
@@ -539,81 +539,88 @@ func (c *Config) ApplyDefaults() {
 	}
 }
 
+// Validate 汇总各节的启动期校验；按主题拆分子校验器（核心/基础设施/可选能力），
+// 每个子函数只追加错误串，聚合与格式化留在此壳层。
 func (c *Config) Validate() error {
 	var errs []string
-
-	if c.Server.Port <= 0 || c.Server.Port > 65535 {
-		errs = append(errs, "server.port must be between 1 and 65535")
-	}
-	if c.Database.DSN() == "" {
-		errs = append(errs, "database.dsn is required")
-	}
-	if c.Redis.Addr() == "" {
-		errs = append(errs, "redis.addr is required")
-	}
-	if c.Server.RateLimit.Enabled && (c.Server.RateLimit.PerIP <= 0 || c.Server.RateLimit.WindowMs <= 0) {
-		errs = append(errs, "rate_limit: per_ip and window_ms must be positive when enabled")
-	}
-	if c.Auth.Jwt.PrivateKeyPath == "" {
-		errs = append(errs, "auth.jwt.private_key_path is required")
-	}
-	if c.Auth.Jwt.PublicKeyPath == "" {
-		errs = append(errs, "auth.jwt.public_key_path is required")
-	}
-
-	if c.Canal.Enabled && (c.Canal.Username == "" || c.Canal.Password == "") {
-		errs = append(errs, "canal: username and password are required when enabled")
-	}
-
-	if c.Redis.RequirePass && c.Redis.Password == "" {
-		errs = append(errs, "redis: require_pass is true but password is empty")
-	}
-	if len(c.Kafka.Brokers) == 0 {
-		errs = append(errs, "kafka: at least one broker is required")
-	}
-	if c.Cache.HotKey.BucketCount <= 0 {
-		errs = append(errs, "hotkey: bucket_count must be > 0")
-	}
-	if len(c.Elasticsearch.URIs) == 0 {
-		errs = append(errs, "elasticsearch: uris is required")
-	}
-	if c.OSS.Endpoint != "" || c.OSS.Bucket != "" || c.OSS.AccessKeyID != "" || c.OSS.AccessKeySecret != "" {
-		if c.OSS.Endpoint == "" {
-			errs = append(errs, "oss: endpoint is required when oss is configured")
-		}
-		if c.OSS.Bucket == "" {
-			errs = append(errs, "oss: bucket is required when oss is configured")
-		}
-		if c.OSS.AccessKeyID == "" {
-			errs = append(errs, "oss: access_key_id is required when oss is configured")
-		}
-		if c.OSS.AccessKeySecret == "" {
-			errs = append(errs, "oss: access_key_secret is required when oss is configured")
-		}
-	}
-
-	if c.Auth.Jwt.AccessTokenTTL <= 0 {
-		errs = append(errs, "auth.jwt.access_token_ttl must be positive")
-	}
-	if c.Auth.Jwt.RefreshTokenTTL <= 0 {
-		errs = append(errs, "auth.jwt.refresh_token_ttl must be positive")
-	}
-
-	if c.Database.MaxOpenConns <= 0 {
-		errs = append(errs, "database.max_open_conns must be positive")
-	}
-	if c.Database.MaxIdleConns <= 0 {
-		errs = append(errs, "database.max_idle_conns must be positive")
-	}
-
-	if len(c.Kafka.Brokers) == 0 {
-		errs = append(errs, "kafka.brokers must contain at least one broker address")
-	}
-
+	c.validateCore(&errs)
+	c.validateInfra(&errs)
+	c.validateOptional(&errs)
 	if len(errs) > 0 {
 		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// validateCore 校验服务端口、数据源与鉴权密钥等硬性依赖。
+func (c *Config) validateCore(errs *[]string) {
+	if c.Server.Port <= 0 || c.Server.Port > 65535 {
+		*errs = append(*errs, "server.port must be between 1 and 65535")
+	}
+	if c.Database.DSN() == "" {
+		*errs = append(*errs, "database.dsn is required")
+	}
+	if c.Redis.Addr() == "" {
+		*errs = append(*errs, "redis.addr is required")
+	}
+	if c.Auth.Jwt.PrivateKeyPath == "" {
+		*errs = append(*errs, "auth.jwt.private_key_path is required")
+	}
+	if c.Auth.Jwt.PublicKeyPath == "" {
+		*errs = append(*errs, "auth.jwt.public_key_path is required")
+	}
+	if c.Auth.Jwt.AccessTokenTTL <= 0 {
+		*errs = append(*errs, "auth.jwt.access_token_ttl must be positive")
+	}
+	if c.Auth.Jwt.RefreshTokenTTL <= 0 {
+		*errs = append(*errs, "auth.jwt.refresh_token_ttl must be positive")
+	}
+}
+
+// validateInfra 校验连接池、消息与缓存基础设施参数。
+func (c *Config) validateInfra(errs *[]string) {
+	if c.Database.MaxOpenConns <= 0 {
+		*errs = append(*errs, "database.max_open_conns must be positive")
+	}
+	if c.Database.MaxIdleConns <= 0 {
+		*errs = append(*errs, "database.max_idle_conns must be positive")
+	}
+	if c.Redis.RequirePass && c.Redis.Password == "" {
+		*errs = append(*errs, "redis: require_pass is true but password is empty")
+	}
+	if len(c.Kafka.Brokers) == 0 {
+		*errs = append(*errs, "kafka: at least one broker is required")
+	}
+	if c.Cache.HotKey.BucketCount <= 0 {
+		*errs = append(*errs, "hotkey: bucket_count must be > 0")
+	}
+	if len(c.Elasticsearch.URIs) == 0 {
+		*errs = append(*errs, "elasticsearch: uris is required")
+	}
+}
+
+// validateOptional 校验按需启用的能力（限流 / Canal / OSS）。
+func (c *Config) validateOptional(errs *[]string) {
+	if c.Server.RateLimit.Enabled && (c.Server.RateLimit.PerIP <= 0 || c.Server.RateLimit.WindowMs <= 0) {
+		*errs = append(*errs, "rate_limit: per_ip and window_ms must be positive when enabled")
+	}
+	if c.Canal.Enabled && (c.Canal.Username == "" || c.Canal.Password == "") {
+		*errs = append(*errs, "canal: username and password are required when enabled")
+	}
+	if c.OSS.Endpoint != "" || c.OSS.Bucket != "" || c.OSS.AccessKeyID != "" || c.OSS.AccessKeySecret != "" {
+		if c.OSS.Endpoint == "" {
+			*errs = append(*errs, "oss: endpoint is required when oss is configured")
+		}
+		if c.OSS.Bucket == "" {
+			*errs = append(*errs, "oss: bucket is required when oss is configured")
+		}
+		if c.OSS.AccessKeyID == "" {
+			*errs = append(*errs, "oss: access_key_id is required when oss is configured")
+		}
+		if c.OSS.AccessKeySecret == "" {
+			*errs = append(*errs, "oss: access_key_secret is required when oss is configured")
+		}
+	}
 }
 
 // LoadConfig 从指定路径读取 YAML 配置文件并解析为 Config 结构体。
@@ -704,49 +711,20 @@ func (c *KnowPostDetailCacheConfig) ApplyDefaults() {
 //
 // 同 KnowPostDetailCacheConfig.ApplyDefaults：默认值单一出处，供全局装配与零配置单测共用。
 func (c *KnowPostFeedCacheConfig) ApplyDefaults() {
-	if c.SafeSize <= 0 {
-		c.SafeSize = 50
-	}
-	if c.L1TTLSeconds <= 0 {
-		c.L1TTLSeconds = 15
-	}
-	if c.L2IDListTTLBase <= 0 {
-		c.L2IDListTTLBase = 60
-	}
-	if c.L2IDListJitter <= 0 {
-		c.L2IDListJitter = 31
-	}
-	if c.L2HasMoreTTLBase <= 0 {
-		c.L2HasMoreTTLBase = 10
-	}
-	if c.L2HasMoreJitter <= 0 {
-		c.L2HasMoreJitter = 11
-	}
-	if c.L2ItemTTLBase <= 0 {
-		c.L2ItemTTLBase = 60
-	}
-	if c.L2ItemJitter <= 0 {
-		c.L2ItemJitter = 31
-	}
-	if c.L2MineTTLBase <= 0 {
-		c.L2MineTTLBase = 30
-	}
-	if c.L2MineJitter <= 0 {
-		c.L2MineJitter = 21
-	}
-	if c.L1MineTTLSeconds <= 0 {
-		c.L1MineTTLSeconds = 30
-	}
-	if c.ExtendTTLBase <= 0 {
-		c.ExtendTTLBase = 60
-	}
-	if c.TTLLow <= 0 {
-		c.TTLLow = 30
-	}
-	if c.TTLMedium <= 0 {
-		c.TTLMedium = 60
-	}
-	if c.TTLHigh <= 0 {
-		c.TTLHigh = 300
+	for _, d := range []struct {
+		p   *int
+		def int
+	}{
+		{&c.SafeSize, 50}, {&c.L1TTLSeconds, 15},
+		{&c.L2IDListTTLBase, 60}, {&c.L2IDListJitter, 31},
+		{&c.L2HasMoreTTLBase, 10}, {&c.L2HasMoreJitter, 11},
+		{&c.L2ItemTTLBase, 60}, {&c.L2ItemJitter, 31},
+		{&c.L2MineTTLBase, 30}, {&c.L2MineJitter, 21},
+		{&c.L1MineTTLSeconds, 30}, {&c.ExtendTTLBase, 60},
+		{&c.TTLLow, 30}, {&c.TTLMedium, 60}, {&c.TTLHigh, 300},
+	} {
+		if *d.p <= 0 {
+			*d.p = d.def
+		}
 	}
 }

@@ -17,7 +17,7 @@ import (
 func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	rlKey := fmt.Sprintf("rl:follow:%d", fromUserID)
 	capacity, rate := s.tokenBucketParams()
-	allowed, err := s.redis.Eval(ctx, TOKEN_BUCKET_LUA, []string{rlKey}, capacity, rate).Int()
+	allowed, err := s.redis.Eval(ctx, tokenBucketLua, []string{rlKey}, capacity, rate).Int()
 	if err != nil {
 		s.logger.Warn("token bucket eval failed", zap.String("key", rlKey), zap.Error(err))
 		return false, nil
@@ -36,13 +36,22 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 		return false, fmt.Errorf("marshal follow event: %w", err)
 	}
 
+	// 事件只在「真实激活迁移」时发出（首次关注或取关后复关注）。
+	// 重复 Follow 是幂等成功：关系行不变、不写 outbox——否则每次都会产生
+	// 带新 RelationID 的 FollowCreated，消费端去重无法拦截，关注数被重复累加。
+	// 迁移判定必须在事务内完成，因此事件改为条件传入。
+	transitioned := false
 	if err := outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
 		txRepo := s.repo.WithDB(tx)
-		if err := txRepo.UpsertFollowing(ctx, id, fromUserID, toUserID, 1); err != nil {
+		var err error
+		if transitioned, err = txRepo.UpsertFollowing(ctx, id, fromUserID, toUserID, 1); err != nil {
 			return err
 		}
-		if err := txRepo.UpsertFollower(ctx, reverseID, toUserID, fromUserID, 1); err != nil {
+		if _, err = txRepo.UpsertFollower(ctx, reverseID, toUserID, fromUserID, 1); err != nil {
 			return err
+		}
+		if !transitioned {
+			return errNothingToFollow // 借错误通道让 RunInTx 回滚空事务并跳过事件写入
 		}
 		return nil
 	}, []outbox.OutboxEvent{{
@@ -52,6 +61,9 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 		EventType:     "FollowCreated",
 		Payload:       json.RawMessage(raw),
 	}}); err != nil {
+		if errors.Is(err, errNothingToFollow) {
+			return false, nil // 已处于关注状态：幂等成功，无事件、无回填、无审计
+		}
 		return false, fmt.Errorf("follow: run tx: %w", err)
 	}
 
@@ -100,7 +112,7 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 		return false, fmt.Errorf("marshal unfollow event: %w", err)
 	}
 
-	var txErr error = outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
+	txErr := outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
 		txRepo := s.repo.WithDB(tx)
 		affected, err := txRepo.CancelFollowing(ctx, fromUserID, toUserID)
 		if err != nil {

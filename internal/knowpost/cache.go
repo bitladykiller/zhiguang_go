@@ -68,8 +68,8 @@ func (s *KnowPostService) invalidateCache(ctx context.Context, id uint64) {
 //   - creatorID: uint64，作者 ID。
 //
 // 边界情况：
-//   - feedCache == nil：不做任何操作，不会 panic。
-//     这在 KnowPostService 刚构造完成但 SetFeedCacheInvalidator 尚未被调用时发生。
+//   - feedCache == nil：不做任何操作，不会 panic（仅零值单测会出现；
+//     bootstrap 中 feedSvc 是构造参数，正常装配不可能为 nil）。
 func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorID uint64) {
 	if s.feedCache == nil {
 		return

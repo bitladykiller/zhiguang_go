@@ -119,12 +119,18 @@ func assignColumn(row *outbox.CanalRow, col *pbe.Column) {
 //	只处理 INSERT 和 UPDATE 而不处理 DELETE，是因为 parseEntries
 //	入口已过滤了 DELETE 事件，因此此处永远不需要返回 "DELETE"。
 //	但 default 分支返回空字符串以防万一下游调用扩展了 eventType 处理。
+const (
+	canalEventInsert = "INSERT"
+	canalEventUpdate = "UPDATE"
+	canalEventDelete = "DELETE"
+)
+
 func eventTypeName(eventType pbe.EventType) string {
 	switch eventType {
 	case pbe.EventType_INSERT:
-		return "INSERT"
+		return canalEventInsert
 	case pbe.EventType_UPDATE:
-		return "UPDATE"
+		return canalEventUpdate
 	default:
 		return ""
 	}

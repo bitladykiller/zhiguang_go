@@ -1,4 +1,4 @@
-// Package cache — 知文详情「存在性过滤器」客户端。
+// 本文件：知文详情「存在性过滤器」客户端。
 //
 // # 第三方实现（不自研过滤器算法）
 //
@@ -26,6 +26,7 @@
 // 语义：
 //   - MightContain=false → 一定不存在（仅过滤器已预热时）
 //   - MightContain=true  → 可能存在，必须继续 L1/L2/DB
+
 package cache
 
 import (

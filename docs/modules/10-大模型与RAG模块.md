@@ -358,3 +358,14 @@ flowchart TD
 ## B8. AI 模块 2 分钟口述
 
 > AI 模块我把它设计成增强能力，不让它影响主站启动。摘要生成是真实调用 DeepSeek 兼容接口，入口要求登录，服务层会截断正文、组装 prompt、带 context 发 HTTP 请求并解析结果。RAG 当前更像边界先行：接口、SSE 流式返回、goroutine、取消语义都已经搭好，但真实向量检索和流式生成还需要继续补。后续完整 RAG 会走问题处理、embedding、关键词和向量混合召回、重排、上下文截断、prompt 生成和引用返回。面试时我会诚实区分“已落地的摘要能力”和“已预留边界的 RAG 能力”。
+
+---
+
+# 附录：函数级源码走读（internal/llm）
+
+| 函数 | 要点 |
+|---|---|
+| `NewKnowPostDescriptionService(cfg,logger)` | 校验 api_key/base_url，不全 → 返回 err，handler 侧降级 503（可选能力不阻塞启动） |
+| `SuggestDescription(ctx,title,content)` | 组 chat 请求（system 约束输出风格 + 截断超长 content）→ HTTP 调 DeepSeek/OpenAI 兼容端点 → 解析 choices[0]；超时/非 200/空结果分类报错 |
+| `NewRagQueryService(llmCfg,esURL)` | 轻构造，不校验（查询时报错） |
+| `RagQueryService.Query(ctx,postID,question,streamChan)` | ①ES 取该帖正文做上下文；②组带上下文的流式 chat 请求；③逐 SSE 行解析 delta 写入 streamChan（"data: [DONE]" 结束）；ctx 取消（客户端断开）即中止上游请求。handler 侧 goroutine 已 recover + 请求级 30s 读超时 |
