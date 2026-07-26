@@ -53,6 +53,29 @@ type RelationService struct {
 	tokenBucketCfg *config.RelationTokenBucketConfig
 	cfg            *config.RelationConfig
 	auditLog       AuditLogger
+	// fanoutHooks 让关注/取关能同步维护信息流收件箱，可为 nil（扩散未装配）。
+	fanoutHooks FanoutHooks
+}
+
+// FanoutHooks 是关系变更需要通知扩散模块的最小契约。
+//
+// WHY 关注/取关必须联动信息流：
+//
+//	写扩散把帖子**复制**进了粉丝收件箱，这两个动作因此都有后续影响：
+//	  - 关注：新关注者不在对方历史帖子的推送名单里，
+//	    在对方发下一条之前信息流里看不到任何该作者的内容，用户会认为「关注没生效」。
+//	  - 取关：已复制进收件箱的历史帖子不会自动消失，
+//	    用户取关后仍会持续看到对方内容——这是纯写扩散最容易被投诉的一环。
+//
+// 用窄接口而非直接依赖 *fanout.Service，避免 relation 与扩散实现耦合。
+type FanoutHooks interface {
+	OnFollow(ctx context.Context, followerID, authorID uint64) error
+	OnUnfollow(ctx context.Context, followerID, authorID uint64) error
+}
+
+// SetFanoutHooks 注入扩散钩子。装配后回注：扩散模块的构造依赖本服务，存在先后依赖。
+func (s *RelationService) SetFanoutHooks(h FanoutHooks) {
+	s.fanoutHooks = h
 }
 
 // AuditLogger 定义审计日志接口。

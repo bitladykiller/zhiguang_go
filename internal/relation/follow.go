@@ -56,11 +56,39 @@ func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint6
 	}
 
 	s.invalidateCaches(ctx, fromUserID, toUserID)
+	s.notifyFanoutFollow(ctx, fromUserID, toUserID)
 
 	if s.auditLog != nil {
 		s.auditLog.LogAction(ctx, "follow", int64(fromUserID), "relation", strconv.FormatUint(id, 10), fmt.Sprintf("follow user %d", toUserID))
 	}
 	return true, nil
+}
+
+// notifyFanoutFollow 关注成功后回填信息流，失败只告警不影响关注本身。
+//
+// 回填是体验优化而非正确性要求：即便失败，对方下次发帖仍会正常推送过来。
+func (s *RelationService) notifyFanoutFollow(ctx context.Context, followerID, authorID uint64) {
+	if s.fanoutHooks == nil {
+		return
+	}
+	if err := s.fanoutHooks.OnFollow(ctx, followerID, authorID); err != nil {
+		s.logger.Warn("fanout backfill after follow failed",
+			zap.Uint64("followerID", followerID), zap.Uint64("authorID", authorID), zap.Error(err))
+	}
+}
+
+// notifyFanoutUnfollow 取关成功后清理信息流中该作者的遗留帖子。
+//
+// 失败只告警不影响取关本身，但**会导致用户继续看到已取关作者的内容**，
+// 因此该告警需要纳入监控。
+func (s *RelationService) notifyFanoutUnfollow(ctx context.Context, followerID, authorID uint64) {
+	if s.fanoutHooks == nil {
+		return
+	}
+	if err := s.fanoutHooks.OnUnfollow(ctx, followerID, authorID); err != nil {
+		s.logger.Warn("fanout cleanup after unfollow failed; the reader may keep seeing this author",
+			zap.Uint64("followerID", followerID), zap.Uint64("authorID", authorID), zap.Error(err))
+	}
 }
 
 // Unfollow 取消关注关系，在同一事务中写入 outbox 事件。
@@ -105,6 +133,7 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 	}
 
 	s.invalidateCaches(ctx, fromUserID, toUserID)
+	s.notifyFanoutUnfollow(ctx, fromUserID, toUserID)
 
 	if s.auditLog != nil {
 		s.auditLog.LogAction(ctx, "unfollow", int64(fromUserID), "relation", strconv.FormatUint(outboxID, 10), fmt.Sprintf("unfollow user %d", toUserID))

@@ -85,6 +85,7 @@ func (s *stubReadSvc) GetDetail(ctx context.Context, id uint64, currentUserID *u
 type stubFeedSvc struct {
 	getPublicFeedFn func(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error)
 	getMineFeedFn   func(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
+	getHomeFeedFn   func(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
 }
 
 func (s *stubFeedSvc) GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error) {
@@ -94,13 +95,16 @@ func (s *stubFeedSvc) GetPublicFeed(ctx context.Context, page, size int, current
 	return s.getPublicFeedFn(ctx, page, size, currentUserID)
 }
 func (s *stubFeedSvc) GetMyPublished(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
-	return s.GetMineFeed(ctx, userID, page, size)
-}
-func (s *stubFeedSvc) GetMineFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
 	if s.getMineFeedFn == nil {
 		return nil, nil
 	}
 	return s.getMineFeedFn(ctx, userID, page, size)
+}
+func (s *stubFeedSvc) GetHomeFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
+	if s.getHomeFeedFn == nil {
+		return nil, nil
+	}
+	return s.getHomeFeedFn(ctx, userID, page, size)
 }
 
 // ============================================================================

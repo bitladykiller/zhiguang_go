@@ -558,3 +558,76 @@ func TestEvictOldestLocked_AllLive(t *testing.T) {
 		t.Errorf("remaining keys = %d, want 45 (10%% of 50 evicted)", remaining)
 	}
 }
+
+// ============================================================================
+// RunUntilDone：阻塞语义与停机收尾 flush
+// ============================================================================
+
+// TestRunUntilDone_BlocksUntilContextCancelled 验证阻塞语义。
+//
+// BackgroundRunner 的契约是「Start 阻塞至任务生命周期结束」。
+// 早期 hotKeyRunner 调用非阻塞的 Run，Start 立刻返回使上层 WaitGroup 提前归零，
+// waitBackgroundRunners 报告的「后台任务已排空」是假信号。
+func TestRunUntilDone_BlocksUntilContextCancelled(t *testing.T) {
+	cfg := defaultHotKeyConfig()
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	d := NewHotKeyDetector(cfg, rdb, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	returned := make(chan struct{})
+	go func() {
+		d.RunUntilDone(ctx)
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+		t.Fatal("RunUntilDone returned before context was cancelled")
+	case <-time.After(50 * time.Millisecond):
+		// 期望：仍在阻塞
+	}
+
+	cancel()
+	select {
+	case <-returned:
+		// 期望：ctx 取消后返回
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunUntilDone did not return after context cancellation")
+	}
+}
+
+// TestRunUntilDone_FinalFlushPersistsLastWindow 验证停机前的收尾 flush 会落盘。
+//
+// 生命周期 ctx 取消时 flushLoop 退出，此时本地 buf 里仍可能有未上报的计数。
+// finalFlush 用独立 context 补最后一轮，避免这批计数随进程消失。
+func TestRunUntilDone_FinalFlushPersistsLastWindow(t *testing.T) {
+	cfg := defaultHotKeyConfig()
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	d := NewHotKeyDetector(cfg, rdb, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// 先记一笔计数，且不等到 flush 周期（默认 6s）就取消。
+	d.Record("shutdown:key")
+
+	returned := make(chan struct{})
+	go func() {
+		d.RunUntilDone(ctx)
+		close(returned)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-returned
+
+	// 收尾 flush 应已把计数写入 Redis Hash。
+	n, err := rdb.HLen(context.Background(), hotwinKeyPrefix+"shutdown:key").Result()
+	if err != nil {
+		t.Fatalf("HLen: %v", err)
+	}
+	if n == 0 {
+		t.Error("final flush should have persisted the last window's counts")
+	}
+}

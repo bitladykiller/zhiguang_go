@@ -4,104 +4,116 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
-	"time"
 
 	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/model"
-	"github.com/zhiguang/app/pkg/contextutil"
+	"github.com/zhiguang/app/internal/outbox"
 )
 
-type FanoutConsumer struct {
-	service   *Service
-	reader    *kafka.Reader
-	logger    *zap.Logger
-	closeOnce sync.Once
+// knowPostPublishedType 是知文发布事件在 outbox 中的类型标识。
+// 必须与 knowpost 包内的 outboxTypeKnowPostPublished 保持一致。
+const knowPostPublishedType = "KnowPostPublished"
+
+// Consumer 消费 canal-outbox 主题，把知文发布事件转成扩散动作。
+//
+// WHY 订阅 canal-outbox 而不是独立的 fanout 主题：
+//
+//	原设计是「发帖时由 FanoutPublisher 直接写 fanout 主题」。这有两个问题：
+//
+//	1. **它从未被接线**——NewFanoutPublisher 在整个生产代码里没有任何调用方，
+//	   于是 fanout 主题永远没有生产者，收件箱恒为空，写扩散形同虚设。
+//	2. 即使接上，它也是一次**双写**：数据库事务提交 + Kafka 投递是两个独立操作，
+//	   进程在两者之间崩溃就会丢事件，粉丝永久看不到那条帖子。
+//
+//	改为复用已有的事务性 outbox 链路（写库与写 outbox 在同一事务内，
+//	再由 Canal 捕获 binlog 投递到 Kafka），投递保证与搜索投影完全一致，
+//	不需要为扩散单独维护一套可靠性机制。
+type Consumer struct {
+	inner *outbox.Consumer
 }
 
-func NewFanoutConsumer(brokers []string, groupID string, topic string, service *Service, logger *zap.Logger) *FanoutConsumer {
-	if logger == nil {
-		logger = zap.L()
-	}
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  brokers,
-		GroupID:  groupID,
-		Topic:    topic,
-		MinBytes: 10e3,
-		MaxBytes: 10e6,
-	})
-	return &FanoutConsumer{
-		service: service,
-		reader:  reader,
-		logger:  logger,
-	}
-}
-
-func (fc *FanoutConsumer) Start(ctx context.Context) {
-	if fc == nil || fc.reader == nil {
-		return
-	}
-	defer fc.closeOnce.Do(func() { fc.reader.Close() })
-	defer func() {
-		if r := recover(); r != nil {
-			fc.logger.Error("fanout consumer panicked", zap.Any("panic", r), zap.Stack("stack"))
-		}
-	}()
-
-	fetchLimit := 100
-	for {
-		msgs := make([]kafka.Message, 0, fetchLimit)
-		for i := 0; i < fetchLimit; i++ {
-			msg, err := fc.reader.FetchMessage(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				fc.logger.Warn("fanout consumer: fetch message failed", zap.Error(err))
-				if !contextutil.Sleep(ctx, time.Second) {
-					return
-				}
-				break
-			}
-			msgs = append(msgs, msg)
-		}
-		if len(msgs) == 0 {
-			continue
-		}
-
-		for _, msg := range msgs {
-			var event model.FanoutEvent
-			if err := json.Unmarshal(msg.Value, &event); err != nil {
-				fc.logger.Warn("fanout consumer: unmarshal event failed", zap.Error(err))
-				if err := fc.reader.CommitMessages(ctx, msg); err != nil {
-					fc.logger.Warn("fanout consumer: commit message failed", zap.Error(err))
-				}
-				continue
-			}
-			if err := fc.service.FanoutPost(ctx, &event); err != nil {
-				fc.logger.Error("fanout consumer: fanout post failed",
-					zap.Uint64("postID", event.PostID),
-					zap.Error(err),
-				)
-			}
-			if err := fc.reader.CommitMessages(ctx, msg); err != nil {
-				fc.logger.Warn("fanout consumer: commit message failed", zap.Error(err))
-			}
-		}
-	}
-}
-
-func (fc *FanoutConsumer) Stop() error {
-	if fc == nil || fc.reader == nil {
+// NewConsumer 创建扩散消费者。
+//
+// reader 应订阅 outbox.CanalOutboxTopic，并使用独立的消费者组，
+// 这样扩散与搜索、关系投影各自独立推进位点，互不阻塞。
+func NewConsumer(reader *kafka.Reader, service *Service, logger *zap.Logger) *Consumer {
+	if reader == nil || service == nil {
 		return nil
 	}
-	var err error
-	fc.closeOnce.Do(func() { err = fc.reader.Close() })
-	return err
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	handler := &publishRowHandler{service: service, logger: logger}
+	return &Consumer{inner: outbox.NewConsumer(reader, handler, logger)}
 }
 
-func (fc *FanoutConsumer) String() string {
-	return fmt.Sprintf("fanout-consumer(topic=%s)", fc.reader.Config().Topic)
+// Start 阻塞消费直到 ctx 取消。
+//
+// 消费循环由 outbox.Consumer 提供，它逐条拉取并提交。
+// 原先的自研循环有一个隐蔽缺陷：它固定 `for i := 0; i < 100; i++ { FetchMessage }`
+// 攒满 100 条才处理，而 FetchMessage 是阻塞调用——
+// 低流量时消息会一直卡在缓冲里不被处理，信息流迟迟不更新。
+func (c *Consumer) Start(ctx context.Context) {
+	if c == nil || c.inner == nil {
+		return
+	}
+	c.inner.Start(ctx)
+}
+
+// String 让监督器能给出可读的任务名。
+func (c *Consumer) String() string { return "fanout-consumer" }
+
+// publishRowHandler 从 outbox 行中挑出知文发布事件并触发扩散。
+type publishRowHandler struct {
+	service *Service
+	logger  *zap.Logger
+}
+
+// publishPayload 是知文发布事件的载荷结构。
+type publishPayload struct {
+	Entity      string `json:"entity"`
+	Type        string `json:"type"`
+	ID          uint64 `json:"id"`
+	CreatorID   uint64 `json:"creator_id"`
+	PublishedAt int64  `json:"published_at"`
+}
+
+// HandleRow 处理单条 outbox 行。
+//
+// 非发布事件直接放行（返回 nil 即提交位点），因为 canal-outbox 是多消费者共享主题，
+// 里面混有关系、搜索等各类事件。
+func (h *publishRowHandler) HandleRow(ctx context.Context, row outbox.Row) error {
+	if row.Type != knowPostPublishedType || len(row.Payload) == 0 {
+		return nil
+	}
+
+	var p publishPayload
+	if err := json.Unmarshal(row.Payload, &p); err != nil {
+		// 载荷损坏无法通过重试修复，记日志后放行，避免卡住整个分区。
+		h.logger.Warn("fanout: malformed publish payload, skipping",
+			zap.String("aggregateID", row.AggregateID), zap.Error(err))
+		return nil
+	}
+	if p.ID == 0 || p.CreatorID == 0 {
+		h.logger.Warn("fanout: publish payload missing id or creator_id, skipping",
+			zap.String("aggregateID", row.AggregateID))
+		return nil
+	}
+
+	publishedAt := p.PublishedAt
+	if publishedAt <= 0 {
+		publishedAt = nowUnix() // 兼容升级前不带该字段的历史事件
+	}
+
+	event := &model.FanoutEvent{
+		PostID:    p.ID,
+		CreatorID: p.CreatorID,
+		CreatedAt: publishedAt,
+	}
+	if err := h.service.FanoutPost(ctx, event); err != nil {
+		return fmt.Errorf("fanout: handle published post %d: %w", p.ID, err)
+	}
+	return nil
 }

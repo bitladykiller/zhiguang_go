@@ -3,6 +3,7 @@ package knowpost
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -51,6 +52,10 @@ func (s *KnowPostService) invalidateCache(ctx context.Context, id uint64) {
 	}
 	l1Key := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
 	s.l1Cache.Del([]byte(l1Key))
+
+	// 本实例刚把版本号推进了一格，必须同步作废进程内的版本号缓存，
+	// 否则本实例在缓存 TTL 内仍会用旧版本号拼键，出现「自己写完自己读不到」。
+	s.dropCachedDetailVersion(id)
 }
 
 // invalidateFeedCaches 在知文发生变更后失效对应的 Feed 缓存。
@@ -118,13 +123,23 @@ func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorI
 //
 // recordHotKeyAndExtendTTL 记录热点并延长缓存 TTL。
 func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint64, pageKey string) {
-	hotKeyID := fmt.Sprintf("knowpost:%d", id)
-	s.hotKey.Record(hotKeyID)
+	if s.hotKey == nil {
+		return
+	}
+	hotKeyID := "knowpost:" + strconv.FormatUint(id, 10)
+	s.hotKey.Record(hotKeyID) // 纯本地计数，无 Redis IO
 
 	baseTTL := s.detailCacheTTLValues().ttlMedium
 	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
 
-	itemKey := fmt.Sprintf("feed:item:%d", id)
+	// 冷键：目标 TTL 不高于基准值，延长必然是空操作。
+	// 原实现在每次缓存命中时都无条件执行这段 Lua，
+	// 而绝大多数键是冷的，这一次往返纯属浪费——且它就压在 L1 命中路径上。
+	if target <= baseTTL {
+		return
+	}
+
+	itemKey := "feed:item:" + strconv.FormatUint(id, 10)
 	if err := extendTTLDualScript.Run(ctx, s.redis, []string{pageKey, itemKey}, target).Err(); err != nil {
 		s.logger.Warn("extend dual ttl failed", zap.Uint64("id", id), zap.Error(err))
 	}

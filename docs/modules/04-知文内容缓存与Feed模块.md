@@ -786,9 +786,9 @@ flowchart TD
 | 项 | 状态 |
 |----|------|
 | `FanoutService` / `FanoutConsumer` | 有实现；Kafka brokers 非空时 consumer 会启动 |
-| `FanoutPublisher` | **knowpost / bootstrap 未调用**，发布不会往 `fanout` topic 灌消息 |
+| 扩散事件 | 发布事件经 `canal-outbox` 触发 `fanout.Consumer`（独立 `fanout` topic 已移除） |
 | Canal | 只写 `canal-outbox`，**不写** `fanout` |
-| `GetMineFeed` 空 timeline | 降级 **本人已发布**，不是完整关注流读扩散 |
+| 关注流 | 由 `GET /feed/home` 提供，走推拉结合；`/feed/mine` 只返回「我的已发布」 |
 
 因此线上时间线通常为空，「我的 Feed」大量走 `GetMyPublished` 整页缓存/DB。面试必须区分「写扩散算法」与「生产闭环」。跨模块总图见 [`docs/跨模块流程图.md`](../跨模块流程图.md) §6。
 
@@ -811,11 +811,11 @@ flowchart TD
 2. RedisBloom `CF.DEL` 支持删除；软删写路径调用，NULL 仍作兜底；无模块时 fail-open。
 3. 私有内容若先被作者写入共享详情缓存，L1/L2 命中会绕过回源授权；这是待修复的越权缺口。
 4. `GetMyPublished` SQL 实际使用 `status != deleted`，会包含草稿；接口名与查询语义不一致。
-5. 写扩散未闭环时「我的 Feed」偏读库。
+5. 「我的已发布」走整页缓存 + 读库；关注流由扩散模块提供，见 `docs/modules/14`。
 
 ## A8. 60 秒口述稿
 
-> 知文写路径事务内绑 outbox，保证搜索等异步不丢。读路径是 Bloom 前置加空值缓存叠加，再加 L1/L2 和读穿锁回源；更新用版本号让旧缓存自然失联。公共 Feed 用 ID 列表加条目碎片；我的 Feed 代码上先读 timeline，但写扩散生产端未闭环时会降级本人已发布列表。用户点赞状态绝不进共享缓存。
+> 知文写路径事务内绑 outbox，保证搜索等异步不丢。读路径是 Bloom 前置加空值缓存叠加，再加 L1/L2 和读穿锁回源；更新用版本号让旧缓存自然失联。公共 Feed 用 ID 列表加条目碎片；关注流走推拉结合（普通作者推、大 V 拉、读时归并），「我的已发布」是另一个接口、整页缓存。用户点赞状态绝不进共享缓存。
 
 
 ---
@@ -846,7 +846,8 @@ flowchart TD
 | `DELETE /knowposts/:id` | `Delete` | `Delete` | 软删除，事务内写 outbox，CF.DEL |
 | `GET /knowposts/:id` | `GetDetail` | `GetDetail` | CF.EXISTS + 多级缓存 + DB 回源 + 用户态增强 |
 | `GET /knowposts/feed/public` | `GetPublicFeed` | `GetPublicFeed` | 公共 Feed 碎片缓存 |
-| `GET /knowposts/feed/mine` | `GetMyPublished` | `GetMineFeed` | 时间线优先，读库降级 |
+| `GET /knowposts/feed/mine` | `GetMyPublished` | `GetMyPublished` | 我自己发布的内容 |
+| `GET /knowposts/feed/home` | `GetHomeFeed` | `GetHomeFeed` | 关注流，推拉结合（见 `docs/modules/14`） |
 
 ## B3. 内容状态流转图
 

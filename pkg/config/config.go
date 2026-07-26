@@ -40,6 +40,7 @@ type Config struct {
 	Relation      RelationConfig      `yaml:"relation"`
 	Prometheus    PrometheusConfig    `yaml:"prometheus"`
 	KnowPost      KnowPostConfig      `yaml:"knowpost"`
+	Fanout        FanoutConfig        `yaml:"fanout"`
 	Bootstrap     BootstrapConfig     `yaml:"bootstrap"`
 }
 
@@ -241,6 +242,13 @@ type CanalConfig struct {
 
 // CounterConfig 配置 SDS 计数器重建行为。
 type CounterConfig struct {
+	// LikersMaxChunk 是点赞者位图扫描的分片数上限。
+	//
+	// 用户 ID 自增，位图按 ChunkSize(65536) 分片存储，
+	// 因此可枚举的最大用户 ID 为 LikersMaxChunk × 65536。
+	// 0 表示使用默认值 128（约 838 万用户）。
+	// 用户总量接近该上限时必须调大，否则超出范围的用户不会出现在点赞者列表中。
+	LikersMaxChunk   int            `yaml:"likers_max_chunk"`
 	Consumer         ConsumerConfig `yaml:"consumer"`
 	Repair           RepairConfig   `yaml:"repair"`
 	Rebuild          RebuildConfig  `yaml:"rebuild"`
@@ -428,13 +436,22 @@ type KnowPostConfig struct {
 // KnowPostDetailCacheConfig 配置知文详情缓存。
 type KnowPostDetailCacheConfig struct {
 	L1TTLSeconds int `yaml:"l1_ttl_seconds"`
-	NullTTLBase  int `yaml:"null_ttl_base"`
-	NullJitter   int `yaml:"null_jitter"`
-	L2TTLBase    int `yaml:"l2_ttl_base"`
-	L2Jitter     int `yaml:"l2_jitter"`
-	TTLLow       int `yaml:"ttl_low"`
-	TTLMedium    int `yaml:"ttl_medium"`
-	TTLHigh      int `yaml:"ttl_high"`
+	// VersionCacheTTLSeconds 是详情缓存版本号在进程内缓存的秒数。
+	//
+	// 版本号被编码进缓存键，因此「读 L1」必须先「知道版本号」。若每次都去 Redis 取，
+	// L1 命中也要付一次网络往返，进程内缓存就失去了意义。
+	// 用极短 TTL 缓存版本号即可让 L1 命中真正做到零 Redis IO。
+	//
+	// 取值：0 使用默认值 2 秒；负数表示关闭本缓存（每次读 Redis，保持版本号强即时）。
+	// 代价是其他实例写入后，本实例最多延迟该秒数才切到新键。
+	VersionCacheTTLSeconds int `yaml:"version_cache_ttl_seconds"`
+	NullTTLBase            int `yaml:"null_ttl_base"`
+	NullJitter             int `yaml:"null_jitter"`
+	L2TTLBase              int `yaml:"l2_ttl_base"`
+	L2Jitter               int `yaml:"l2_jitter"`
+	TTLLow                 int `yaml:"ttl_low"`
+	TTLMedium              int `yaml:"ttl_medium"`
+	TTLHigh                int `yaml:"ttl_high"`
 	// 存在性过滤：第三方 RedisBloom（CF.*）+ 空值缓存叠加，前置拦扫号 ID。
 	// 算法在 Redis 模块；本服务仅配置容量/键名。配置键名保留 bloom_* 兼容。
 	BloomEnabled           *bool   `yaml:"bloom_enabled"`
@@ -694,4 +711,28 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// FanoutConfig 控制推拉结合的信息流扩散。
+//
+// 各字段的取舍说明见 internal/fanout/config.go 中同名字段的注释。
+type FanoutConfig struct {
+	// CelebrityThreshold 是「大 V」的粉丝数阈值，超过则该作者的帖子改由读者拉取。
+	CelebrityThreshold int `yaml:"celebrity_threshold"`
+	// BatchSize 是每批推送的粉丝数。
+	BatchSize int `yaml:"batch_size"`
+	// MaxFans 是单次写扩散触达粉丝数的兜底上限。
+	MaxFans int `yaml:"max_fans"`
+	// TimelineMaxItems 是收件箱保留条数，同时是首页信息流的深度上限。
+	TimelineMaxItems int `yaml:"timeline_max_items"`
+	// TimelineTTLHours 是收件箱过期小时数。
+	TimelineTTLHours int `yaml:"timeline_ttl_hours"`
+	// AuthorBoxMaxItems 是作者发件箱保留条数，决定「拉」能覆盖的历史深度。
+	AuthorBoxMaxItems int `yaml:"author_box_max_items"`
+	// AuthorBoxTTLHours 是发件箱过期小时数。
+	AuthorBoxTTLHours int `yaml:"author_box_ttl_hours"`
+	// FollowBackfillLimit 是关注时从对方发件箱回填的条数，0 表示不回填。
+	FollowBackfillLimit int `yaml:"follow_backfill_limit"`
+	// MaxPullAuthors 是读路径单次最多拉取的大 V 数量。
+	MaxPullAuthors int `yaml:"max_pull_authors"`
 }

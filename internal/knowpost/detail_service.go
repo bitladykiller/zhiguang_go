@@ -59,6 +59,12 @@ func (s *KnowPostService) detailCacheTTLValues() detailCacheParams {
 
 // --- [详情读取链路] --- //
 
+// detailVersionCachePrefix 是版本号进程内缓存在共享 freecache 中的键前缀。
+const detailVersionCachePrefix = "dv:"
+
+// defaultDetailVersionCacheTTL 是版本号进程内缓存的默认存活秒数。
+const defaultDetailVersionCacheTTL = 2
+
 // detailCacheKey 构造知文详情页的缓存键。
 //
 // 功能：缓存键格式为 "knowpost:detail:{id}:v{detailLayoutVer}:ver{postVersion}"。
@@ -66,19 +72,82 @@ func (s *KnowPostService) detailCacheTTLValues() detailCacheParams {
 //   - postVersion 是每个知文独立的版本号，每次写操作递增。
 //     当多实例部署时，某实例执行写操作会 INCR 该版本号，
 //     其他实例 L1 中的旧版本键自然失效（键不匹配）。
-//
-// 参数：
-//   - ctx: context.Context，用于 Redis 操作。
-//   - id: uint64，知文 ID。
-//
-// 返回值：
-//   - string: 缓存键字符串。
 func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) string {
+	return fmt.Sprintf("knowpost:detail:%d:v%d:ver%d", id, detailLayoutVer, s.detailVersion(ctx, id))
+}
+
+// detailVersion 读取某篇知文的缓存版本号，优先命中进程内短缓存。
+//
+// WHY 需要这层进程内缓存：
+//
+//	版本号被编码进缓存键，所以「读 L1」必须先「知道版本号」。
+//	而版本号存在 Redis 里，于是每一次详情读取——**包括 L1 命中**——
+//	都要先付一次 Redis 往返。L1 存在的全部意义是不走网络，
+//	这个顺序让它的延迟下限被死死锁在 Redis RTT 上，
+//	文档宣称的「L1 约 50ns」在这条路径上从来没有成立过。
+//
+// 取舍：
+//
+//	版本号只在写操作时变化，因此用极短 TTL（默认 2 秒）缓存是安全的。
+//	代价是「其他实例写入后，本实例最多延迟 TTL 秒才切到新键」。
+//	这个窗口远小于 L1 自身的 TTL（默认 60 秒）——也就是说，
+//	在引入本缓存之前，跨实例读到旧内容的窗口本来就是 60 秒级别的（旧 L1 条目仍在），
+//	版本号的即时性并没有带来端到端的强一致，只是让新键提前生效。
+//	把 detail_cache.version_cache_ttl_seconds 设为 0 可关闭本缓存，退回每次读 Redis。
+//
+// 本实例自己的写操作会在 invalidateCache 中主动清掉该缓存，因此自读自写始终一致。
+func (s *KnowPostService) detailVersion(ctx context.Context, id uint64) int64 {
+	cacheKey := s.detailVersionCacheKey(id)
+	ttl := s.detailVersionCacheTTL()
+
+	if ttl > 0 && s.l1Cache != nil {
+		if raw, err := s.l1Cache.Cache.Get([]byte(cacheKey)); err == nil {
+			if v, parseErr := strconv.ParseInt(string(raw), 10, 64); parseErr == nil {
+				return v
+			}
+		}
+	}
+
 	version, err := s.redis.Get(ctx, fmt.Sprintf("knowpost:ver:%d", id)).Int64()
 	if err != nil {
 		version = detailLayoutVer
 	}
-	return fmt.Sprintf("knowpost:detail:%d:v%d:ver%d", id, detailLayoutVer, version)
+
+	if ttl > 0 && s.l1Cache != nil {
+		// 写入失败无需处理：下次读取回落 Redis，语义不变。
+		_ = s.l1Cache.Cache.Set([]byte(cacheKey), []byte(strconv.FormatInt(version, 10)), ttl)
+	}
+	return version
+}
+
+// detailVersionCacheKey 返回版本号在共享 freecache 中的键。
+//
+// 直接操作底层 Cache 而不复用 s.l1Cache（前缀 "d:"），是为了让版本号和详情载荷
+// 处于不同的键空间，避免二者前缀相同时相互覆盖。
+func (s *KnowPostService) detailVersionCacheKey(id uint64) string {
+	return detailVersionCachePrefix + strconv.FormatUint(id, 10)
+}
+
+// detailVersionCacheTTL 返回版本号进程内缓存的存活秒数，<=0 表示关闭。
+func (s *KnowPostService) detailVersionCacheTTL() int {
+	if s.cfg == nil {
+		return defaultDetailVersionCacheTTL
+	}
+	if s.cfg.DetailCache.VersionCacheTTLSeconds < 0 {
+		return 0
+	}
+	if s.cfg.DetailCache.VersionCacheTTLSeconds == 0 {
+		return defaultDetailVersionCacheTTL
+	}
+	return s.cfg.DetailCache.VersionCacheTTLSeconds
+}
+
+// dropCachedDetailVersion 清除本实例缓存的版本号。
+// 由 invalidateCache 在本实例写操作后调用，保证自读自写立即可见。
+func (s *KnowPostService) dropCachedDetailVersion(id uint64) {
+	if s.l1Cache != nil {
+		s.l1Cache.Cache.Del([]byte(s.detailVersionCacheKey(id)))
+	}
 }
 
 // GetDetail 返回知文详情，并补充当前用户维度的点赞/收藏状态。
@@ -124,40 +193,46 @@ func (s *KnowPostService) detailCacheKey(ctx context.Context, id uint64) string 
 //   - error: 错误对象。可能的值包括 errcode.ErrNotFound（内容不存在/已删除）、
 //     errcode.ErrForbidden（无权限查看）。
 func (s *KnowPostService) GetDetail(ctx context.Context, id uint64, currentUserID *uint64) (*KnowPostDetailResponse, error) {
-	// 0) Bloom 前置：一定不存在则直接 404，避免恶意扫号打穿缓存与 DB。
-	// 与空值缓存叠加：Bloom 拦「从未出现过的 ID」；NULL 拦「查过确认不存在/已删」。
-	if s.bloom != nil {
-		if ok, _ := s.bloom.MightContainUint64(ctx, id); !ok {
-			return nil, errcode.ErrNotFound.WithMsg("content not found")
-		}
-	}
-
 	pageKey := s.detailCacheKey(ctx, id)
-
 	l1TTL := s.detailCacheTTLValues().l1TTL
 
+	// 1) L1（freecache）：命中即返回。
+	//
+	// 这里刻意排在 Bloom 之前：L1 命中本身就证明该 ID 存在，
+	// 再问一次「可能存在吗」没有任何信息量，只是白付一次 Redis 往返。
+	// Bloom 的职责是拦住「不存在的 ID 打到 DB」，因此它的正确位置是
+	// L1/L2 都未命中、即将回源之前（见下方第 3 步）。
 	if val, err := s.l1Cache.Get([]byte(pageKey)); err == nil {
-		if s.hotKey != nil {
-			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
-		}
 		resp, parseErr := s.parseDetail(val)
 		if parseErr == nil {
+			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 			return s.enrichDetail(ctx, resp, currentUserID, false), nil
 		}
 	}
 
+	// 2) L2（Redis）：命中回填 L1；"NULL" 是空值缓存标记。
 	cached, err := s.redis.Get(ctx, pageKey).Result()
 	if err == nil && cached != "" {
 		if cached == "NULL" {
 			return nil, errcode.ErrNotFound.WithMsg("content not found")
 		}
-		s.l1Cache.SetOrWarn(s.logger, []byte(pageKey), []byte(cached), l1TTL)
-		if s.hotKey != nil {
-			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
-		}
 		resp, parseErr := s.parseDetail([]byte(cached))
 		if parseErr == nil {
+			s.l1Cache.SetOrWarn(s.logger, []byte(pageKey), []byte(cached), l1TTL)
+			s.recordHotKeyAndExtendTTL(ctx, id, pageKey)
 			return s.enrichDetail(ctx, resp, currentUserID, true), nil
+		}
+	}
+
+	// 3) Bloom 前置：一定不存在则直接 404，避免恶意扫号打穿 DB。
+	// 与空值缓存叠加：Bloom 拦「从未出现过的 ID」；NULL 拦「查过确认不存在/已删」。
+	//
+	// 放在这里不会削弱扫号防护：扫号请求必然在 L1/L2 都未命中，
+	// 到达此处的成本与放在最前面完全一样（同为一次 Redis 往返），
+	// 而正常的缓存命中请求由此少付一次往返。
+	if s.bloom != nil {
+		if ok, _ := s.bloom.MightContainUint64(ctx, id); !ok {
+			return nil, errcode.ErrNotFound.WithMsg("content not found")
 		}
 	}
 

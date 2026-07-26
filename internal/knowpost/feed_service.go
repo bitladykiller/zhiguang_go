@@ -23,7 +23,6 @@ const feedLayoutVer = 1
 const (
 	publicFeedVersionKey = "feed:public:version"
 	mineFeedVersionKey   = "feed:mine:version:%d"
-	secondsPerHour       = 3600
 )
 
 // KnowPostFeedService 实现基于碎片缓存架构的 Feed 列表流读取。
@@ -59,6 +58,8 @@ type KnowPostFeedService struct {
 	counter  CounterClient
 	logger   *zap.Logger
 	cfg      *config.KnowPostFeedCacheConfig
+	// homeTimeline 提供关注流的帖子 ID（由扩散模块注入，可为 nil）。
+	homeTimeline HomeTimelineReader
 }
 
 // FeedCacheInvalidator 暴露知文写操作所需的 feed 缓存失效能力。
@@ -194,8 +195,17 @@ func (s *KnowPostFeedService) GetPublicFeed(ctx context.Context, page, size int,
 	feedVersion := s.currentPublicFeedVersion(ctx)
 	localPageKey := fmt.Sprintf("feed:public:%d:%d:v%d:%d", safeSize, safePage, feedLayoutVer, feedVersion)
 
-	hourSlot := time.Now().Unix() / secondsPerHour
-	idsKey := fmt.Sprintf("feed:public:ids:%d:%d:%d:%d", feedVersion, safeSize, hourSlot, safePage)
+	// 键里只保留 feedVersion + size + page 三个维度。
+	//
+	// WHY 移除原先的 hourSlot 维度：
+	//
+	//	原实现在键里额外编了一个小时槽（Unix 秒 / 3600），注释称其用于
+	//	「控制热门时间窗口失效时的影响范围」。但 InvalidateAfterPostMutation 递增的
+	//	feedVersion 是**全局**的——任何一篇知文变更都会让全站所有分页缓存一起失效，
+	//	失效粒度已经是「全部」，再按小时分槽不可能缩小任何影响范围。
+	//	它唯一的实际效果是把同一份流量切碎到更多键上：整点跨越时全部键换名，
+	//	命中率白掉一截。两个失效机制不构成组合关系，因此只保留版本号这一个。
+	idsKey := fmt.Sprintf("feed:public:ids:%d:%d:%d", feedVersion, safeSize, safePage)
 	hasMoreKey := idsKey + ":hasMore"
 
 	if resp := s.getPublicFeedL1(ctx, localPageKey, currentUserID); resp != nil {
@@ -328,57 +338,8 @@ func (s *KnowPostFeedService) getPublicFeedUnderLock(ctx context.Context, idsKey
 // ============================================================================
 // 获取我的已发布内容
 // ============================================================================
-
-// GetMineFeed 返回当前用户的 Feed 时间线（写扩散优先，降级到读扩散）。
-//
-// 读取路径：
-//  1. 先尝试从 timeline:{user_id} ZSet 读取 post_id 列表（写扩散路径）
-//  2. 如果 ZSet 有数据，按 post_id 批量查 know_posts 详情
-//  3. 如果 ZSet 为空或只有部分数据，降级到原来的读扩散路径
-func (s *KnowPostFeedService) GetMineFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
-	p := s.feedCacheTTLValues()
-	safeSize := clamp(size, 1, p.safeSize)
-	safePage := max(page, 1)
-	offset := (safePage - 1) * safeSize
-
-	timelineKey := fmt.Sprintf("timeline:%d", userID)
-	memberIDs, err := s.redis.ZRevRange(ctx, timelineKey, int64(offset), int64(offset+safeSize-1)).Result()
-	if err != nil || len(memberIDs) == 0 {
-		return s.GetMyPublished(ctx, userID, page, size)
-	}
-
-	ids := make([]uint64, 0, len(memberIDs))
-	for _, idStr := range memberIDs {
-		if id, parseErr := strconv.ParseUint(idStr, 10, 64); parseErr == nil {
-			ids = append(ids, id)
-		}
-	}
-	if len(ids) == 0 {
-		return s.GetMyPublished(ctx, userID, page, size)
-	}
-
-	rows, dbErr := s.repo.FindByIDs(ctx, ids)
-	if dbErr != nil || len(rows) == 0 {
-		return s.GetMyPublished(ctx, userID, page, size)
-	}
-
-	items := s.mapRowsToItems(ctx, rows, &userID, true)
-	enriched := s.enrichItems(ctx, items, &userID)
-
-	// ZCard 拿到时间线总长度即可精确判断是否还有下一页；
-	// 查询失败时退化为「本页填满即认为还有更多」。
-	hasMore := len(rows) >= safeSize
-	if total, totalErr := s.redis.ZCard(ctx, timelineKey).Result(); totalErr == nil {
-		hasMore = int64(offset+safeSize) < total
-	}
-
-	return &FeedPageResponse{
-		Items:   enriched,
-		Page:    safePage,
-		Size:    safeSize,
-		HasMore: hasMore,
-	}, nil
-}
+// 获取我的已发布内容
+// ============================================================================
 
 // GetMyPublished 返回当前用户已发布的知文列表（自己的"我的 Feed"）。
 //
@@ -570,8 +531,6 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 //     因为它只是辅助标记，过期后 fallback 逻辑也可正常工作）。
 //  3. 条目碎片：对每个 FeedItemResponse 使用 Set 写入单独的键
 //     "feed:item:{id}"，TTL：60-90 秒。
-//  4. 页注册：使用 SAdd 将 idsKey 注册到 "feed:public:pages" 集合中，
-//     便于后续批量失效（虽然当前版本未使用此集合，但为未来维护留下了扩展点）。
 //
 // WHY 使用 LPush 而非 RPush：
 // 为了与 List 的 LRange 读取配合，LPush + LRange(0, N-1) 可以读取最新写入的 N 个元素。
@@ -588,7 +547,6 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 func (s *KnowPostFeedService) writeFragmentCaches(ctx context.Context, idsKey, hasMoreKey string, size int, rows []KnowPostFeedRow, items []FeedItemResponse, hasMore bool) {
 	s.writeFeedIDListCache(ctx, idsKey, hasMoreKey, rows, hasMore)
 	s.writeFeedItemCaches(ctx, items)
-	s.registerFeedPageKey(ctx, idsKey)
 }
 
 func (s *KnowPostFeedService) writeFeedIDListCache(ctx context.Context, idsKey, hasMoreKey string, rows []KnowPostFeedRow, hasMore bool) {
@@ -628,15 +586,6 @@ func (s *KnowPostFeedService) writeFeedItemCaches(ctx context.Context, items []F
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		s.logger.Warn("failed to pipeline feed item cache entries", zap.Error(err))
-	}
-}
-
-func (s *KnowPostFeedService) registerFeedPageKey(ctx context.Context, idsKey string) {
-	if err := s.redis.SAdd(ctx, "feed:public:pages", idsKey).Err(); err != nil {
-		s.logger.Warn("failed to register feed page key", zap.String("idsKey", idsKey), zap.Error(err))
-	}
-	if err := s.redis.Expire(ctx, "feed:public:pages", 24*time.Hour).Err(); err != nil {
-		s.logger.Warn("failed to set expire on feed public pages set", zap.Error(err))
 	}
 }
 
@@ -1000,4 +949,90 @@ func (s *KnowPostFeedService) feedVersion(ctx context.Context, key string) int64
 		return version
 	}
 	return 1
+}
+
+// ============================================================================
+// 关注流（首页信息流）
+// ============================================================================
+
+// HomeTimelineReader 抽象关注流的帖子 ID 来源，由 fanout 模块实现。
+//
+// 这里只依赖「有序的 postID 列表」这一最小契约，而不引入扩散模块的具体类型：
+// knowpost 不需要知道这些 ID 是推来的还是拉来的，扩散策略的演进不会波及本模块。
+type HomeTimelineReader interface {
+	HomeTimelinePostIDs(ctx context.Context, userID uint64, offset, limit int) (ids []uint64, hasMore bool, err error)
+}
+
+// SetHomeTimelineReader 注入关注流 ID 来源。
+//
+// 采用装配后回注而非构造参数：扩散模块需要 relation 服务，而 relation 的装配
+// 晚于 knowpost，构造期无法拿到。未注入时 GetHomeFeed 返回空列表而非报错。
+func (s *KnowPostFeedService) SetHomeTimelineReader(r HomeTimelineReader) {
+	s.homeTimeline = r
+}
+
+// GetHomeFeed 返回当前用户的**关注流**：所关注作者发布的知文，按发布时间倒序。
+//
+// 与其它两个列表的区别（三者语义互不相同，不可混用）：
+//
+//	GetPublicFeed   全站公开内容      —— 与关注关系无关
+//	GetHomeFeed     我关注的人的内容   —— 本方法
+//	GetMyPublished  我自己发布的内容   —— 个人主页
+//
+// 帖子 ID 由扩散模块给出（推拉结合，见 internal/fanout），
+// 本方法只负责把 ID 批量补齐为完整条目并叠加当前用户状态。
+//
+// 边界：
+//   - 未注入 HomeTimelineReader（扩散未装配）→ 返回空列表，不报错。
+//   - 时间线中的帖子可能已被删除或转为不可见，FindByIDs 会过滤掉，
+//     因此实际返回条数可能少于请求的 size。
+func (s *KnowPostFeedService) GetHomeFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error) {
+	p := s.feedCacheTTLValues()
+	safeSize := clamp(size, 1, p.safeSize)
+	safePage := max(page, 1)
+	offset := (safePage - 1) * safeSize
+
+	empty := &FeedPageResponse{Items: []FeedItemResponse{}, Page: safePage, Size: safeSize, HasMore: false}
+	if s.homeTimeline == nil {
+		return empty, nil
+	}
+
+	ids, hasMore, err := s.homeTimeline.HomeTimelinePostIDs(ctx, userID, offset, safeSize)
+	if err != nil {
+		return nil, fmt.Errorf("get home feed: read timeline: %w", err)
+	}
+	if len(ids) == 0 {
+		return empty, nil
+	}
+
+	rows, err := s.repo.FindByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("get home feed: find by ids: %w", err)
+	}
+	if len(rows) == 0 {
+		return &FeedPageResponse{Items: []FeedItemResponse{}, Page: safePage, Size: safeSize, HasMore: hasMore}, nil
+	}
+
+	// FindByIDs 的排序由 SQL 决定，未必与时间线顺序一致；
+	// 时间线的顺序才是信息流的权威顺序，因此按 ids 重排。
+	rows = reorderRowsByIDs(rows, ids)
+
+	items := s.mapRowsToItems(ctx, rows, &userID, false)
+	shared := &FeedPageResponse{Items: items, Page: safePage, Size: safeSize, HasMore: hasMore}
+	return s.withUserState(ctx, shared, &userID), nil
+}
+
+// reorderRowsByIDs 按给定的 ID 顺序重排数据库行，丢弃不在 ids 中的行。
+func reorderRowsByIDs(rows []KnowPostFeedRow, ids []uint64) []KnowPostFeedRow {
+	byID := make(map[uint64]KnowPostFeedRow, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	out := make([]KnowPostFeedRow, 0, len(ids))
+	for _, id := range ids {
+		if r, ok := byID[id]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
 }
