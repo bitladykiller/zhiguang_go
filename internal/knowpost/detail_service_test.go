@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/cache"
+	"github.com/zhiguang/app/pkg/config"
 )
 
 // ============================================================================
@@ -504,4 +505,97 @@ func mustBloom(t *testing.T) *cache.RedisBloom {
 	}
 	t.Cleanup(func() { _ = rdb.Del(context.Background(), key).Err() })
 	return b
+}
+
+// ============================================================================
+// 版本号进程内缓存：让 L1 命中真正做到零 Redis IO
+// ============================================================================
+
+// TestDetailVersion_CachedLocally 验证版本号在 TTL 内不再回落 Redis。
+//
+// 版本号被编码进缓存键，所以读 L1 前必须先知道版本号。
+// 若每次都去 Redis 取，L1 命中也要付一次网络往返，进程内缓存就失去了意义。
+func TestDetailVersion_CachedLocally(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestDetailService(t, srv)
+
+	srv.Set("knowpost:ver:7", "5")
+	if got := svc.detailVersion(context.Background(), 7); got != 5 {
+		t.Fatalf("first read = %d, want 5", got)
+	}
+
+	// 直接改掉 Redis 中的值：若仍走 Redis，第二次会读到 9。
+	srv.Set("knowpost:ver:7", "9")
+	if got := svc.detailVersion(context.Background(), 7); got != 5 {
+		t.Errorf("second read = %d, want 5 (should come from the in-process cache)", got)
+	}
+}
+
+// TestDetailVersion_DroppedAfterLocalWrite 验证本实例写后自读一致。
+//
+// 本实例递增版本号后必须同步作废进程内缓存，
+// 否则会出现「自己写完自己读不到」。
+func TestDetailVersion_DroppedAfterLocalWrite(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestDetailService(t, srv)
+
+	srv.Set("knowpost:ver:7", "5")
+	_ = svc.detailVersion(context.Background(), 7) // 预热进程内缓存
+
+	srv.Set("knowpost:ver:7", "6")
+	svc.dropCachedDetailVersion(7)
+
+	if got := svc.detailVersion(context.Background(), 7); got != 6 {
+		t.Errorf("after local write = %d, want 6", got)
+	}
+}
+
+// TestDetailVersion_CacheDisabled 验证配置为负数时关闭进程内缓存。
+func TestDetailVersion_CacheDisabled(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestDetailService(t, srv)
+	svc.cfg = &config.KnowPostConfig{
+		DetailCache: config.KnowPostDetailCacheConfig{VersionCacheTTLSeconds: -1},
+	}
+
+	srv.Set("knowpost:ver:7", "5")
+	if got := svc.detailVersion(context.Background(), 7); got != 5 {
+		t.Fatalf("first read = %d, want 5", got)
+	}
+	srv.Set("knowpost:ver:7", "9")
+	if got := svc.detailVersion(context.Background(), 7); got != 9 {
+		t.Errorf("second read = %d, want 9 (cache disabled must re-read Redis)", got)
+	}
+}
+
+// TestDetailVersion_MissingKeyFallsBackToLayoutVersion 验证键不存在时的兜底。
+func TestDetailVersion_MissingKeyFallsBackToLayoutVersion(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestDetailService(t, srv)
+
+	if got := svc.detailVersion(context.Background(), 12345); got != detailLayoutVer {
+		t.Errorf("missing key = %d, want detailLayoutVer(%d)", got, detailLayoutVer)
+	}
+}
+
+// TestRecordHotKeyAndExtendTTL_SkipsColdKeys 验证冷键不触发 TTL 延长的 Lua。
+func TestRecordHotKeyAndExtendTTL_SkipsColdKeys(t *testing.T) {
+	srv := miniredis.RunT(t)
+	svc := newTestDetailService(t, srv)
+	svc.hotKey = cache.NewHotKeyDetector(&config.HotKeyConfig{
+		BucketSizeSeconds: 6, BucketCount: 10, FlushIntervalSeconds: 6,
+		StatTTLSeconds: 120, LevelLow: 5, LevelMedium: 20, LevelHigh: 50,
+		ExtendLowSeconds: 20, ExtendMediumSeconds: 60, ExtendHighSeconds: 120,
+		HotMarkTTLSeconds: 60,
+	}, svc.redis, zap.NewNop())
+
+	const pageKey = "knowpost:detail:7:v1:ver1"
+	srv.Set(pageKey, `{"id":"7"}`)
+	srv.SetTTL(pageKey, 30*time.Second)
+
+	svc.recordHotKeyAndExtendTTL(context.Background(), 7, pageKey)
+
+	if got := srv.TTL(pageKey); got != 30*time.Second {
+		t.Errorf("cold key TTL = %v, want 30s (untouched)", got)
+	}
 }

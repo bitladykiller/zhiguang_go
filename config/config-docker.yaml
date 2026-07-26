@@ -145,3 +145,16 @@ llm:
     api_key: ""
     embedding_model: ""
     dimensions: 1536
+
+# 信息流扩散（推拉结合）：普通作者走写扩散，大 V 走读扩散
+# 详见 docs/modules/14-信息流扩散：读扩散写扩散与推拉结合.md
+fanout:
+  celebrity_threshold: 5000   # 粉丝数超过此值的作者不再写扩散，改由读者拉取
+  batch_size: 500             # 每批推送的粉丝数
+  max_fans: 100000            # 单次写扩散触达粉丝数的兜底上限
+  timeline_max_items: 1000    # 收件箱保留条数，同时是首页信息流深度上限
+  timeline_ttl_hours: 168     # 收件箱过期时间（7 天）
+  author_box_max_items: 200   # 作者发件箱保留条数，决定"拉"能覆盖的历史深度
+  author_box_ttl_hours: 720   # 发件箱过期时间（30 天）
+  follow_backfill_limit: 20   # 关注时从对方发件箱回填的条数，0 表示不回填
+  max_pull_authors: 200       # 读路径单次最多拉取的大 V 数量

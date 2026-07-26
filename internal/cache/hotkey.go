@@ -38,6 +38,9 @@ const hotwinKeyPrefix = "hotwin:"
 // hotkeyActivePrefix 是 hotkey 标记键的前缀。
 const hotkeyActivePrefix = "hotkey:active:"
 
+// finalFlushTimeout 是停机收尾 flush 的超时上限。
+const finalFlushTimeout = 2 * time.Second
+
 // HotKeyLevel 表示键的热度等级。
 type HotKeyLevel int
 
@@ -104,14 +107,46 @@ func NewHotKeyDetector(cfg *config.HotKeyConfig, redisClient *redis.Client, logg
 	return d
 }
 
-// Run 启动后台 flush goroutine，使用给定的 ctx 控制生命周期。
+// Run 启动后台 flush goroutine，使用给定的 ctx 控制生命周期（**非阻塞**）。
 //
 // ctx 通常来自服务启动时的 root context，当 ctx 被取消时，flush goroutine 会退出。
-// 调用方应在服务初始化时调用此方法一次。
+//
+// 注意：本方法立即返回，调用方无法感知 flush 循环何时真正结束。
+// 若调用方需要在停机时等待 flush 收尾（例如作为 server.BackgroundRunner），
+// 应改用 RunUntilDone。
 func (d *HotKeyDetector) Run(ctx context.Context) {
 	d.startOnce.Do(func() {
 		go d.flushLoop(ctx)
 	})
+}
+
+// RunUntilDone 在**当前 goroutine** 内运行 flush 循环，直到 ctx 被取消才返回。
+//
+// WHY 需要一个阻塞版本：
+//
+//	server.BackgroundRunner 的契约是「Start 阻塞至该任务生命周期结束」，
+//	上层据此用 WaitGroup 判断后台任务是否已排空。
+//	若 Start 内部只是 go 一个 goroutine 就返回，WaitGroup 会立刻计数归零，
+//	waitBackgroundRunners 报告的「后台任务已退出」就是个假信号——
+//	停机时最后一个窗口的本地计数会随进程一起消失。
+//
+// 返回前会执行一次最终 flush（用独立的短超时 context，因为此时 ctx 已取消），
+// 把最后一个窗口的计数落到 Redis。
+func (d *HotKeyDetector) RunUntilDone(ctx context.Context) {
+	d.startOnce.Do(func() {
+		d.flushLoop(ctx)
+		d.finalFlush()
+	})
+}
+
+// finalFlush 停机时的收尾 flush。
+//
+// 此时生命周期 ctx 已取消，因此必须新建一个不受其影响的 context；
+// 超时设置得很短，避免 Redis 不可用时拖慢整体停机。
+func (d *HotKeyDetector) finalFlush() {
+	ctx, cancel := context.WithTimeout(context.Background(), finalFlushTimeout)
+	defer cancel()
+	d.flushOnce(ctx)
 }
 
 // Record 为指定键在当前时间窗口内增加一次命中计数。

@@ -44,3 +44,28 @@ func (u *UserCounter) incrementUserMetric(ctx context.Context, userID uint64, me
 	key := SdsKey("user", strconv.FormatUint(userID, 10))
 	return u.svc.redis.HIncrBy(ctx, key, metric, int64(delta)).Err()
 }
+
+// FollowerCount 返回用户的粉丝数。
+//
+// 供扩散模块做「大 V」快速判定。计数缺失或 Redis 异常时返回 (0, false)，
+// 调用方据此走不依赖该计数的慢路径，而不是把缺失当成 0 粉丝。
+//
+// WHY 要显式返回 known 标志：
+//
+//	粉丝计数是 Redis 中的增量值，可能因消费失败、键过期或重建而缺失。
+//	若把「读不到」等同于「粉丝数为 0」，一个真实的大 V 会被判成普通作者，
+//	触发一次几十万粉丝的写扩散风暴。
+func (u *UserCounter) FollowerCount(ctx context.Context, userID uint64) (int64, bool) {
+	if u == nil || u.svc == nil || u.svc.redis == nil {
+		return 0, false
+	}
+	key := SdsKey("user", strconv.FormatUint(userID, 10))
+	val, err := u.svc.redis.HGet(ctx, key, "follower").Int64()
+	if err != nil {
+		return 0, false
+	}
+	if val < 0 {
+		return 0, true
+	}
+	return val, true
+}

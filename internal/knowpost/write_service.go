@@ -250,7 +250,13 @@ func (s *KnowPostService) UpdateMetadata(ctx context.Context, creatorID, id uint
 
 // Publish 把知文状态从草稿流转为已发布。
 func (s *KnowPostService) Publish(ctx context.Context, creatorID, id uint64) error {
-	if err := s.runKnowPostTx(ctx, id, outboxTypeKnowPostPublished, func(txRepo Repo) error {
+	// 载荷追加 creator_id / published_at：扩散消费者据此决定推给谁、如何定序，
+	// 无需为每条消息回查数据库。
+	publishExtra := map[string]any{
+		"creator_id":   creatorID,
+		"published_at": time.Now().Unix(),
+	}
+	if err := s.runKnowPostTxWithPayload(ctx, id, outboxTypeKnowPostPublished, publishExtra, func(txRepo Repo) error {
 		affected, err := txRepo.Publish(ctx, id, creatorID)
 		if err != nil {
 			return err
@@ -342,12 +348,36 @@ func (s *KnowPostService) Delete(ctx context.Context, creatorID, id uint64) erro
 
 // runKnowPostTx 在数据库事务中执行业务变更和 outbox 事件写入（事务性发件箱模式）。
 func (s *KnowPostService) runKnowPostTx(ctx context.Context, id uint64, eventType string, mutate func(txRepo Repo) error, extraEvents ...outbox.OutboxEvent) error {
-	payload, err := json.Marshal(map[string]interface{}{
+	return s.runKnowPostTxWithPayload(ctx, id, eventType, nil, mutate, extraEvents...)
+}
+
+// runKnowPostTxWithPayload 与 runKnowPostTx 相同，但允许在 outbox 载荷中追加字段。
+//
+// WHY 需要追加字段：
+//
+//	基础载荷只有 entity/id/op/type，够搜索投影用（它会自己回查详情），
+//	但不够扩散用——扩散需要**作者 ID** 才知道该推给谁的粉丝，
+//	需要**发布时间**才能给信息流条目定序。
+//	让事件自带这些字段，消费者就不必为每条消息回查一次数据库。
+//	这也是 outbox 模式的应有之义：事件应当自描述，而不是只做一个「去查吧」的通知。
+func (s *KnowPostService) runKnowPostTxWithPayload(
+	ctx context.Context,
+	id uint64,
+	eventType string,
+	extra map[string]any,
+	mutate func(txRepo Repo) error,
+	extraEvents ...outbox.OutboxEvent,
+) error {
+	fields := map[string]interface{}{
 		"entity": "knowpost",
 		"id":     id,
 		"op":     knowPostOutboxOp(eventType),
 		"type":   eventType,
-	})
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	payload, err := json.Marshal(fields)
 	if err != nil {
 		return fmt.Errorf("marshal outbox payload: %w", err)
 	}

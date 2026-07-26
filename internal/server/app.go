@@ -47,6 +47,8 @@ type App struct {
 	logger     *zap.Logger
 	background []BackgroundRunner
 	cleanup    []CleanupFunc
+	// registry 汇总被监督的后台任务，供 /health/runners 上报存活状态。
+	registry *runnerRegistry
 }
 
 // NewApp 创建一个新的应用实例。
@@ -77,6 +79,7 @@ func NewApp(router *gin.Engine, cfg *config.Config, logger *zap.Logger, backgrou
 		config:     cfg,
 		logger:     logger,
 		background: background,
+		registry:   &runnerRegistry{},
 	}
 }
 
@@ -141,24 +144,22 @@ func (a *App) run(parent context.Context) error {
 		Handler: a.router,
 	}
 
+	// 每个后台任务都交给监督器托管：捕获 panic、带退避自动重启、并上报存活状态。
+	// 详见 supervisedRunner 的注释——此前的「recover 后 goroutine 直接结束」
+	// 会让任务静默死亡且无任何对外信号。
 	var runnerWG sync.WaitGroup
 	for _, runner := range a.background {
 		if runner == nil {
 			continue
 		}
+		sr := newSupervisedRunner(runner, a.logger)
+		a.registry.runners = append(a.registry.runners, sr)
+
 		runnerWG.Add(1)
-		go func(r BackgroundRunner) {
+		go func(s *supervisedRunner) {
 			defer runnerWG.Done()
-			defer func() {
-				if rec := recover(); rec != nil {
-					a.logger.Error("background runner panicked",
-						zap.Any("panic", rec),
-						zap.Stack("stack"),
-					)
-				}
-			}()
-			r.Start(rootCtx)
-		}(runner)
+			s.Run(rootCtx)
+		}(sr)
 	}
 
 	serverErrCh := make(chan error, 1)
@@ -250,4 +251,15 @@ func (a *App) aggregateErrors(listenErr error, cleanupErr error) error {
 		combined = append(combined, cleanupErr)
 	}
 	return errors.Join(combined...)
+}
+
+// RunnerStates 返回后台任务的存活状态快照。
+//
+// 实现 RunnerReporter，供 HealthChecker 注入后在 /health/runners 上报。
+// 注意：只有在 run() 启动后 registry 才会被填充，启动前返回空列表。
+func (a *App) RunnerStates() []RunnerState {
+	if a == nil || a.registry == nil {
+		return nil
+	}
+	return a.registry.RunnerStates()
 }

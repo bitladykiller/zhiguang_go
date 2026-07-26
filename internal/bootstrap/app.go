@@ -67,11 +67,14 @@ func InitializeApp(configPath string) (*server.App, error) {
 		return nil, err
 	}
 
-	kpHandler, _, _ := initKnowPost(db, redisClient, sharedFreeCache, hotKeyDetector, cfg, idGen, counterSvc, logger)
+	kpHandler, _, feedSvc := initKnowPost(db, redisClient, sharedFreeCache, hotKeyDetector, cfg, idGen, counterSvc, logger)
 
 	relHandler, relSvc := initRelation(db, redisClient, idGen, logger, &cfg.Relation)
 
-	fanoutConsumer := initFanout(redisClient, relSvc, cfg, logger)
+	// 扩散：写路径由 canal-outbox 消费者驱动，读路径注入 Feed 服务供 /feed/home 使用。
+	fanoutSvc, timelineReader, fanoutConsumer := initFanout(redisClient, relSvc, counterSvc, cfg, logger)
+	feedSvc.SetHomeTimelineReader(timelineReader)
+	relSvc.SetFanoutHooks(fanoutSvc)
 
 	initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer initCancel()
@@ -118,6 +121,9 @@ func InitializeApp(configPath string) (*server.App, error) {
 	}
 
 	app := server.NewApp(router, cfg, logger, backgroundRunners...)
+	// 健康检查在路由装配阶段就已创建，而后台任务列表要到这里才齐备，
+	// 因此状态来源在 App 构造完成后回注，让 /health/runners 能反映异步链路存活。
+	healthChecker.SetRunnerReporter(app)
 	app.AddCleanup(
 		func(context.Context) error { return kafkaWriter.Close() },
 		func(context.Context) error { return canalOutboxWriter.Close() },

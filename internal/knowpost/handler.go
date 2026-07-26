@@ -35,7 +35,7 @@ type KnowPostReadService interface {
 type KnowPostFeedServiceInterface interface {
 	GetPublicFeed(ctx context.Context, page, size int, currentUserID *uint64) (*FeedPageResponse, error)
 	GetMyPublished(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
-	GetMineFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
+	GetHomeFeed(ctx context.Context, userID uint64, page, size int) (*FeedPageResponse, error)
 }
 
 // 编译期断言。
@@ -84,6 +84,7 @@ func (h *KnowPostHandler) RegisterRoutes(r *gin.RouterGroup) {
 		kp.GET("/:id", h.GetDetail)
 		kp.GET("/feed/public", h.GetPublicFeed)
 		kp.GET("/feed/mine", h.GetMyPublished)
+		kp.GET("/feed/home", h.GetHomeFeed)
 	}
 }
 
@@ -348,10 +349,16 @@ func (h *KnowPostHandler) GetPublicFeed(c *gin.Context) {
 
 // GetMyPublished 处理 GET /knowposts/feed/mine。
 //
-// 功能：返回当前登录用户自己的已发布知文列表。
-// 与 GetPublicFeed 不同，此接口必须要求用户已登录。
+// 功能：返回当前登录用户**自己发布**的知文列表（个人主页视角）。
 //
 // 请求：GET /knowposts/feed/mine?page=1&size=20
+//
+// 历史行为变更（重要）：
+//
+//	该接口此前调用的是 GetMineFeed，其行为是「timeline ZSet 有数据时返回**关注流**，
+//	否则返回我的已发布」——同一个接口在不同状态下返回两种完全不同的内容，
+//	而且只有前者会补 liked/faved 字段。
+//	现已拆分：本接口只返回「我的已发布」，关注流迁移到 GET /knowposts/feed/home。
 //
 // 边界情况：
 //   - 未提供 JWT token（未登录）：返回 401 Unauthorized。
@@ -363,7 +370,41 @@ func (h *KnowPostHandler) GetMyPublished(c *gin.Context) {
 	}
 	page := httputil.QueryInt(c, "page", 1)
 	size := httputil.QueryInt(c, "size", 20)
-	resp, err := h.feedSvc.GetMineFeed(c.Request.Context(), userID, page, size)
+	resp, err := h.feedSvc.GetMyPublished(c.Request.Context(), userID, page, size)
+	if err != nil {
+		middleware.RecordError(c, err)
+		response.Error(c, httputil.ToAppError(err))
+		return
+	}
+	response.Success(c, resp)
+}
+
+// GetHomeFeed 处理 GET /knowposts/feed/home。
+//
+// 功能：返回当前登录用户的**关注流**——所关注作者发布的知文，按发布时间倒序。
+// 帖子来源由扩散模块以推拉结合的方式给出（见 internal/fanout）。
+//
+// 请求：GET /knowposts/feed/home?page=1&size=20
+//
+// 三个 Feed 接口的语义互不相同，不可混用：
+//
+//	GET /knowposts/feed/public  全站公开内容（可匿名）
+//	GET /knowposts/feed/home    我关注的人的内容（需登录）
+//	GET /knowposts/feed/mine    我自己发布的内容（需登录）
+//
+// 边界情况：
+//   - 未登录：401 Unauthorized。
+//   - 扩散模块未装配：返回空列表而非报错。
+//   - 翻页超过信息流深度上限（fanout.timeline_max_items）：返回空列表且 has_more=false。
+func (h *KnowPostHandler) GetHomeFeed(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		response.Error(c, errcode.ErrUnauthorized)
+		return
+	}
+	page := httputil.QueryInt(c, "page", 1)
+	size := httputil.QueryInt(c, "size", 20)
+	resp, err := h.feedSvc.GetHomeFeed(c.Request.Context(), userID, page, size)
 	if err != nil {
 		middleware.RecordError(c, err)
 		response.Error(c, httputil.ToAppError(err))

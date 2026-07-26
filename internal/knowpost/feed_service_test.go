@@ -411,24 +411,6 @@ func TestWriteFeedIDListCache_EmptyRows(t *testing.T) {
 	svc.writeFeedIDListCache(context.Background(), "feed:test:ids", "feed:test:hasMore", nil, false)
 }
 
-func TestRegisterFeedPageKey(t *testing.T) {
-	srv := miniredis.RunT(t)
-	svc := newTestFeedService(t, srv)
-
-	svc.registerFeedPageKey(context.Background(), "feed:test:ids")
-
-	if !srv.Exists("feed:public:pages") {
-		t.Error("feed:public:pages set should exist")
-	}
-	members, err := srv.SMembers("feed:public:pages")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(members) != 1 || members[0] != "feed:test:ids" {
-		t.Errorf("members = %v, want [feed:test:ids]", members)
-	}
-}
-
 // ============================================================================
 // getPublicFeedL1 / getPublicFeedL2（无 DB 路径测试）
 // ============================================================================

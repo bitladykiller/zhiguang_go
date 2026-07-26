@@ -192,7 +192,7 @@ env GOCACHE=$(pwd)/.gocache go run ./cmd/server -config config/config-local.yaml
 
 - API 服务：`http://localhost:8080`
 - 健康检查：`http://localhost:8080/health`
-- 就绪检查：`http://localhost:8080/ready`
+- 就绪检查：`http://localhost:8080/health/ready`
 - 如需前端，可单独启动前端开发服务器（见 `frontend/` 目录）
 
 ---
