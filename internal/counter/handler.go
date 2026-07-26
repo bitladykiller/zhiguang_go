@@ -29,7 +29,7 @@ type CounterQueryServiceInterface interface {
 	IsFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
 	BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
-	GetLikers(ctx context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error)
+	GetLikers(ctx context.Context, entityType string, entityID uint64, metric string, cursor string, limit int) (*LikersResponse, error)
 	IsLikedAndFaved(ctx context.Context, userID uint64, entityType, entityID string) (bool, bool, error)
 }
 
@@ -284,7 +284,7 @@ func (h *CounterHandler) GetLikers(c *gin.Context) {
 	entityType := c.Query("entity_type")
 	entityIDStr := c.Query("entity_id")
 	metric := c.DefaultQuery("metric", "like")
-	cursor := httputil.QueryUint64(c, "cursor", 0)
+	cursor := c.Query("cursor") // 不透明复合游标，空串为第一页
 	limit := httputil.QueryInt(c, "limit", 20)
 
 	if entityType == "" || entityIDStr == "" {

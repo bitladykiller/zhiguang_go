@@ -567,8 +567,11 @@ func TestHandleRow_MalformedPayloadIsSkipped(t *testing.T) {
 	}
 }
 
-// TestHandleRow_MissingPublishedAtFallsBack 验证兼容升级前不带时间戳的历史事件。
-func TestHandleRow_MissingPublishedAtFallsBack(t *testing.T) {
+// TestHandleRow_MissingPublishedAtIsSkipped 验证无发布时间的历史事件被跳过。
+//
+// 新消费者组默认可能回放主题历史；若给无时间戳的旧事件补“当前时间”，
+// 陈年旧帖会被当作新内容刷满收件箱顶部。历史内容不该再被扩散——跳过即正确行为。
+func TestHandleRow_MissingPublishedAtIsSkipped(t *testing.T) {
 	srv, h := newHandlerFixture(t)
 
 	row := outbox.Row{
@@ -576,10 +579,13 @@ func TestHandleRow_MissingPublishedAtFallsBack(t *testing.T) {
 		Payload: []byte(`{"id":42,"creator_id":7}`),
 	}
 	if err := h.HandleRow(context.Background(), row); err != nil {
-		t.Fatalf("HandleRow: %v", err)
+		t.Fatalf("HandleRow should skip silently: %v", err)
 	}
-	if members, _ := srv.ZMembers(timelineKey(1001)); len(members) != 1 {
-		t.Errorf("timeline = %v, want the post fanned out with a fallback timestamp", members)
+	if srv.Exists(timelineKey(1001)) {
+		t.Error("pre-feature event must not be fanned out")
+	}
+	if srv.Exists(authorBoxKey(7)) {
+		t.Error("pre-feature event must not enter the author box either")
 	}
 }
 

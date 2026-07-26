@@ -1,4 +1,4 @@
-package knowpost
+package cache
 
 import (
 	"bytes"

@@ -24,7 +24,7 @@ type stubHandlerCounter struct {
 	getCountsFn func(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
 	isLikedFn   func(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
 	isFavedFn   func(ctx context.Context, userID uint64, entityType, entityID string) (bool, error)
-	getLikersFn func(ctx context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error)
+	getLikersFn func(ctx context.Context, entityType string, entityID uint64, metric string, cursor string, limit int) (*LikersResponse, error)
 }
 
 func (s *stubHandlerCounter) Like(ctx context.Context, userID uint64, entityType, entityID string) (bool, error) {
@@ -82,7 +82,7 @@ func (s *stubHandlerCounter) BatchIsFaved(ctx context.Context, userID uint64, en
 	return nil, nil
 }
 
-func (s *stubHandlerCounter) GetLikers(ctx context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error) {
+func (s *stubHandlerCounter) GetLikers(ctx context.Context, entityType string, entityID uint64, metric string, cursor string, limit int) (*LikersResponse, error) {
 	if s.getLikersFn == nil {
 		return nil, nil
 	}
@@ -430,13 +430,13 @@ func TestStatus_RedisErrorDegradesGracefully(t *testing.T) {
 
 func TestGetLikers_Success(t *testing.T) {
 	svc := &stubHandlerCounter{
-		getLikersFn: func(_ context.Context, entityType string, entityID uint64, metric string, cursor uint64, limit int) (*LikersResponse, error) {
-			if entityType != "post" || entityID != 1 || metric != "like" || cursor != 0 || limit != 20 {
-				t.Errorf("unexpected args: type=%s id=%d metric=%s cursor=%d limit=%d", entityType, entityID, metric, cursor, limit)
+		getLikersFn: func(_ context.Context, entityType string, entityID uint64, metric string, cursor string, limit int) (*LikersResponse, error) {
+			if entityType != "post" || entityID != 1 || metric != "like" || cursor != "" || limit != 20 {
+				t.Errorf("unexpected args: type=%s id=%d metric=%s cursor=%q limit=%d", entityType, entityID, metric, cursor, limit)
 			}
 			return &LikersResponse{
 				Items:   []LikerItem{{UserID: 100, LikedAt: 1000}},
-				Cursor:  2000,
+				Cursor:  "t:1000:100",
 				HasMore: false,
 			}, nil
 		},
@@ -505,7 +505,7 @@ func TestGetLikers_InvalidEntityID(t *testing.T) {
 
 func TestGetLikers_ServiceError(t *testing.T) {
 	svc := &stubHandlerCounter{
-		getLikersFn: func(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*LikersResponse, error) {
+		getLikersFn: func(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*LikersResponse, error) {
 			return nil, errors.New("redis error")
 		},
 	}
@@ -522,7 +522,7 @@ func TestGetLikers_ServiceError(t *testing.T) {
 func TestGetLikers_CustomMetric(t *testing.T) {
 	var capturedMetric string
 	svc := &stubHandlerCounter{
-		getLikersFn: func(_ context.Context, _ string, _ uint64, metric string, _ uint64, _ int) (*LikersResponse, error) {
+		getLikersFn: func(_ context.Context, _ string, _ uint64, metric string, _ string, _ int) (*LikersResponse, error) {
 			capturedMetric = metric
 			return &LikersResponse{}, nil
 		},
@@ -542,7 +542,7 @@ func TestGetLikers_CustomMetric(t *testing.T) {
 func TestGetLikers_DefaultMetric(t *testing.T) {
 	var capturedMetric string
 	svc := &stubHandlerCounter{
-		getLikersFn: func(_ context.Context, _ string, _ uint64, metric string, _ uint64, _ int) (*LikersResponse, error) {
+		getLikersFn: func(_ context.Context, _ string, _ uint64, metric string, _ string, _ int) (*LikersResponse, error) {
 			capturedMetric = metric
 			return &LikersResponse{}, nil
 		},

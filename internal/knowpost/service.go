@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/zhiguang/app/pkg/idgen"
+
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/cache"
-	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/pkg/config"
 )
 
@@ -26,27 +27,27 @@ func parseJSON[T any](data []byte) (T, error) {
 // detailLayoutVer 定义知文详情缓存的布局版本号。
 const detailLayoutVer = 1
 
-// CounterClient 为 counter.CounterServiceInterface 的别名。
-type CounterClient = counter.CounterServiceInterface
-
 // AuditLogger 定义审计日志接口。
 type AuditLogger interface {
 	LogAction(ctx context.Context, action string, userID int64, resourceType, resourceID, detail string)
 }
 
 // KnowPostService 负责 knowpost 的写路径、详情读取编排以及缓存协同。
+// KnowPostService 承载知文的**写路径**：草稿、发布、编辑、删除与写后缓存失效。
+//
+// 详情读取已拆至 KnowPostDetailService，Feed 读取在 KnowPostFeedService——
+// 三者依赖面几乎不相交，拆开后各自内聚（写侧不需要 hotKey/counter，
+// 读侧不需要 db/idGen/outbox），构造语义与测试边界都更清晰。
 type KnowPostService struct {
-	db      *sqlx.DB
-	repo    Repo
-	idGen   *SnowflakeIdGenerator
-	redis   *redis.Client
-	l1Cache *PrefixCache
-	hotKey  *cache.HotKeyDetector
-	// bloom：第三方 RedisBloom（CF.*）客户端薄封装 + 空值缓存叠加；nil 表示关闭。
-	// 过滤器算法由 Redis 模块提供，本服务只做 ADD/DEL/EXISTS 与 fail-open。
+	db    *sqlx.DB
+	repo  Repo
+	idGen *idgen.SnowflakeGenerator
+	redis *redis.Client
+	// versions 供写后失效作废本实例的版本号短缓存（详情读取侧共用同一 freecache）。
+	versions *cache.Versions
+	// bloom：写侧维护存在性过滤器——发布时 ADD、删除时 DEL；nil 表示关闭。
 	bloom     *cache.RedisBloom
 	ossCfg    *config.OssConfig
-	counter   CounterClient
 	feedCache FeedCacheInvalidator
 	logger    *zap.Logger
 	auditLog  AuditLogger
@@ -65,21 +66,20 @@ const (
 //
 // 参数：
 //   - db: *sqlx.DB，MySQL 数据库连接实例。
-//   - idGen: *SnowflakeIdGenerator，雪花算法 ID 生成器。
+//   - idGen: *idgen.SnowflakeGenerator，雪花算法 ID 生成器（pkg/idgen，跨业务域共享）。
 //   - redisClient: *redis.Client，Redis 客户端，用于 L2 分布式缓存。
-//   - l1Cache: *PrefixCache，带前缀的 L1 进程级缓存实例。
+//   - l1Cache: *cache.PrefixCache，带前缀的 L1 进程级缓存实例。
 //   - hotKey: *cache.HotKeyDetector，热点探测器。
 //   - ossCfg: *config.OssConfig，OSS 对象存储配置。
 //   - counter: CounterClient 接口实例，nil 表示不使用计数器。
 //   - feedCache: FeedCacheInvalidator 接口实例，nil 表示不失效 feed 缓存。
 func NewKnowPostService(
 	db *sqlx.DB,
-	idGen *SnowflakeIdGenerator,
+	idGen *idgen.SnowflakeGenerator,
 	redisClient *redis.Client,
-	l1Cache *PrefixCache,
-	hotKey *cache.HotKeyDetector,
+	l1Cache *cache.PrefixCache,
+	bloom *cache.RedisBloom,
 	ossCfg *config.OssConfig,
-	counter CounterClient,
 	feedCache FeedCacheInvalidator,
 	logger *zap.Logger,
 	auditLog AuditLogger,
@@ -88,26 +88,24 @@ func NewKnowPostService(
 	if logger == nil {
 		logger = zap.L()
 	}
-	svc := &KnowPostService{
+	return &KnowPostService{
 		db:        db,
 		repo:      NewKnowPostRepository(db),
 		idGen:     idGen,
 		redis:     redisClient,
-		l1Cache:   l1Cache,
-		hotKey:    hotKey,
+		versions:  newDetailVersions(redisClient, l1Cache, cfg),
+		bloom:     bloom,
 		ossCfg:    ossCfg,
-		counter:   counter,
 		feedCache: feedCache,
 		logger:    logger,
 		auditLog:  auditLog,
 		cfg:       cfg,
 	}
-	svc.bloom = newDetailBloom(redisClient, cfg, logger)
-	return svc
 }
 
-// newDetailBloom 按配置装配第三方 RedisBloom CF 客户端；关闭时返回 nil（不创建适配层）。
-func newDetailBloom(redisClient *redis.Client, cfg *config.KnowPostConfig, logger *zap.Logger) *cache.RedisBloom {
+// NewDetailBloom 按配置装配第三方 RedisBloom CF 客户端；关闭时返回 nil（不创建适配层）。
+// 由 bootstrap 创建一次，同时注入写服务（发布 ADD / 删除 DEL）与详情读服务（EXISTS 预判）。
+func NewDetailBloom(redisClient *redis.Client, cfg *config.KnowPostConfig, logger *zap.Logger) *cache.RedisBloom {
 	if redisClient == nil || cfg == nil {
 		return nil
 	}
@@ -122,36 +120,4 @@ func newDetailBloom(redisClient *redis.Client, cfg *config.KnowPostConfig, logge
 		FalsePositiveRate: dc.BloomFalsePositiveRate,
 		Key:               dc.BloomKey,
 	}, logger)
-}
-
-// WarmDetailBloom 从数据库游标扫描未删除知文 ID，批量写入 CF 过滤器。
-//
-// 启动时异步调用一次即可；写路径 CreateDraft 与读路径回源成功也会增量 Add；
-// 软删路径 Delete 会 CF.DEL。键不存在时 MightContain fail-open。
-func (s *KnowPostService) WarmDetailBloom(ctx context.Context) error {
-	if s == nil || s.bloom == nil || s.repo == nil {
-		return nil
-	}
-	const batch = 1000
-	var lastID uint64
-	var total int
-	for {
-		ids, err := s.repo.ListIDsForBloom(ctx, lastID, batch)
-		if err != nil {
-			return err
-		}
-		if len(ids) == 0 {
-			break
-		}
-		for _, id := range ids {
-			s.bloom.AddUint64(ctx, id)
-			lastID = id
-			total++
-		}
-		if len(ids) < batch {
-			break
-		}
-	}
-	s.logger.Info("detail bloom warmed", zap.Int("count", total))
-	return nil
 }

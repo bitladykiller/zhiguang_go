@@ -3,7 +3,6 @@ package knowpost
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -44,18 +43,14 @@ return ver
 `)
 
 func (s *KnowPostService) invalidateCache(ctx context.Context, id uint64) {
-	verKey := fmt.Sprintf("knowpost:ver:%d", id)
+	verKey := detailVersionKey(id)
 	detailPrefix := fmt.Sprintf("knowpost:detail:%d:v%d:ver", id, detailLayoutVer)
-	_, err := invalidateCacheScript.Run(ctx, s.redis, []string{verKey, detailPrefix}).Result()
-	if err != nil {
+	if _, err := invalidateCacheScript.Run(ctx, s.redis, []string{verKey, detailPrefix}).Result(); err != nil {
 		s.logger.Warn("failed to invalidate post cache", zap.Uint64("id", id), zap.Error(err))
 	}
-	l1Key := fmt.Sprintf("knowpost:detail:%d:v%d", id, detailLayoutVer)
-	s.l1Cache.Del([]byte(l1Key))
-
-	// 本实例刚把版本号推进了一格，必须同步作废进程内的版本号缓存，
-	// 否则本实例在缓存 TTL 内仍会用旧版本号拼键，出现「自己写完自己读不到」。
-	s.dropCachedDetailVersion(id)
+	// 本实例刚把版本号推进了一格，必须同步作废进程内的版本号短缓存，
+	// 否则本实例在短缓存 TTL 内仍会用旧版本号拼键，出现「自己写完自己读不到」。
+	s.versions.Drop(verKey)
 }
 
 // invalidateFeedCaches 在知文发生变更后失效对应的 Feed 缓存。
@@ -81,79 +76,3 @@ func (s *KnowPostService) invalidateFeedCaches(ctx context.Context, id, creatorI
 	}
 	s.feedCache.InvalidateAfterPostMutation(ctx, id, creatorID)
 }
-
-// recordHotKeyAndExtendTTL 记录某篇知文的热点访问，并酌情延长缓存 TTL。
-//
-// 功能：在详情页或 Feed 被访问时调用。HotKeyDetector 使用本地 map + Redis Hash
-// 滑动窗口统计每个 key 的访问频率。当频率超过阈值时，通过 TtlForPublic 返回一个
-// 更长的 TTL（比如从 60s 延长到 300s），并通过 EXPIRE GT 命令更新 Redis 中的 TTL。
-//
-// 会延长 TTL 的缓存包括：
-//   - 详情页缓存（knowpost:detail:{id}:v{detailLayoutVer}:ver{版本}）
-//   - Feed 条目碎片缓存（feed:item:{id}）
-//
-// 设计意图：
-//
-//	热点条目被大量用户频繁访问。如果不延长 TTL，这些条目会在每个 TTL 周期结束后
-//	引发大量缓存回源查询。通过 HotKeyDetector 的识别和 TTL 延长，
-//	热点条目在缓存中停留时间更长，有效降低数据库负载。
-//
-// TTL 延长使用 Lua 脚本保证只增不减：
-//
-//	多实例并发延长同一 key 时，Lua 脚本在 Redis 中原子执行，
-//	先读当前 TTL，只有当前 TTL < 目标 TTL 时才 EXPIRE。
-//	不存在竞态条件导致 TTL 被缩短的问题。
-//	兼容 Redis 6.x（比 EXPIRE GT 要求 7.0+ 更通用）。
-//
-// 边界情况：
-//   - key 已过期（不存在）：Lua 脚本中 TTL 返回 -2，条件不满足，不操作。
-//   - 当前 TTL 已经比目标 TTL 长：Lua 脚本中条件不满足，不操作，TTL 保持原值。
-//   - Lua 脚本执行出错：extendTTL 返回 false，不影响业务正常运行（只是 TTL 延长功能降级）。
-//
-// 参数：
-//   - ctx: context.Context，用于控制 Redis 操作超时
-//   - id: uint64，当前被访问的知文 ID。
-//   - pageKey: string，详情页的缓存键名。
-//
-// HotKeyDetector 的工作原理：
-//
-//	cache.HotKeyDetector 使用本地 map 记录每个 key 在 6 秒窗口内的访问计数，
-//	每 6 秒批量 flush 到 Redis Hash 进行跨实例聚合。当某个 key 在 60 秒窗口内的
-//	全局访问计数超过配置阈值时，被认为是一个"热点 key"。
-//
-// recordHotKeyAndExtendTTL 记录热点并延长缓存 TTL。
-func (s *KnowPostService) recordHotKeyAndExtendTTL(ctx context.Context, id uint64, pageKey string) {
-	if s.hotKey == nil {
-		return
-	}
-	hotKeyID := "knowpost:" + strconv.FormatUint(id, 10)
-	s.hotKey.Record(hotKeyID) // 纯本地计数，无 Redis IO
-
-	baseTTL := s.detailCacheTTLValues().ttlMedium
-	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID)
-
-	// 冷键：目标 TTL 不高于基准值，延长必然是空操作。
-	// 原实现在每次缓存命中时都无条件执行这段 Lua，
-	// 而绝大多数键是冷的，这一次往返纯属浪费——且它就压在 L1 命中路径上。
-	if target <= baseTTL {
-		return
-	}
-
-	itemKey := "feed:item:" + strconv.FormatUint(id, 10)
-	if err := extendTTLDualScript.Run(ctx, s.redis, []string{pageKey, itemKey}, target).Err(); err != nil {
-		s.logger.Warn("extend dual ttl failed", zap.Uint64("id", id), zap.Error(err))
-	}
-}
-
-// extendTTLDualScript 是双 key 版本的延长 TTL 脚本，同时延长 pageKey 和 itemKey。
-var extendTTLDualScript = redis.NewScript(`
-local current = redis.call('TTL', KEYS[1])
-if current > 0 and current < tonumber(ARGV[1]) then
-    redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-current = redis.call('TTL', KEYS[2])
-if current > 0 and current < tonumber(ARGV[1]) then
-    redis.call('EXPIRE', KEYS[2], ARGV[1])
-end
-return 1
-`)

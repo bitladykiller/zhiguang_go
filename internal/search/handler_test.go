@@ -9,8 +9,6 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-
-	"github.com/zhiguang/app/internal/model"
 )
 
 // ---------------------------------------------------------------------------
@@ -96,7 +94,7 @@ func TestSearchHandler_Success(t *testing.T) {
 				t.Errorf("size = %d, want 20", size)
 			}
 			return &SearchResponse{
-				Items: []model.FeedItem{
+				Items: []FeedItem{
 					{ID: "1", Title: strPtr("Go入门"), AuthorNickname: "Alice"},
 				},
 				HasMore: false,
@@ -328,7 +326,7 @@ func BenchmarkSearchHandler(b *testing.B) {
 	svc := &mockSearchService{
 		searchFunc: func(_ context.Context, _ string, _ int, _, _ string, _ *uint64) (*SearchResponse, error) {
 			return &SearchResponse{
-				Items: []model.FeedItem{
+				Items: []FeedItem{
 					{ID: "1", Title: strPtr("Go"), AuthorNickname: "Alice"},
 				},
 			}, nil

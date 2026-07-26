@@ -34,7 +34,7 @@ func TestScanBitmapForLikers_BasicOrder(t *testing.T) {
 		setLikeBit(t, svc, "knowpost", 1, uid)
 	}
 
-	resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 1, "like", 0, 10, "likers_cache:test1")
+	resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 1, "like", 0, 10)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestScanBitmapForLikers_CursorIsExclusiveAndSeeks(t *testing.T) {
 		setLikeBit(t, svc, "knowpost", 2, uid)
 	}
 
-	resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 2, "like", 7, 10, "likers_cache:test2")
+	resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 2, "like", 7, 10)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestScanBitmapForLikers_CursorAtChunkBoundary(t *testing.T) {
 	setLikeBit(t, svc, "knowpost", 3, ChunkSize-1)
 	setLikeBit(t, svc, "knowpost", 3, ChunkSize)
 
-	resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 3, "like", ChunkSize-1, 10, "likers_cache:test3")
+	resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 3, "like", ChunkSize-1, 10)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestScanBitmapForLikers_Pagination(t *testing.T) {
 	var got []uint64
 	cursor := uint64(0)
 	for page := 0; page < 5; page++ {
-		resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 4, "like", cursor, 2, "likers_cache:test4")
+		resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 4, "like", cursor, 2)
 		if err != nil {
 			t.Fatalf("page %d: %v", page, err)
 		}
@@ -105,7 +105,12 @@ func TestScanBitmapForLikers_Pagination(t *testing.T) {
 		if !resp.HasMore {
 			break
 		}
-		cursor = resp.Cursor
+		// 回退路径的游标形如 "u:{uid}"，解析后续扫
+		cur, err := parseLikersCursor(resp.Cursor)
+		if err != nil || cur.byTime {
+			t.Fatalf("unexpected cursor %q (err=%v)", resp.Cursor, err)
+		}
+		cursor = cur.userID
 	}
 
 	if len(got) != len(all) {
@@ -124,7 +129,7 @@ func TestScanBitmapForLikers_SkipsUserZero(t *testing.T) {
 	setLikeBit(t, svc, "knowpost", 5, 0)
 	setLikeBit(t, svc, "knowpost", 5, 1)
 
-	resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 5, "like", 0, 10, "likers_cache:test5")
+	resp, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 5, "like", 0, 10)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -146,7 +151,7 @@ func TestScanBitmapForLikers_RedisFailureReturnsError(t *testing.T) {
 		t.Fatalf("close redis: %v", err)
 	}
 
-	if _, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 6, "like", 0, 10, "likers_cache:test6"); err == nil {
+	if _, err := svc.scanBitmapForLikers(context.Background(), "knowpost", 6, "like", 0, 10); err == nil {
 		t.Fatal("expected an error when Redis is unavailable, got nil (failure must not look like an empty result)")
 	}
 }

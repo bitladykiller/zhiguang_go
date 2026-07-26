@@ -44,7 +44,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"time"
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -236,6 +235,3 @@ func (s *Service) RemovePost(ctx context.Context, authorID, postID uint64) error
 	}
 	return nil
 }
-
-// nowUnix 供测试替换的时间源。
-var nowUnix = func() int64 { return time.Now().Unix() }

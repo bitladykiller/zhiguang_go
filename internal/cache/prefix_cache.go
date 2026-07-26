@@ -1,5 +1,4 @@
-// Package knowpost 提供带前缀的 freecache 适配器。
-package knowpost
+package cache
 
 import (
 	"github.com/coocood/freecache"

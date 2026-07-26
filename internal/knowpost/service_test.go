@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/jmoiron/sqlx"
@@ -16,6 +18,7 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 	"github.com/zhiguang/app/pkg/errcode"
 	"github.com/zhiguang/app/pkg/httputil"
+	"github.com/zhiguang/app/pkg/idgen"
 )
 
 // --- helper ---
@@ -111,9 +114,8 @@ func TestPublicURL_NoDomain(t *testing.T) {
 }
 
 func TestParseDetail_Valid(t *testing.T) {
-	svc := &KnowPostService{}
 	data := []byte(`{"id":"1","title":"test","author_id":"42","author_nickname":"nick"}`)
-	resp, err := svc.parseDetail(data)
+	resp, err := parseJSON[*KnowPostDetailResponse](data)
 	if err != nil {
 		t.Fatalf("parseDetail() error = %v", err)
 	}
@@ -123,16 +125,14 @@ func TestParseDetail_Valid(t *testing.T) {
 }
 
 func TestParseDetail_InvalidJSON(t *testing.T) {
-	svc := &KnowPostService{}
-	_, err := svc.parseDetail([]byte(`{invalid json`))
+	_, err := parseJSON[*KnowPostDetailResponse]([]byte(`{invalid json`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
 }
 
 func TestParseDetail_EmptySlice(t *testing.T) {
-	svc := &KnowPostService{}
-	_, err := svc.parseDetail([]byte{})
+	_, err := parseJSON[*KnowPostDetailResponse]([]byte{})
 	if err == nil {
 		t.Fatal("expected error for empty data")
 	}
@@ -189,7 +189,7 @@ func (s *stubCounter) Like(_ context.Context, _ uint64, _, _ string) (bool, erro
 func (s *stubCounter) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
-func (s *stubCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+func (s *stubCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
 func (s *stubCounter) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
@@ -197,7 +197,7 @@ func (s *stubCounter) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) 
 }
 
 func TestEnrichDetail_NilCounter(t *testing.T) {
-	svc := &KnowPostService{}
+	svc := &KnowPostDetailService{}
 	base := &KnowPostDetailResponse{ID: "1"}
 	result := svc.enrichDetail(context.Background(), base, ptr(uint64(1)), true)
 	if result != base {
@@ -207,7 +207,7 @@ func TestEnrichDetail_NilCounter(t *testing.T) {
 
 func TestEnrichDetail_LoggedIn(t *testing.T) {
 	counter := &stubCounter{counts: map[string]int32{"like": 5, "fav": 3}, liked: true, faved: false}
-	svc := &KnowPostService{counter: counter}
+	svc := &KnowPostDetailService{counter: counter, logger: zap.NewNop()}
 	base := &KnowPostDetailResponse{ID: "1"}
 
 	result := svc.enrichDetail(context.Background(), base, ptr(uint64(1)), true)
@@ -227,7 +227,7 @@ func TestEnrichDetail_LoggedIn(t *testing.T) {
 
 func TestEnrichDetail_Anonymous(t *testing.T) {
 	counter := &stubCounter{counts: map[string]int32{"like": 5, "fav": 3}}
-	svc := &KnowPostService{counter: counter}
+	svc := &KnowPostDetailService{counter: counter, logger: zap.NewNop()}
 	base := &KnowPostDetailResponse{ID: "1"}
 
 	result := svc.enrichDetail(context.Background(), base, nil, false)
@@ -314,10 +314,9 @@ func BenchmarkToJSON(b *testing.B) {
 }
 
 func BenchmarkParseDetail(b *testing.B) {
-	svc := &KnowPostService{}
 	data := []byte(`{"id":"1","title":"test","author_id":"42","author_nickname":"nick"}`)
 	for i := 0; i < b.N; i++ {
-		_, _ = svc.parseDetail(data)
+		_, _ = parseJSON[*KnowPostDetailResponse](data)
 	}
 }
 
@@ -405,9 +404,9 @@ func TestPublish_DBFailure_OutboxNotWritten(t *testing.T) {
 	}
 }
 
-func NewRealSnowflakeForTest(t *testing.T) *SnowflakeIdGenerator {
+func NewRealSnowflakeForTest(t *testing.T) *idgen.SnowflakeGenerator {
 	t.Helper()
-	gen, err := NewSnowflakeIdGenerator(&config.IDGeneratorConfig{
+	gen, err := idgen.NewSnowflakeGenerator(&config.IDGeneratorConfig{
 		MachineID: 1,
 		WorkerID:  1,
 	})

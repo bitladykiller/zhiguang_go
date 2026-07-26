@@ -21,12 +21,12 @@ import (
 // Helpers
 // ============================================================================
 
-func newTestDetailService(t *testing.T, srv *miniredis.Miniredis) *KnowPostService {
+func newTestDetailService(t *testing.T, srv *miniredis.Miniredis) *KnowPostDetailService {
 	t.Helper()
 	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
-	return &KnowPostService{
+	return &KnowPostDetailService{
 		redis:   rdb,
-		l1Cache: &PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "d:"},
+		l1Cache: &cache.PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "d:"},
 		logger:  zap.NewNop(),
 	}
 }
@@ -520,13 +520,13 @@ func TestDetailVersion_CachedLocally(t *testing.T) {
 	svc := newTestDetailService(t, srv)
 
 	srv.Set("knowpost:ver:7", "5")
-	if got := svc.detailVersion(context.Background(), 7); got != 5 {
+	if got := svc.versions().Get(context.Background(), detailVersionKey(7)); got != 5 {
 		t.Fatalf("first read = %d, want 5", got)
 	}
 
 	// 直接改掉 Redis 中的值：若仍走 Redis，第二次会读到 9。
 	srv.Set("knowpost:ver:7", "9")
-	if got := svc.detailVersion(context.Background(), 7); got != 5 {
+	if got := svc.versions().Get(context.Background(), detailVersionKey(7)); got != 5 {
 		t.Errorf("second read = %d, want 5 (should come from the in-process cache)", got)
 	}
 }
@@ -540,12 +540,12 @@ func TestDetailVersion_DroppedAfterLocalWrite(t *testing.T) {
 	svc := newTestDetailService(t, srv)
 
 	srv.Set("knowpost:ver:7", "5")
-	_ = svc.detailVersion(context.Background(), 7) // 预热进程内缓存
+	_ = svc.versions().Get(context.Background(), detailVersionKey(7)) // 预热进程内缓存
 
 	srv.Set("knowpost:ver:7", "6")
-	svc.dropCachedDetailVersion(7)
+	svc.versions().Drop(detailVersionKey(7))
 
-	if got := svc.detailVersion(context.Background(), 7); got != 6 {
+	if got := svc.versions().Get(context.Background(), detailVersionKey(7)); got != 6 {
 		t.Errorf("after local write = %d, want 6", got)
 	}
 }
@@ -559,11 +559,11 @@ func TestDetailVersion_CacheDisabled(t *testing.T) {
 	}
 
 	srv.Set("knowpost:ver:7", "5")
-	if got := svc.detailVersion(context.Background(), 7); got != 5 {
+	if got := svc.versions().Get(context.Background(), detailVersionKey(7)); got != 5 {
 		t.Fatalf("first read = %d, want 5", got)
 	}
 	srv.Set("knowpost:ver:7", "9")
-	if got := svc.detailVersion(context.Background(), 7); got != 9 {
+	if got := svc.versions().Get(context.Background(), detailVersionKey(7)); got != 9 {
 		t.Errorf("second read = %d, want 9 (cache disabled must re-read Redis)", got)
 	}
 }
@@ -573,7 +573,7 @@ func TestDetailVersion_MissingKeyFallsBackToLayoutVersion(t *testing.T) {
 	srv := miniredis.RunT(t)
 	svc := newTestDetailService(t, srv)
 
-	if got := svc.detailVersion(context.Background(), 12345); got != detailLayoutVer {
+	if got := svc.versions().Get(context.Background(), detailVersionKey(12345)); got != detailLayoutVer {
 		t.Errorf("missing key = %d, want detailLayoutVer(%d)", got, detailLayoutVer)
 	}
 }

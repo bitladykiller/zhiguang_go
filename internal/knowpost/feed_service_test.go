@@ -27,11 +27,11 @@ func strPtr(s string) *string { return &s }
 func newTestFeedService(t *testing.T, srv *miniredis.Miniredis) *KnowPostFeedService {
 	t.Helper()
 	rdb := redis.NewClient(&redis.Options{Addr: srv.Addr()})
-	cache := freecache.NewCache(100 * 1024)
+	shared := freecache.NewCache(100 * 1024)
 	return &KnowPostFeedService{
 		redis:    rdb,
-		l1Public: &PrefixCache{Cache: cache, Prefix: "p:"},
-		l1Mine:   &PrefixCache{Cache: cache, Prefix: "m:"},
+		l1Public: &cache.PrefixCache{Cache: shared, Prefix: "p:"},
+		l1Mine:   &cache.PrefixCache{Cache: shared, Prefix: "m:"},
 		logger:   zap.NewNop(),
 	}
 }
@@ -193,17 +193,17 @@ func TestEnrichItems_NilCounter(t *testing.T) {
 // ============================================================================
 
 func TestCacheFeedPage(t *testing.T) {
-	cache := freecache.NewCache(100 * 1024)
+	shared := freecache.NewCache(100 * 1024)
 	svc := &KnowPostFeedService{
-		l1Public: &PrefixCache{Cache: cache, Prefix: "p:"},
+		l1Public: &cache.PrefixCache{Cache: shared, Prefix: "p:"},
 		logger:   nil,
 	}
 	resp := &FeedPageResponse{Items: []FeedItemResponse{{ID: "1"}}, Page: 1, Size: 10}
 	svc.cacheFeedPage("test:key", resp, svc.l1Public)
 
-	val, err := cache.Get([]byte("p:test:key"))
+	val, err := shared.Get([]byte("p:test:key"))
 	if err != nil {
-		t.Fatalf("cache.Get: %v", err)
+		t.Fatalf("shared.Get: %v", err)
 	}
 	var decoded FeedPageResponse
 	if err := json.Unmarshal(val, &decoded); err != nil {
@@ -417,7 +417,7 @@ func TestWriteFeedIDListCache_EmptyRows(t *testing.T) {
 
 func TestGetPublicFeedL1_Hit(t *testing.T) {
 	svc := &KnowPostFeedService{
-		l1Public: &PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "p:"},
+		l1Public: &cache.PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "p:"},
 	}
 	resp := &FeedPageResponse{Items: []FeedItemResponse{{ID: "1"}}, Page: 1, Size: 10, HasMore: false}
 	data := mustMarshal(t, resp)
@@ -434,7 +434,7 @@ func TestGetPublicFeedL1_Hit(t *testing.T) {
 
 func TestGetPublicFeedL1_Miss(t *testing.T) {
 	svc := &KnowPostFeedService{
-		l1Public: &PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "p:"},
+		l1Public: &cache.PrefixCache{Cache: freecache.NewCache(100 * 1024), Prefix: "p:"},
 	}
 	got := svc.getPublicFeedL1(context.Background(), "feed:test:nonexist", nil)
 	if got != nil {
@@ -487,7 +487,7 @@ func (s *stubCounterFailing) Like(_ context.Context, _ uint64, _, _ string) (boo
 func (s *stubCounterFailing) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
-func (s *stubCounterFailing) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+func (s *stubCounterFailing) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
 func (s *stubCounterFailing) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
@@ -536,7 +536,7 @@ func (s *stubCounterReturnsNil) Like(_ context.Context, _ uint64, _, _ string) (
 func (s *stubCounterReturnsNil) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
-func (s *stubCounterReturnsNil) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+func (s *stubCounterReturnsNil) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
 func (s *stubCounterReturnsNil) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
@@ -571,9 +571,9 @@ func TestAssembleFromCache_NoIDs(t *testing.T) {
 // ============================================================================
 
 func TestPrefixCache_Isolation(t *testing.T) {
-	cache := freecache.NewCache(100 * 1024)
-	p1 := &PrefixCache{Cache: cache, Prefix: "a:"}
-	p2 := &PrefixCache{Cache: cache, Prefix: "b:"}
+	shared := freecache.NewCache(100 * 1024)
+	p1 := &cache.PrefixCache{Cache: shared, Prefix: "a:"}
+	p2 := &cache.PrefixCache{Cache: shared, Prefix: "b:"}
 
 	p1.Set([]byte("key1"), []byte("value1"), 60)
 	p2.Set([]byte("key1"), []byte("value2"), 60)
@@ -738,7 +738,7 @@ func (s *stubCounterPerUser) Like(_ context.Context, _ uint64, _, _ string) (boo
 func (s *stubCounterPerUser) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
-func (s *stubCounterPerUser) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+func (s *stubCounterPerUser) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
 func (s *stubCounterPerUser) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
@@ -899,7 +899,7 @@ func TestPrefixCache_SetOrWarn_LogsOversizedEntry(t *testing.T) {
 	logger := zap.New(core)
 
 	// freecache 最小容量 512KB，单条上限为容量的 1/1024 = 512 字节。
-	pc := &PrefixCache{Cache: freecache.NewCache(512 * 1024), Prefix: "d:"}
+	pc := &cache.PrefixCache{Cache: freecache.NewCache(512 * 1024), Prefix: "d:"}
 
 	pc.SetOrWarn(logger, []byte("small"), []byte("ok"), 60)
 	if logs.Len() != 0 {
@@ -920,7 +920,7 @@ func TestPrefixCache_SetOrWarn_LogsOversizedEntry(t *testing.T) {
 
 // TestDetailCacheTTLValues_FromConfig 覆盖 cfg 非 nil 分支。
 func TestDetailCacheTTLValues_FromConfig(t *testing.T) {
-	svc := &KnowPostService{
+	svc := &KnowPostDetailService{
 		cfg: &config.KnowPostConfig{
 			DetailCache: config.KnowPostDetailCacheConfig{
 				L1TTLSeconds: 11, NullTTLBase: 22, NullJitter: 33,
@@ -933,9 +933,22 @@ func TestDetailCacheTTLValues_FromConfig(t *testing.T) {
 	want := detailCacheParams{
 		l1TTL: 11, nullBase: 22, nullJitter: 33,
 		l2Base: 44, l2Jitter: 55,
-		ttlLow: 66, ttlMedium: 77, ttlHigh: 88,
+		ttlMedium: 77,
 	}
 	if got != want {
 		t.Errorf("detailCacheTTLValues() = %+v, want %+v", got, want)
+	}
+}
+
+// TestDetailCacheTTLValues_DefaultsMatchConfigSection 验证零配置回退与
+// pkg/config 的节级默认值走同一条代码路径（默认值单源）。
+func TestDetailCacheTTLValues_DefaultsMatchConfigSection(t *testing.T) {
+	var section config.KnowPostDetailCacheConfig
+	section.ApplyDefaults()
+
+	got := (&KnowPostDetailService{}).detailCacheTTLValues()
+	if got.l1TTL != section.L1TTLSeconds || got.nullBase != section.NullTTLBase ||
+		got.l2Base != section.L2TTLBase || got.ttlMedium != section.TTLMedium {
+		t.Errorf("nil-cfg fallback %+v diverged from config section defaults %+v", got, section)
 	}
 }

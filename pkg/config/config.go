@@ -497,91 +497,9 @@ func (c *Config) ApplyDefaults() {
 	}
 
 	// KnowPost defaults
-	if c.KnowPost.DetailCache.L1TTLSeconds <= 0 {
-		c.KnowPost.DetailCache.L1TTLSeconds = 60
-	}
-	if c.KnowPost.DetailCache.NullTTLBase <= 0 {
-		c.KnowPost.DetailCache.NullTTLBase = 30
-	}
-	if c.KnowPost.DetailCache.NullJitter <= 0 {
-		c.KnowPost.DetailCache.NullJitter = 31
-	}
-	if c.KnowPost.DetailCache.L2TTLBase <= 0 {
-		c.KnowPost.DetailCache.L2TTLBase = 60
-	}
-	if c.KnowPost.DetailCache.L2Jitter <= 0 {
-		c.KnowPost.DetailCache.L2Jitter = 31
-	}
-	if c.KnowPost.DetailCache.TTLLow <= 0 {
-		c.KnowPost.DetailCache.TTLLow = 30
-	}
-	if c.KnowPost.DetailCache.TTLMedium <= 0 {
-		c.KnowPost.DetailCache.TTLMedium = 60
-	}
-	if c.KnowPost.DetailCache.TTLHigh <= 0 {
-		c.KnowPost.DetailCache.TTLHigh = 300
-	}
-	if c.KnowPost.DetailCache.BloomEnabled == nil {
-		enabled := true
-		c.KnowPost.DetailCache.BloomEnabled = &enabled
-	}
-	if c.KnowPost.DetailCache.BloomExpectedItems == 0 {
-		c.KnowPost.DetailCache.BloomExpectedItems = 1_000_000
-	}
-	if c.KnowPost.DetailCache.BloomFalsePositiveRate <= 0 || c.KnowPost.DetailCache.BloomFalsePositiveRate >= 1 {
-		c.KnowPost.DetailCache.BloomFalsePositiveRate = 0.01
-	}
-	if c.KnowPost.DetailCache.BloomKey == "" {
-		// 默认 cf: 前缀，标明第三方 RedisBloom CF 键（非历史进程内过滤器键）。
-		c.KnowPost.DetailCache.BloomKey = "cf:knowpost:ids"
-	}
+	c.KnowPost.DetailCache.ApplyDefaults()
 
-	// Feed defaults
-	if c.KnowPost.FeedCache.SafeSize <= 0 {
-		c.KnowPost.FeedCache.SafeSize = 50
-	}
-	if c.KnowPost.FeedCache.L1TTLSeconds <= 0 {
-		c.KnowPost.FeedCache.L1TTLSeconds = 15
-	}
-	if c.KnowPost.FeedCache.L2IDListTTLBase <= 0 {
-		c.KnowPost.FeedCache.L2IDListTTLBase = 60
-	}
-	if c.KnowPost.FeedCache.L2IDListJitter <= 0 {
-		c.KnowPost.FeedCache.L2IDListJitter = 31
-	}
-	if c.KnowPost.FeedCache.L2HasMoreTTLBase <= 0 {
-		c.KnowPost.FeedCache.L2HasMoreTTLBase = 10
-	}
-	if c.KnowPost.FeedCache.L2HasMoreJitter <= 0 {
-		c.KnowPost.FeedCache.L2HasMoreJitter = 11
-	}
-	if c.KnowPost.FeedCache.L2ItemTTLBase <= 0 {
-		c.KnowPost.FeedCache.L2ItemTTLBase = 60
-	}
-	if c.KnowPost.FeedCache.L2ItemJitter <= 0 {
-		c.KnowPost.FeedCache.L2ItemJitter = 31
-	}
-	if c.KnowPost.FeedCache.L2MineTTLBase <= 0 {
-		c.KnowPost.FeedCache.L2MineTTLBase = 30
-	}
-	if c.KnowPost.FeedCache.L2MineJitter <= 0 {
-		c.KnowPost.FeedCache.L2MineJitter = 21
-	}
-	if c.KnowPost.FeedCache.L1MineTTLSeconds <= 0 {
-		c.KnowPost.FeedCache.L1MineTTLSeconds = 30
-	}
-	if c.KnowPost.FeedCache.ExtendTTLBase <= 0 {
-		c.KnowPost.FeedCache.ExtendTTLBase = 60
-	}
-	if c.KnowPost.FeedCache.TTLLow <= 0 {
-		c.KnowPost.FeedCache.TTLLow = 30
-	}
-	if c.KnowPost.FeedCache.TTLMedium <= 0 {
-		c.KnowPost.FeedCache.TTLMedium = 60
-	}
-	if c.KnowPost.FeedCache.TTLHigh <= 0 {
-		c.KnowPost.FeedCache.TTLHigh = 300
-	}
+	c.KnowPost.FeedCache.ApplyDefaults()
 
 	// Relation defaults
 	if c.Relation.BigVThreshold <= 0 {
@@ -735,4 +653,100 @@ type FanoutConfig struct {
 	FollowBackfillLimit int `yaml:"follow_backfill_limit"`
 	// MaxPullAuthors 是读路径单次最多拉取的大 V 数量。
 	MaxPullAuthors int `yaml:"max_pull_authors"`
+}
+
+// ApplyDefaults 为 KnowPostDetailCacheConfig 填充缺省值。
+//
+// 这是该节默认值的**唯一出处**：全局 ApplyDefaults 与业务侧的零配置回退
+// （detailCacheConfig）都调用本方法，杜绝“两处数字靠注释保持一致”的双源漂移。
+func (c *KnowPostDetailCacheConfig) ApplyDefaults() {
+	if c.L1TTLSeconds <= 0 {
+		c.L1TTLSeconds = 60
+	}
+	if c.NullTTLBase <= 0 {
+		c.NullTTLBase = 30
+	}
+	if c.NullJitter <= 0 {
+		c.NullJitter = 31
+	}
+	if c.L2TTLBase <= 0 {
+		c.L2TTLBase = 60
+	}
+	if c.L2Jitter <= 0 {
+		c.L2Jitter = 31
+	}
+	if c.TTLLow <= 0 {
+		c.TTLLow = 30
+	}
+	if c.TTLMedium <= 0 {
+		c.TTLMedium = 60
+	}
+	if c.TTLHigh <= 0 {
+		c.TTLHigh = 300
+	}
+	if c.BloomEnabled == nil {
+		enabled := true
+		c.BloomEnabled = &enabled
+	}
+	if c.BloomExpectedItems == 0 {
+		c.BloomExpectedItems = 1_000_000
+	}
+	if c.BloomFalsePositiveRate <= 0 || c.BloomFalsePositiveRate >= 1 {
+		c.BloomFalsePositiveRate = 0.01
+	}
+	if c.BloomKey == "" {
+		// 默认 cf: 前缀，标明第三方 RedisBloom CF 键（非历史进程内过滤器键）。
+		c.BloomKey = "cf:knowpost:ids"
+	}
+}
+
+// ApplyDefaults 为 KnowPostFeedCacheConfig 填充缺省值。
+//
+// 同 KnowPostDetailCacheConfig.ApplyDefaults：默认值单一出处，供全局装配与零配置单测共用。
+func (c *KnowPostFeedCacheConfig) ApplyDefaults() {
+	if c.SafeSize <= 0 {
+		c.SafeSize = 50
+	}
+	if c.L1TTLSeconds <= 0 {
+		c.L1TTLSeconds = 15
+	}
+	if c.L2IDListTTLBase <= 0 {
+		c.L2IDListTTLBase = 60
+	}
+	if c.L2IDListJitter <= 0 {
+		c.L2IDListJitter = 31
+	}
+	if c.L2HasMoreTTLBase <= 0 {
+		c.L2HasMoreTTLBase = 10
+	}
+	if c.L2HasMoreJitter <= 0 {
+		c.L2HasMoreJitter = 11
+	}
+	if c.L2ItemTTLBase <= 0 {
+		c.L2ItemTTLBase = 60
+	}
+	if c.L2ItemJitter <= 0 {
+		c.L2ItemJitter = 31
+	}
+	if c.L2MineTTLBase <= 0 {
+		c.L2MineTTLBase = 30
+	}
+	if c.L2MineJitter <= 0 {
+		c.L2MineJitter = 21
+	}
+	if c.L1MineTTLSeconds <= 0 {
+		c.L1MineTTLSeconds = 30
+	}
+	if c.ExtendTTLBase <= 0 {
+		c.ExtendTTLBase = 60
+	}
+	if c.TTLLow <= 0 {
+		c.TTLLow = 30
+	}
+	if c.TTLMedium <= 0 {
+		c.TTLMedium = 60
+	}
+	if c.TTLHigh <= 0 {
+		c.TTLHigh = 300
+	}
 }

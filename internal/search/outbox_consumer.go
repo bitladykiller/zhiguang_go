@@ -22,6 +22,13 @@ func NewOutboxConsumer(reader *kafka.Reader, projector *KnowPostProjector, logge
 	return &OutboxConsumer{inner: inner}
 }
 
+// SetFailedMessageRecorder 注入死信记录（透传给内部的 outbox.Consumer）。
+func (c *OutboxConsumer) SetFailedMessageRecorder(r outbox.FailedMessageRecorder) {
+	if c != nil && c.inner != nil {
+		c.inner.SetFailedMessageRecorder(r)
+	}
+}
+
 func (c *OutboxConsumer) Start(ctx context.Context) {
 	if c == nil || c.inner == nil {
 		return

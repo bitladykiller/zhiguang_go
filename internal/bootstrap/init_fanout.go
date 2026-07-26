@@ -11,7 +11,6 @@ import (
 	"github.com/zhiguang/app/internal/messaging"
 	"github.com/zhiguang/app/internal/outbox"
 	"github.com/zhiguang/app/internal/relation"
-	"github.com/zhiguang/app/internal/server"
 	"github.com/zhiguang/app/pkg/config"
 )
 
@@ -44,7 +43,7 @@ func initFanout(
 	counterSvc *counter.CounterService,
 	cfg *config.Config,
 	logger *zap.Logger,
-) (*fanout.Service, *fanout.TimelineReader, server.BackgroundRunner) {
+) (*fanout.Service, *fanout.TimelineReader, *fanout.Consumer) {
 	fanoutCfg := fanoutConfigFrom(cfg)
 
 	var followerCounter fanout.FollowerCounter
@@ -61,7 +60,7 @@ func initFanout(
 	}
 
 	consumer := fanout.NewConsumer(
-		messaging.NewKafkaReaderWithGroup(&cfg.Kafka, outbox.CanalOutboxTopic, outbox.FanoutConsumerGroup),
+		messaging.NewKafkaReaderWithGroupFromLatest(&cfg.Kafka, outbox.CanalOutboxTopic, outbox.FanoutConsumerGroup),
 		svc,
 		logger,
 	)

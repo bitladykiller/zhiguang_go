@@ -217,3 +217,29 @@ func NewKafkaReaderWithGroup(cfg *config.KafkaConfig, topic, groupID string) *ka
 
 	return kafka.NewReader(config)
 }
+
+// NewKafkaReaderWithGroupFromLatest 与 NewKafkaReaderWithGroup 相同，
+// 但**新消费者组**从分区最新位点起消费（kafka.LastOffset）。
+//
+// WHY 需要这个变体：
+//
+//	kafka-go 对没有已提交位点的新组默认从最早位点（FirstOffset）开始——
+//	新上线的消费者会把主题保留期内的**全部历史**回放一遍。
+//	对投影类消费者（搜索、关系）这是想要的行为：历史事件重建出完整投影。
+//	但对**动作类**消费者（如信息流扩散：把帖子推进粉丝收件箱），
+//	回放历史意味着把陈年旧帖当新内容重新分发，直接污染时间线。
+//	此类消费者应从 Latest 起步：只对上线之后的新事件执行动作。
+func NewKafkaReaderWithGroupFromLatest(cfg *config.KafkaConfig, topic, groupID string) *kafka.Reader {
+	c := kafka.ReaderConfig{
+		Brokers:     cfg.Brokers,
+		GroupID:     groupID,
+		Topic:       topic,
+		MinBytes:    10e3,
+		MaxBytes:    10e6,
+		StartOffset: kafka.LastOffset,
+	}
+	if cfg.ReadTimeoutMs > 0 {
+		c.ReadBatchTimeout = time.Duration(cfg.ReadTimeoutMs) * time.Millisecond
+	}
+	return kafka.NewReader(c)
+}

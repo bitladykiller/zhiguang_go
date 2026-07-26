@@ -14,7 +14,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/counter"
-	"github.com/zhiguang/app/internal/model"
 )
 
 // ---------------------------------------------------------------------------
@@ -124,7 +123,7 @@ func (s *stubSearchCounter) GetCountsBatch(_ context.Context, _ string, _, _ []s
 	return nil, s.err
 }
 
-func (s *stubSearchCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+func (s *stubSearchCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
 func (s *stubSearchCounter) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
@@ -917,7 +916,7 @@ func TestDeleteDocument_NetworkError(t *testing.T) {
 
 func TestSearchResponse_JSONRoundTrip(t *testing.T) {
 	resp := &SearchResponse{
-		Items: []model.FeedItem{
+		Items: []FeedItem{
 			{
 				ID:             "1",
 				Title:          strPtr("t"),
