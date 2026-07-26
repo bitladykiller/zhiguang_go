@@ -1167,3 +1167,164 @@ flowchart TD
   - *提示*：不会，适配层实现了 `fail-open` 机制，错误时视作“可能存在”，自动退回 L1 -> L2 (NULL) -> L3 DB 防线。
 - **思考题 2**：公共 Feed 中如果某帖子被作者删除，为什么要递增 `feed version` 而不是直接清空全站的分页缓存 key？
   - *提示*：帖子可能分布在成百上千个分页 key 中，精确清理复杂度是 $O(N)$ 且容易死锁；递增版本号让新请求自然切换新 key，旧页在 TTL 后自动被 Redis 淘汰。
+
+---
+
+# 附录F：函数级源码走读（与源码同步维护）
+
+> 按文件组织；每个函数给出签名、职责、逐步逻辑与边界。琐碎工具函数以表格收尾。
+> 行号会漂移，函数名不会——检索函数名即可定位。
+
+## F1. `detail_service.go` — 详情读取（KnowPostDetailService）
+
+#### `NewKnowPostDetailService(repo, redisClient, l1Cache, hotKey, bloom, counter, logger, cfg) *KnowPostDetailService`
+- **职责**：装配详情读取服务。`counter`（窄接口 detailEngagement，仅 2 方法）、`hotKey`、`bloom` 均可为 nil → 对应能力降级（不查计数 / 不记热点 / 不做存在性预判）。
+- **边界**：`logger` 为 nil 时兜底 `zap.L()`，保证任何路径的 `logger.Warn` 不 panic。
+
+#### `detailCacheTTLValues() detailCacheParams`
+- **职责**：把配置节拍平成具名参数快照（l1TTL / nullBase / nullJitter / l2Base / l2Jitter / ttlMedium）。
+- **逐步**：`detailCacheConfig(s.cfg)` → cfg 为 nil 时走「零值节 + 节级 ApplyDefaults」同一条默认值路径 → 映射到结构体。
+- **历史**：曾返回 8 个匿名 int，调用方写 `_, _, _, _, _, _, ttlMedium, _ :=`——同类型位置取值，调序即静默取错。
+
+#### `versions() *cache.Versions`
+- **职责**：构造详情版本号读取器（无状态，按调用构造零负担）。Local 挂共享 freecache（前缀 `dv:`），Default=detailLayoutVer，TTL 来自 `version_cache_ttl_seconds`（0→2s，负→关闭）。
+
+#### `GetDetail(ctx, id, currentUserID) (*KnowPostDetailResponse, error)`
+- **职责**：详情读取唯一入口。编排＝配置一次 `cache.Tiered` + 提供 Loader。
+- **逐步**：
+  1. `versions().Get(detailVersionKey(id))` 取版本号（进程内短缓存优先）→ `detailPageKey(id, ver)` 拼键；
+  2. 组装 `Tiered`：Decode=parseJSON、`L2TTL` 闭包内叠加热点延长（`hotKey.TtlForPublic`）、NullSentinel="NULL"、`PreLoad`=Bloom 预判、LockKey=`lock:{pageKey}`；
+  3. `tiered.Get(pageKey, loader)`；Loader：repo 为 nil → found=false（写哨兵，零依赖单测语义）；`queryDetailFromDB` 返回 ErrNotFound → found=false；**ErrForbidden → 存入闭包变量 `forbiddenErr` 并作为 err 返回（不写任何缓存）**；成功 → `bloom.AddUint64`（渐进补齐过滤器）→ `fillCounts` → found=true；
+  4. 错误翻译：`ErrNullCached` → `errcode.ErrNotFound`；`forbiddenErr` 非 nil → 原样 403；
+  5. `recordHotKeyAndExtendTTL`（本地计数 + 冷键零往返）；
+  6. `enrichDetail(…, refreshCounts = hit==HitL2)`——只有 L2 命中才刷计数（载荷计数可能陈旧；L1 窗口极短、Load 刚查过）。
+- **边界**：403 与 404 的缓存语义严格区分——404 写哨兵吸收重复探测，403 什么都不写（内容存在，只是无权）。
+
+#### `queryDetailFromDB(ctx, id, currentUserID) (*KnowPostDetailResponse, error)`
+- **职责**：回源 + 状态/权限判定 + 行→DTO 映射。
+- **逐步**：`repo.FindDetailByID`（JOIN users 取作者）→ err/nil/已删除 → ErrNotFound；`isPublic = published && visible==public`，`isOwner = currentUserID==CreatorID`；两者皆否 → ErrForbidden；映射（`jsonutil.ParseStringArray` 解 tags/imgs，uint64 → string 防前端精度丢失）。
+
+#### `fillCounts(ctx, resp)`
+- **职责**：回源结果上填 like/fav 计数（这部分**进**共享缓存——计数是公共数据）。counter 为 nil 或查询失败：记 Warn 保零值，不阻塞。
+
+#### `enrichDetail(ctx, base, currentUserID, refreshCounts) *KnowPostDetailResponse`
+- **职责**：叠加**不进缓存**的两类数据：实时计数（refreshCounts=true 时重查）与当前用户 liked/faved（`IsLikedAndFaved` 一次往返拿两态）。
+- **边界**：直接改 `base` 并返回同一指针（Tiered 已在返回前定格缓存，改它污染不了缓存）；counter nil / 查询失败均静默降级。
+
+#### `recordHotKeyAndExtendTTL(ctx, id, pageKey)`
+- **逐步**：`hotKey.Record(hotKeyID(id))` 纯本地计数（零 Redis IO）→ `TtlForPublic` 取目标 TTL → **target<=base 直接 return**（冷键不付 Lua 往返，绝大多数键是冷的）→ `extendTTLDualScript` 原子只增不减地延长 pageKey 与 `feed:item:{id}` 两键。
+
+#### `WarmDetailBloom(ctx) error`
+- **职责**：启动期预热过滤器。`repo.ListIDsForBloom(lastID, 1000)` 游标批扫未删除 ID → 逐个 `CF.ADD`；失败不阻塞启动（fail-open，未预热期间由 NULL 哨兵兜底）。bootstrap 以独立 goroutine + 2 分钟超时调用。
+
+## F2. `write_service.go` — 写路径（KnowPostService）
+
+#### `CreateDraft(ctx, creatorID, idempotencyKey) (uint64, error)`
+- **职责**：幂等创建草稿。
+- **逐步**：
+  1. key 为空 → 直接建（无幂等诉求）；
+  2. `claimDraftIdempotency`：`SET idem:{key} "pending" NX EX`——抢到=首次；没抢到读值：数字=已完成返回旧 ID；"pending"=并发中 → 409；
+  3. 建草稿（雪花 ID，事务内含 outbox）；
+  4. 成功把幂等键改写为草稿 ID（长 TTL）；失败删除 pending 标记让后续重试。
+- **边界**：pending 标记短 TTL——持有者崩溃后自动解锁，不会永久卡死该幂等键。
+
+#### `claimDraftIdempotency(ctx, idemKey, pendingMarker) (existingID uint64, alreadyDone bool, err error)`
+- **返回三态**：`(0,false,nil)`=首次抢占成功；`(id,true,nil)`=历史已完成；err=并发进行中（409）或 Redis 故障。
+
+#### `ConfirmContent / UpdateMetadata / Publish / UpdateTop / UpdateVisibility / Delete`
+- **共同骨架**：`runKnowPostTx*(eventType, mutate)` → 事务内执行 repo 变更并校验 `affected>0`（0 → 404「不存在或无权」，owner 校验下沉到 SQL 的 `creator_id=?` 条件）→ 事务外 `invalidateCache`（详情版本 +1）+ `invalidateFeedCaches`（Feed 版本 +1 + item 碎片删）→ 审计。
+- **各自特有**：
+  - `Publish`：载荷追加 `creator_id`/`published_at`（扩散消费者免回查 DB——事件要自描述）；
+  - `UpdateVisibility`：载荷追加 `visible` + `creator_id`（可见性收紧时扩散侧清发件箱）；
+  - `Delete`：软删 + `bloom.DeleteUint64`（CF 支持删除正是选 Cuckoo 而非经典 Bloom 的原因）+ 载荷带 `creator_id`。
+
+#### `runKnowPostTx(ctx, id, eventType, mutate, extraEvents...) error` / `runKnowPostTxWithPayload(..., extra map[string]any, ...)`
+- **职责**：知文域事务模板。基础载荷 `{entity:"knowpost", id, op, type}`；WithPayload 变体合并 extra 字段。
+- **逐步**：构造 OutboxEvent（雪花 ID）→ `outbox.RunInTx(db, mutate(repo.WithDB(tx)), events)`——业务行与 outbox 行同事务落库。
+- **`knowPostOutboxOp`**：Deleted → "delete"，其余 → "upsert"（搜索投影按 op 分流软删/重建）。
+
+## F3. `feed_service.go` — 列表读取（KnowPostFeedService）核心函数
+
+#### `GetPublicFeed(ctx, page, size, currentUserID) (*FeedPageResponse, error)`
+- **逐步**：clamp 参数 → `currentPublicFeedVersion`（Versions，含本地短缓存）→ 拼 `localPageKey`（L1 整页）与 `idsKey`（L2 碎片）→ 依次 `getPublicFeedL1` / `getPublicFeedL2` / `getPublicFeedUnderLock`。
+- **键设计**：ids 键只含 `{ver}:{size}:{page}` 三维——曾多编一个 hourSlot，但全局版本号失效粒度已是"全部"，分槽只降低命中率（两机制不构成组合）。
+
+#### `getPublicFeedL1(ctx, localPageKey, currentUserID) *FeedPageResponse`
+- **逐步**：L1 Get → parse 失败按 miss → `recordItemHotKeys`（整页批量热点）→ `withUserState` 叠用户态后返回。缓存里是**公共视图**，用户态每次读后现算。
+
+#### `getPublicFeedL2(...)` 
+- **逐步**：`assembleFromCache` 组装公共视图 → 成功则 `cacheFeedPage` 回填 L1（回填的是 **shared**，enrich 前！）→ 记热点 → `withUserState`。**回填先于 enrich 是防串号的关键顺序**——历史事故正是某处顺序相反。
+
+#### `withUserState(ctx, shared, currentUserID) *FeedPageResponse`
+- **职责**：产出「共享视图 + liked/faved」的响应副本；空 items 归一为 `[]`（JSON 输出 `[]` 而非 null）。所有公共 Feed 出口统一走这里。
+
+#### `getPublicFeedUnderLock(ctx, idsKey, hasMoreKey, localPageKey, page, size, currentUserID)`
+- **逐步**：`cacheReadThrough`（分布式锁+看门狗）：checkCache=锁内重试 `assembleFromCache`（拿到锁的可能是等待者，前者大概率已回填）；miss handler=`repo.ListFeedPublic(size+1, offset)`（多查 1 条判 hasMore，免 COUNT）→ `mapRowsToItems`（公共视图）→ `writeFragmentCaches` + `cacheFeedPage` **先落缓存** → `withUserState` 返回。
+
+#### `assembleFromCache(ctx, idsKey, hasMoreKey, page, size) *FeedPageResponse`
+- **职责**：从碎片缓存组装整页公共视图。
+- **逐步**：LRange 取 ID 列表（空→nil）→ 拼 `feed:item:*` 键 MGet → **任一碎片缺失/解码失败 → 整页判 miss**（宁可回源，不返回缺条目的页）→ hasMore 软缓存（缺失时降级"满页即可能有更多"）。
+- **返回**：nil=未命中；非 nil=纯公共视图（用户态由调用方叠）。
+
+#### `writeFragmentCaches / writeFeedIDListCache / writeFeedItemCaches`
+- **分工**：前者是编排壳；IDList：RPush 全部 ID + Expire（base+jitter）+ hasMore 软缓存（短 TTL）；Item：pipeline 批量 Set 每条 `feed:item:{id}`（各自独立 jitter TTL，避免同刻雪崩）。
+
+#### `GetMyPublished(ctx, userID, page, size)`
+- **职责**：「我的已发布」，整页缓存跑在 `cache.Tiered` 上（键 `feed:mine:{uid}:{size}:{page}:{ver}`）。
+- **两个刻意的行为差异**（对旧实现）：回源加了锁+double check（旧路径无击穿保护）；返回统一 `withUserState`（旧实现三个列表只有部分叠用户态——契约不该取决于走了哪条代码路径）。
+- **诚实注记**：SQL 条件是 `status != deleted`，因此含草稿；仅本人可见故不泄露，但方法名与语义有出入（见 3.3.2）。
+
+#### `GetHomeFeed(ctx, userID, cursor, size) (*HomeFeedResponse, error)`
+- **逐步**：`homeTimeline.HomeTimelinePage`（fanout 推拉归并，游标不透明穿透）→ 空 → 空响应；→ `FindFeedRowsByIDs(ids, {public, followers})`（关注流放行 followers 档）→ `reorderRowsByIDs`（时间线顺序是权威，SQL 排序无关）→ `mapRowsToItems` → `withUserState` → 组装 `{Items, NextCursor, HasMore}`。
+- **边界**：`homeTimeline` 未注入（扩散未装配）→ 空列表不报错；已删/降可见帖被 DB 过滤，条数可短于页长。
+
+#### `InvalidateAfterPostMutation(ctx, postID, creatorID)`
+- **逐步**：单段 Lua（`invalidateFeedScript`）原子执行：DEL `feed:item:{post}` + INCR 公共版本 + INCR 作者 mine 版本 → 本地 `feedVersions().Drop` 两个版本键（自写自读立即切新键）。
+
+#### `mapRowsToItems(ctx, rows, userID, includeIsTop) []FeedItemResponse`
+- **逐步**：批量 `GetCountsBatch` 一次拿全页 like/fav 计数（失败整体降级零值）→ 逐行映射（首图为封面、tags/imgs 解 JSON、includeIsTop 仅"我的"场景带置顶位）。产物是**公共视图**。
+
+#### `enrichItems(ctx, items, userID) []FeedItemResponse`
+- **逐步**：userID 或 counter 为 nil → 原样返回；`BatchIsLiked`+`BatchIsFaved` 两次批量（失败各自记 Warn、字段留 nil）→ 拷贝出**新切片**逐条指针赋值。返回新切片，调用方必须用返回值。
+
+#### `recordItemHotKeys(ctx, items)`
+- **职责**：整页批量热点记录 + 热点碎片 TTL 延长。
+- **逐步**：逐条 `hotKey.Record`（纯本地）→ `TtlForPublicBatch` 一次 MGET 定级全页 → 过滤出 target>base 的热点 → 一次 `batchExtendFeedItemTTLScript`（EVAL）延长。整页全冷 → **零 Redis 往返**。旧实现逐条 EXISTS+EVAL，一页 50 条上百次串行往返压在 L1 命中路径上。
+
+#### `currentPublicFeedVersion / currentMineFeedVersion / feedVersion / feedVersions`
+- **职责**：Feed 版本号读取，统一走 `cache.Versions`（前缀 `fv:`、Default=1、固定 2s 本地 TTL——feed 服务只持有 FeedCache 节，拿不到 detail 的 TTL 配置项，诚实固定而非传假参数）。
+
+## F4. `cache.go` + `keys.go` — 写后失效与键构造
+
+#### `invalidateCache(ctx, id)`（写侧）
+- **逐步**：`invalidateCacheScript` Lua：INCR `knowpost:ver:{id}`（<1 时校正为 1）+ DEL 新版本页键（防御残留）→ `versions.Drop(verKey)` 作废本实例短缓存——否则本实例在 2s 窗口内仍用旧版本拼键，"自己写完自己读不到"。
+
+#### `invalidateFeedCaches(ctx, id, creatorID)`（写侧）
+- **职责**：经 `FeedCacheInvalidator` 接口委派给 FeedService 的 `InvalidateAfterPostMutation`；feedCache 为 nil 仅零值单测出现（bootstrap 中是构造参数）。
+
+#### `keys.go` 速查（全部为纯函数，无 IO）
+
+| 函数 | 产出 |
+|---|---|
+| `detailVersionKey(id)` | `knowpost:ver:{id}` |
+| `detailPageKey(id, ver)` | `knowpost:detail:{id}:v{L}:ver{N}` |
+| `mineFeedVersionKey(uid)` | `feed:mine:version:{uid}` |
+| `feedItemKey(id)` / `feedItemKeyU` | `feed:item:{id}`（string / uint64 入参两形态） |
+| `publicFeedIDsKey(ver,size,page)` | `feed:public:ids:{ver}:{size}:{page}` |
+| `publicFeedPageLocalKey(size,page,ver)` | `feed:public:{size}:{page}:v{L}:{ver}`（L1 整页） |
+| `mineFeedPageKey(uid,size,page,ver)` | `feed:mine:{uid}:{size}:{page}:{ver}` |
+| `lockKeyFor(k)` / `hotKeyID(id)` | `lock:{k}` / `knowpost:{id}` |
+| `versionLocalTTL(cfg)` | 0→默认 2s；负→0（关闭） |
+| `newDetailVersions / newFeedVersions` | 组装 cache.Versions（dv:/fv: 前缀隔离） |
+| `detailCacheConfig / feedCacheConfig` | cfg 为 nil → 零值节+节级 ApplyDefaults（默认值单源） |
+
+#### 琐碎工具
+
+| 函数 | 说明 |
+|---|---|
+| `jitterN(n)` | `[0,n)` 随机；n<=0 返回 0（防 rand.Intn(0) panic） |
+| `clamp(v,lo,hi)` | `min(max(v,lo),hi)`（复用 Go1.21 内建；曾有自定义 max 遮蔽内建，已删） |
+| `boolToStr(b)` | hasMore 软缓存的 "1"/"0" 编码 |
+| `parseFeedPage / parseJSON[T]` | 统一 JSON 解码入口，失败即缓存 miss |
+| `reorderRowsByIDs(rows, ids)` | map 索引后按 ids 序重排，丢弃不在 ids 中的行 |
+| `logWarn(msg, err)` | logger 为 nil 时静默（零值 service 安全） |

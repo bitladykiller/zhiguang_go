@@ -566,3 +566,42 @@ flowchart TD
   - *提示*：不会。Outbox 表保存在 MySQL 磁盘上，Canal 恢复后会自动从上次中断的 Binlog Position 点位继续顺序读取，数据具备百分之百的可追溯性。
 - **思考题 2**：`canal.enabled=false` 时，为什么系统不会自动切换为定时轮询 Outbox 表（DirectPoll）？
   - *提示*：架构遵循“显式开关”原则，避免在未配置扫描频率与分区竞争锁时隐式自启 Worker，降低运维非预期行锁隐患。
+
+---
+
+# 附录C：函数级源码走读（internal/outbox）
+
+## C1. `transaction.go`
+
+#### `RunInTx(ctx, db, mutations func(tx) error, events []OutboxEvent) error`
+- **逐步**：BeginTxx → defer recover（panic 也回滚并包装错误）→ `mutations(tx)` 失败即回滚上抛 → 逐事件 Marshal payload + INSERT outbox（同事务）→ Commit。
+- **本质**：业务行与事件行的原子性来自**同一个 MySQL 事务**，投递可靠性由 Canal 读 binlog 接力——不存在"提交了库但丢了事件"的窗口。
+- **边界**：events 是入参，事务内才能确定要不要发事件时（如 Follow 的迁移判定）用哨兵错误让整个事务回滚来"取消"事件。
+
+## C2. `consumer.go` — 通用消费框架
+
+| 函数 | 逐步/要点 |
+|---|---|
+| `NewConsumer(reader, handler, logger)` | maxRetries=3、retryDelay=1s；reader/handler nil → nil |
+| `Start(ctx)` | FetchMessage → `handleMessageWithRetry` → 成功 Commit；重试耗尽 → `recordFailedMessage`（死信）→ **Commit 跳过**（单条坏消息不卡分区）；fetch 失败退避 1s |
+| `handleMessage(value)` | `extractRows` 解 CanalEnvelope（过滤非 outbox 表、非 INSERT/UPDATE）→ 逐行 `handler.HandleRow`，任一行失败整条消息算失败（重试以消息为粒度） |
+| `extractRows(value)` | envelope→rows：抽 aggregate_type/aggregate_id/type/payload 原始字节（避免下游二次解析） |
+| `SetFailedMessageRecorder` | 注入死信仓储；未注入时耗尽仅 Warn |
+
+## C3. `cleaner.go` / `deadletter.go`
+
+| 函数 | 逐步/要点 |
+|---|---|
+| `NewCleaner(db,cfg,logger)` | 零值补默认：7d 保留 / 1h 周期 / 1000 批；db nil → nil（跳过注册） |
+| `Cleaner.Start(ctx)` | **启动即清一轮**（长停机重启不用再等一个周期）→ ticker 循环；阻塞满足 Runner 契约 |
+| `cleanOnce(ctx)` | `DELETE … WHERE created_at < cutoff LIMIT batch` 循环到不足一批；批间 50ms 小憩摊平写压；出错终止本轮（下轮再试）；有删除量记 Info |
+| `DeadLetterRepository.Create(topic,key,payload,cause)` | INSERT counter_failed_messages（stage='outbox'，表名历史遗留、列本就通用）；nil 仓储安全 |
+
+## C4. `internal/canal` — Bridge 与解析
+
+| 函数 | 逐步/要点 |
+|---|---|
+| `Bridge.Start(ctx)` | 外层循环：`runOnce`（一次连接生命周期）出错 → 记日志退避重连；ctx 取消退出。配合监督器：panic（见 rollbackOrPanic）→ 重启本 Runner 重建连接与订阅 |
+| `runOnce(ctx)` | 连接 Canal（socket/idle 超时可配）→ Subscribe(outbox 表过滤)→ 循环 `GetWithoutAck(batch)` → 空批 sleep → `parseEntries` 抽 ROWDATA → 逐条写 Kafka(canal-outbox) → 全部成功才 `Ack(batchID)`；**写 Kafka 失败 → `rollbackOrPanic`**（位点回退，消息不丢） |
+| `rollbackOrPanic(conn,batchID,logger)` | RollBack 失败（连接已断）→ **panic**：位点无法回退时继续走会当作已消费丢数据；panic 由监督器接住转为「重启 Runner 重置连接」——语义从"重启进程"落到"重启任务"，保护目的不变 |
+| `parseEntries(entries)` | 过滤事务开始/结束条目 → 解 RowChange → 仅 INSERT/UPDATE → `assignColumn` 按列名填 CanalRow（id/aggregate_type/aggregate_id/type/payload）→ 序列化为 envelope JSON |

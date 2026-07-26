@@ -867,3 +867,50 @@ flowchart TD
   - *提示*：ZSet 支持按 `score` (毫秒时间戳) 进行天然去重与高性能游标 (Cursor) 分页 (`ZREVRANGEBYSCORE`)，避免了 List 在有新关注插入时导致的跳页与重复页。
 - **思考题 2**：如果粉丝数超过 100 万的大 V 用户发布文章，采用完全写扩散 (Push) 会发生什么？
   - *提示*：需要往 100 万个粉丝的 timeline ZSet 中逐个 `ZADD`，产生数百万次 Redis 写操作，造成严重的网络与 CPU 写爆破（写放大），因此大 V 必须强制截断写扩散，转为粉丝端在线拉取。
+
+---
+
+# 附录C：函数级源码走读（internal/relation）
+
+## C1. `follow.go`
+
+#### `Follow(ctx, fromUserID, toUserID) (bool, error)`
+- **逐步**：
+  1. `TOKEN_BUCKET_LUA` 用户级令牌桶限流（容量/速率可配；Redis 故障时保守拒绝返回 false,nil）；
+  2. 预生成三个雪花 ID（正向行/反向行/outbox）与 `FollowCreated` 载荷（含 RelationID）；
+  3. `outbox.RunInTx`：事务内 `UpsertFollowing`（返回 **transitioned**）+ `UpsertFollower`；`!transitioned`（已在关注）→ 返回哨兵 `errNothingToFollow` 让事务回滚空事务、**跳过事件写入**；
+  4. 哨兵被调用方翻译为 `(false, nil)` 幂等成功——无事件/无回填/无审计（重复 Follow 计数漂移的闸门，见 6.8）；
+  5. 成功路径：`invalidateCaches`（双方列表 L1+ZSet）→ `notifyFanoutFollow`（收件箱回填，失败仅 Warn——体验优化非正确性）→ 审计。
+
+#### `Unfollow(ctx, from, to) (bool, error)`
+- **逐步**：事务内 `CancelFollowing`（affected==0 → `errNothingToCancel` → (false,nil) 幂等）+ `CancelFollower`（affected==0 仅 Warn 记不一致）+ `FollowCanceled` 事件 → 失效缓存 → `notifyFanoutUnfollow`（清收件箱副本；失败 Warn **需监控**：用户会继续看到已取关作者）→ 审计。
+
+#### `notifyFanoutFollow / notifyFanoutUnfollow`
+- hooks 为 nil（扩散未装配）静默返回；错误只 Warn 不上抛——关注/取关本体的成功不被扩散侧故障绑架。
+
+## C2. `list.go`
+
+#### `getListWithOffset(ctx, userID, listType, limit, offset) ([]uint64, error)`
+- **逐步**：大 V（followers 且计数≥bigVThreshold）先查 L1 头部缓存（仅 offset==0 页）→ ZSet `ZREVRANGE` → 空则 `ensureListCacheWarm`（分布式锁内从 DB 预热，limit 上限 ZSetWarmLimit）→ 大 V 回填 L1。
+
+#### `parseListCursor(raw) (listCursor, error)` / `encodeListCursor(ms, uid)`
+- 空/"0"=首页；`s:{ms}:{uid}` 复合；纯数字按 legacy（排除式旧语义）兼容；其余报错。
+
+#### `getListWithCursor(ctx, userID, listType, limit, cursor string) ([]uint64, string, error)`
+- **逐步**：解析游标 → EXISTS 判 ZSet，冷则预热 → 上界：首页 +inf / legacy 排除式 `("ms` / 复合**包含式** ms 且 fetch=limit+8 并列冗余 → `ZREVRANGEBYSCORE WITHSCORES` → 应用侧跳过 `ms==cur.ms && member>=curMember`（与 Redis 并列输出的逆字典序同序比较）→ 收满 limit → 尾条编 `s:` 游标。
+- **修复点**：旧排除式区间在毫秒并列横跨页边界时整页跳过成员（静默丢条目）。
+
+## C3. `repository.go`（关键两个）
+
+#### `UpsertFollowing / UpsertFollower (…) (transitioned bool, err error)`
+- **SQL 关键**：`ON DUPLICATE KEY UPDATE updated_at = IF(rel_status <> VALUES(rel_status), VALUES(updated_at), updated_at), rel_status = VALUES(rel_status)`——updated_at 仅在状态真变时更新，使 affected-rows 语义可辨：INSERT=1 / 0→1 复关注=2 / 无变更=0。`transitioned = affected > 0`。
+- **为什么不能无条件写 updated_at**：那样重复 Follow 也 affected=2，迁移判定失效、计数漂移复活（`TestUpsertFollowing_TransitionSemantics` 锁三态）。
+
+## C4. `event_processor.go`
+
+#### `Process(ctx, evt RelationEvent) error`
+- **逐步**：事件类型映射 delta=±1（未知类型静默跳过）→ `applyZSets`（幂等段，失败上抛交重投）→ counter 为 nil 仅落标 → `ApplyFollowDeltaOnce(dedupeKey, 10min, from, to, delta)` 原子「落标+双向计数」；返回 false=重复投递无需处理。
+- **dedupeKey**：`dedup:rel:{type}:{from}:{to}:{relationID}`——RelationID 可选（nil→"0"），FollowCreated 与对应 Canceled 互不干扰。
+
+#### `applyZSets(ctx, evt, delta) error`
+- pipeline：ZAdd（score=UnixMilli）/ZRem 双边 + 双边 Expire 2h 续期；天然幂等可重放。
