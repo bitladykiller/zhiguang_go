@@ -7,9 +7,12 @@ type ToggleRequest struct {
 }
 
 // LikersResponse 返回指定实体的点赞/收藏用户列表（分页）。
+//
+// Cursor 是**不透明**的复合游标（形如 "t:{ts}:{uid}" 或 "u:{uid}"），
+// 客户端原样回传即可；空串表示第一页。编码细节见 likers.go。
 type LikersResponse struct {
 	Items   []LikerItem `json:"items"`
-	Cursor  uint64      `json:"cursor"`
+	Cursor  string      `json:"cursor,omitempty"`
 	HasMore bool        `json:"has_more"`
 }
 

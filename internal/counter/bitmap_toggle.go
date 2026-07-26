@@ -9,6 +9,8 @@ package counter
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"time"
 )
 
 // Like 为指定用户对指定实体打开点赞状态。
@@ -36,8 +38,13 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 	chunk := ChunkOf(userID)
 	offset := BitOf(userID)
 	bmKey := BitmapKey(metric, entityType, entityID, chunk)
+	zKey := likersZSetKey(metric, entityType, entityID)
+	now := time.Now().Unix()
 
-	changed, err := s.redis.Eval(ctx, TOGGLE_LUA, []string{bmKey}, offset, op).Int()
+	changed, err := s.redis.Eval(ctx, TOGGLE_LUA,
+		[]string{bmKey, zKey},
+		offset, op, strconv.FormatUint(userID, 10), now,
+	).Int()
 	if err != nil {
 		return false, fmt.Errorf("lua toggle: %w", err)
 	}

@@ -33,7 +33,6 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"go.uber.org/zap"
 
-	"github.com/zhiguang/app/internal/counter"
 	"github.com/zhiguang/app/pkg/contextutil"
 	"github.com/zhiguang/app/pkg/jsonutil"
 )
@@ -92,8 +91,15 @@ type SearchResponse struct {
 	HasMore   bool       `json:"has_more"`
 }
 
-// SearchCounterClient 定义搜索结果需要的用户态计数读取接口。
-type SearchCounterClient = counter.CounterServiceInterface
+// SearchCounterClient 是搜索结果增强对计数模块的最小依赖（消费侧窄接口）。
+//
+// 此前它是 counter 完整接口的类型别名——搜索只用 3 个方法却依赖全部 13 个，
+// counter 任何签名演进都会波及本模块（本次 GetLikers 游标改造即触发过一次连锁编译失败）。
+type SearchCounterClient interface {
+	GetCounts(ctx context.Context, entityType, entityID string, metrics []string) (map[string]int32, error)
+	BatchIsLiked(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
+	BatchIsFaved(ctx context.Context, userID uint64, entityType string, entityIDs []string) (map[string]bool, error)
+}
 
 // indexMapping 是知文搜索索引的 ES mapping 模板。
 const indexMapping = `{

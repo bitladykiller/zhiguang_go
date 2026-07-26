@@ -487,7 +487,7 @@ func (s *stubCounterFailing) Like(_ context.Context, _ uint64, _, _ string) (boo
 func (s *stubCounterFailing) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
-func (s *stubCounterFailing) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+func (s *stubCounterFailing) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
 func (s *stubCounterFailing) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
@@ -536,7 +536,7 @@ func (s *stubCounterReturnsNil) Like(_ context.Context, _ uint64, _, _ string) (
 func (s *stubCounterReturnsNil) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
-func (s *stubCounterReturnsNil) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+func (s *stubCounterReturnsNil) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
 func (s *stubCounterReturnsNil) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {
@@ -738,7 +738,7 @@ func (s *stubCounterPerUser) Like(_ context.Context, _ uint64, _, _ string) (boo
 func (s *stubCounterPerUser) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
-func (s *stubCounterPerUser) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+func (s *stubCounterPerUser) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
 func (s *stubCounterPerUser) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {

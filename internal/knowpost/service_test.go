@@ -189,7 +189,7 @@ func (s *stubCounter) Like(_ context.Context, _ uint64, _, _ string) (bool, erro
 func (s *stubCounter) Unlike(_ context.Context, _ uint64, _, _ string) (bool, error) {
 	return false, nil
 }
-func (s *stubCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ uint64, _ int) (*counter.LikersResponse, error) {
+func (s *stubCounter) GetLikers(_ context.Context, _ string, _ uint64, _ string, _ string, _ int) (*counter.LikersResponse, error) {
 	return nil, nil
 }
 func (s *stubCounter) IsLikedAndFaved(_ context.Context, _ uint64, _, _ string) (bool, bool, error) {

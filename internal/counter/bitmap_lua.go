@@ -11,22 +11,36 @@ import (
 // 无效的操作（非 add/remove）返回 -1。
 //
 // KEYS[1]：位图键（bm:{metric}:{entityType}:{entityID}:{chunk}）
+// KEYS[2]：时间序索引键（likers:{metric}:{entityType}:{entityID}，ZSet）
 // ARGV[1]：位偏移（用户 ID 在分片内的位置）
 // ARGV[2]：操作类型（"add" 或 "remove"）
+// ARGV[3]：用户 ID（ZSet member）
+// ARGV[4]：当前 Unix 秒（ZSet score）
+//
+// WHY 在同一段 Lua 里维护两个结构：
+//
+//	Bitmap 是状态真值（O(1) 判定、极省内存），但只能按 userID 枚举；
+//	「谁赞了我」的产品语义是按**时间**倒序，需要 ZSet(score=时间) 做索引。
+//	两个结构必须原子同步——分两次调用会在崩溃窗口留下真值与索引不一致。
 //
 // 返回值：1=状态发生变化，0=无变化，-1=未知操作
 const TOGGLE_LUA = `
 local bmKey = KEYS[1]
+local zKey = KEYS[2]
 local offset = tonumber(ARGV[1])
 local op = ARGV[2]
+local member = ARGV[3]
+local now = ARGV[4]
 local prev = redis.call('GETBIT', bmKey, offset)
 if op == 'add' then
   if prev == 1 then return 0 end
   redis.call('SETBIT', bmKey, offset, 1)
+  redis.call('ZADD', zKey, now, member)
   return 1
 elseif op == 'remove' then
   if prev == 0 then return 0 end
   redis.call('SETBIT', bmKey, offset, 0)
+  redis.call('ZREM', zKey, member)
   return 1
 end
 return -1
