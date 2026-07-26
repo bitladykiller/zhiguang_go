@@ -194,7 +194,11 @@ func (b *Bridge) runOnce(ctx context.Context) error {
 	if err := connector.Connect(); err != nil {
 		return err
 	}
-	defer connector.DisConnection()
+	defer func() {
+		if err := connector.DisConnection(); err != nil {
+			b.logger.Warn("canal disconnect failed", zap.Error(err))
+		}
+	}()
 
 	if err := connector.Subscribe(b.cfg.Filter); err != nil {
 		return err

@@ -17,6 +17,9 @@ import (
 	"github.com/zhiguang/app/pkg/redislock"
 )
 
+// tokenKindRefresh 是刷新令牌在 JWT claims 中的类型标识（与 jwt.go 签发处一致）。
+const tokenKindRefresh = "refresh"
+
 var (
 	phoneRegex = regexp.MustCompile(`^1[3-9]\d{9}$`)
 	emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
@@ -274,8 +277,8 @@ func (s *AuthService) Login(ctx context.Context, req *LoginRequest, clientInfo C
 			s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusFailed, clientInfo)
 			return AuthResponse{}, errcode.ErrInvalidCredentials
 		}
-		if err := bcrypt.CompareHashAndPassword([]byte(*user.PasswordHash), []byte(req.Password)); err != nil {
-			s.logger.Warn("密码登录失败：密码不匹配", zap.Uint64("userID", user.ID), zap.String("identifier", normalized), zap.String("ip", clientInfo.IP), zap.Error(err))
+		if cmpErr := bcrypt.CompareHashAndPassword([]byte(*user.PasswordHash), []byte(req.Password)); cmpErr != nil {
+			s.logger.Warn("密码登录失败：密码不匹配", zap.Uint64("userID", user.ID), zap.String("identifier", normalized), zap.String("ip", clientInfo.IP), zap.Error(cmpErr))
 			s.recordLoginLog(ctx, user.ID, normalized, channel, LoginStatusFailed, clientInfo)
 			return AuthResponse{}, errcode.ErrInvalidCredentials
 		}
@@ -330,7 +333,7 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 	}
 
 	jwtClaims, ok := claims.(*JwtClaims)
-	if !ok || jwtClaims.TokenKind != "refresh" {
+	if !ok || jwtClaims.TokenKind != tokenKindRefresh {
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
 	}
 	_, release, appErr := s.acquireRefreshSessionLock(ctx, jwtClaims.UID)
@@ -342,8 +345,8 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 		return AuthResponse{}, errcode.ErrRefreshTokenInvalid
 	}
 
-	if err := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); err != nil {
-		s.logger.Error("吊销刷新令牌失败", zap.Uint64("userID", jwtClaims.UID), zap.String("tokenID", jwtClaims.ID), zap.Error(err))
+	if revokeErr := s.tokenStore.RevokeToken(ctx, jwtClaims.UID, jwtClaims.ID); revokeErr != nil {
+		s.logger.Error("吊销刷新令牌失败", zap.Uint64("userID", jwtClaims.UID), zap.String("tokenID", jwtClaims.ID), zap.Error(revokeErr))
 		return AuthResponse{}, errcode.ErrInternal.WithMsg("吊销刷新令牌失败")
 	}
 
@@ -378,7 +381,7 @@ func (s *AuthService) Refresh(ctx context.Context, req *TokenRefreshRequest) (Au
 //   - req: 包含需要吊销的 refresh token 的请求
 func (s *AuthService) Logout(ctx context.Context, req *TokenRefreshRequest) {
 	claims, err := s.jwtSvc.ValidateToken(req.RefreshToken)
-	if err != nil || claims.TokenType() != "refresh" {
+	if err != nil || claims.TokenType() != tokenKindRefresh {
 		return
 	}
 	if jwtClaims, ok := claims.(*JwtClaims); ok {
@@ -422,8 +425,8 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *PasswordResetReque
 		return err
 	}
 
-	if err := validatePassword(req.NewPassword, s.cfg.Password); err != nil {
-		return errcode.ErrBadRequest.WithMsg(err.Error())
+	if pwErr := validatePassword(req.NewPassword, s.cfg.Password); pwErr != nil {
+		return errcode.ErrBadRequest.WithMsg(pwErr.Error())
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), s.cfg.Password.BcryptCost)

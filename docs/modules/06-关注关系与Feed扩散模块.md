@@ -899,6 +899,8 @@ flowchart TD
 #### `getListWithCursor(ctx, userID, listType, limit, cursor string) ([]uint64, string, error)`
 - **逐步**：解析游标 → EXISTS 判 ZSet，冷则预热 → 上界：首页 +inf / legacy 排除式 `("ms` / 复合**包含式** ms 且 fetch=limit+8 并列冗余 → `ZREVRANGEBYSCORE WITHSCORES` → 应用侧跳过 `ms==cur.ms && member>=curMember`（与 Redis 并列输出的逆字典序同序比较）→ 收满 limit → 尾条编 `s:` 游标。
 - **修复点**：旧排除式区间在毫秒并列横跨页边界时整页跳过成员（静默丢条目）。
+- **容量边界**：ZSet 冷启动预热上限 ZSetWarmLimit（默认 2000）——关注数超过它的用户，
+  更早的关注对象不在缓存里，游标翻页与 fanout 的大 V 扫描都到不了那部分（DB 里仍在）。
 
 ## C3. `repository.go`（关键两个）
 

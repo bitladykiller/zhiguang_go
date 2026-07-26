@@ -92,7 +92,7 @@ func (s *JwtService) IssueTokenPair(user *User) (*TokenPair, error) {
 		return nil, fmt.Errorf("颁发令牌对: 编码 access token: %w", err)
 	}
 
-	refreshToken, err := s.encode(user, now, refreshExpiresAt, "refresh", refreshTokenID)
+	refreshToken, err := s.encode(user, now, refreshExpiresAt, tokenKindRefresh, refreshTokenID)
 	if err != nil {
 		return nil, fmt.Errorf("颁发令牌对: 编码 refresh token: %w", err)
 	}

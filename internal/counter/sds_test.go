@@ -2,65 +2,10 @@ package counter
 
 import (
 	"context"
-	"encoding/binary"
 	"testing"
 
 	"go.uber.org/zap"
 )
-
-// ============================================================================
-// readInt32BE / writeInt32BE
-// ============================================================================
-
-func TestReadWriteInt32BE(t *testing.T) {
-	buf := make([]byte, 4)
-
-	tests := []int32{0, 1, -1, 255, 65536, 2147483647, -2147483648}
-	for _, val := range tests {
-		writeInt32BE(buf, 0, val)
-		got := readInt32BE(buf, 0)
-		if got != val {
-			t.Errorf("roundtrip %d: got %d", val, got)
-		}
-	}
-}
-
-func TestReadInt32BE_Offset(t *testing.T) {
-	buf := make([]byte, 12)
-	writeInt32BE(buf, 0, 10)
-	writeInt32BE(buf, 4, 20)
-	writeInt32BE(buf, 8, 30)
-
-	if got := readInt32BE(buf, 0); got != 10 {
-		t.Errorf("offset 0: got %d want 10", got)
-	}
-	if got := readInt32BE(buf, 4); got != 20 {
-		t.Errorf("offset 4: got %d want 20", got)
-	}
-	if got := readInt32BE(buf, 8); got != 30 {
-		t.Errorf("offset 8: got %d want 30", got)
-	}
-}
-
-func TestWriteInt32BE_Zero(t *testing.T) {
-	buf := make([]byte, 4)
-	writeInt32BE(buf, 0, 0)
-	expected := []byte{0, 0, 0, 0}
-	for i, b := range buf {
-		if b != expected[i] {
-			t.Fatalf("byte %d: got %d want %d", i, b, expected[i])
-		}
-	}
-}
-
-func TestWriteInt32BE_MaxValue(t *testing.T) {
-	buf := make([]byte, 4)
-	writeInt32BE(buf, 0, 2147483647)
-	got := readInt32BE(buf, 0)
-	if got != 2147483647 {
-		t.Errorf("got %d want 2147483647", got)
-	}
-}
 
 // ============================================================================
 // emptyCounts
@@ -574,56 +519,5 @@ func TestIsUserMetric(t *testing.T) {
 	}
 	if isUserMetric("like") || isUserMetric("fav") {
 		t.Error("like/fav should NOT be user metrics")
-	}
-}
-
-// ============================================================================
-// SDS 序列化格式一致性
-// ============================================================================
-
-func TestSdsSchemaLayout(t *testing.T) {
-	raw := make([]byte, SchemaLen*FieldSize)
-
-	writeInt32BE(raw, IdxLike*FieldSize, 1)
-	writeInt32BE(raw, IdxFav*FieldSize, 2)
-	writeInt32BE(raw, IdxFollower*FieldSize, 3)
-	writeInt32BE(raw, IdxFollowing*FieldSize, 4)
-	writeInt32BE(raw, IdxPosts*FieldSize, 5)
-
-	like := readInt32BE(raw, IdxLike*FieldSize)
-	fav := readInt32BE(raw, IdxFav*FieldSize)
-	follower := readInt32BE(raw, IdxFollower*FieldSize)
-	following := readInt32BE(raw, IdxFollowing*FieldSize)
-	posts := readInt32BE(raw, IdxPosts*FieldSize)
-
-	if like != 1 || fav != 2 || follower != 3 || following != 4 || posts != 5 {
-		t.Fatalf("schema layout mismatch: %d %d %d %d %d", like, fav, follower, following, posts)
-	}
-}
-
-func TestSdsTotalSize(t *testing.T) {
-	if SchemaLen*FieldSize != 20 {
-		t.Fatalf("expected SDS size 20, got %d", SchemaLen*FieldSize)
-	}
-}
-
-// ============================================================================
-// 大端字节序验证
-// ============================================================================
-
-func TestBigEndianByteOrder(t *testing.T) {
-	buf := make([]byte, 4)
-	binary.BigEndian.PutUint32(buf, 0x01020304)
-	got := readInt32BE(buf, 0)
-	if got != 0x01020304 {
-		t.Fatalf("big endian read: got %d want %d", got, 0x01020304)
-	}
-
-	writeInt32BE(buf, 0, 0x05060708)
-	expected := []byte{0x05, 0x06, 0x07, 0x08}
-	for i, b := range buf {
-		if b != expected[i] {
-			t.Fatalf("byte %d: got 0x%02x want 0x%02x", i, b, expected[i])
-		}
 	}
 }

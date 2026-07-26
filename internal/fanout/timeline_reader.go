@@ -235,6 +235,10 @@ const followingScanMaxPages = 40
 // *关注对象*（而非大 V）后就停止，实际只检查了最近关注的一页——
 // 关注超过 500 人且大 V 是早年关注的用户，那些大 V 的内容会从首页凭空消失。
 // MaxPullAuthors 只应约束**产出**（要拉多少个大 V），不应约束**扫描范围**。
+//
+// 另一个隐含上界来自数据源：relation 的关注 ZSet 冷启动预热最多写入
+// ZSetWarmLimit（默认 2000）条——关注超过该数的用户，更早的关注对象
+// 不在 ZSet 里，本扫描自然也看不到。这是 relation 侧的容量取舍，非本函数缺陷。
 func (r *TimelineReader) followedCelebrities(ctx context.Context, userID uint64) ([]uint64, error) {
 	if r.celebrities == nil || r.followingLister == nil {
 		return nil, nil

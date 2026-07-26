@@ -43,7 +43,6 @@ type CounterEvent struct {
 // 使用大端序（Big Endian）写入 Redis 字符串，方便通过 BITFIELD 命令做局部读写。
 const (
 	SchemaLen    = 5 // 指标总数
-	FieldSize    = 4 // 单指标字节数（uint32）
 	IdxLike      = 0 // like 槽位（点赞数）
 	IdxFav       = 1 // fav 槽位（收藏数）
 	IdxFollower  = 2 // follower 槽位（粉丝数）
