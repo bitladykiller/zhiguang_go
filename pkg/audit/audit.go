@@ -1,3 +1,4 @@
+// Package audit 提供审计日志的结构化记录能力（谁、何时、对什么、做了什么）。
 package audit
 
 import (

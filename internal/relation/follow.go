@@ -17,7 +17,7 @@ import (
 func (s *RelationService) Follow(ctx context.Context, fromUserID, toUserID uint64) (bool, error) {
 	rlKey := fmt.Sprintf("rl:follow:%d", fromUserID)
 	capacity, rate := s.tokenBucketParams()
-	allowed, err := s.redis.Eval(ctx, TOKEN_BUCKET_LUA, []string{rlKey}, capacity, rate).Int()
+	allowed, err := s.redis.Eval(ctx, tokenBucketLua, []string{rlKey}, capacity, rate).Int()
 	if err != nil {
 		s.logger.Warn("token bucket eval failed", zap.String("key", rlKey), zap.Error(err))
 		return false, nil
@@ -112,7 +112,7 @@ func (s *RelationService) Unfollow(ctx context.Context, fromUserID, toUserID uin
 		return false, fmt.Errorf("marshal unfollow event: %w", err)
 	}
 
-	var txErr error = outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
+	txErr := outbox.RunInTx(ctx, s.db, func(tx *sqlx.Tx) error {
 		txRepo := s.repo.WithDB(tx)
 		affected, err := txRepo.CancelFollowing(ctx, fromUserID, toUserID)
 		if err != nil {

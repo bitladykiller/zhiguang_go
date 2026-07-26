@@ -1,4 +1,4 @@
-// search 包实现基于 Elasticsearch 的内容搜索能力，
+// Package search 实现基于 Elasticsearch 的内容搜索能力，
 // 同时提供面向知文内容的自动补全建议功能。
 //
 // 主要特性：
@@ -501,7 +501,7 @@ func (s *SearchService) decodeAndEnrich(ctx context.Context, hits []searchHit, c
 			Tags:           source.Tags,
 			AuthorAvatar:   source.AuthorAvatar,
 			AuthorNickname: source.AuthorName,
-			TagJson:        source.AuthorTagJSON,
+			TagJSON:        source.AuthorTagJSON,
 			LikeCount:      source.LikeCount,
 			FavoriteCount:  source.FavCount,
 			IsTop:          boolPtr(source.IsTop),

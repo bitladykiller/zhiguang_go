@@ -26,6 +26,7 @@
 // 语义：
 //   - MightContain=false → 一定不存在（仅过滤器已预热时）
 //   - MightContain=true  → 可能存在，必须继续 L1/L2/DB
+
 package cache
 
 import (

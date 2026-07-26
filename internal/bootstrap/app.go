@@ -1,3 +1,4 @@
+// Package bootstrap 负责应用装配：按依赖顺序初始化配置、存储、各业务模块与后台任务，产出可运行的 App。
 package bootstrap
 
 import (

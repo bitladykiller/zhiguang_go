@@ -79,7 +79,7 @@ func buildUpdateSet(req *ProfilePatchRequest) ([]string, []interface{}) {
 		{req.Bio, "bio"},
 		{req.Gender, "gender"},
 		{req.School, "school"},
-		{req.TagsJson, "tags_json"},
+		{req.TagsJSON, "tags_json"},
 		{req.Birthday, "birthday"},
 	}
 

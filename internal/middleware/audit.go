@@ -1,3 +1,4 @@
+// Package middleware 存放依赖业务模块的 HTTP 中间件（与 pkg/middleware 的通用中间件区分）。
 package middleware
 
 import (

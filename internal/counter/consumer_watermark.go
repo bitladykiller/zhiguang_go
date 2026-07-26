@@ -6,7 +6,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// APPLY_PARTITION_BATCH_LUA 按 partition 内的 offset 顺序原子应用一批计数事件。
+// applyPartitionBatchLua 按 partition 内的 offset 顺序原子应用一批计数事件。
 //
 // 设计目标：
 //   - 使用共享水位线 applied_offset 实现跨实例幂等。
@@ -27,7 +27,7 @@ import (
 //
 // 返回值：
 //   - 返回应用后的最新水位线（即 max applied offset）。
-const APPLY_PARTITION_BATCH_LUA = `
+const applyPartitionBatchLua = `
 local appliedKey = KEYS[1]
 local eventCount = tonumber(ARGV[1])
 local entityCount = tonumber(ARGV[2])
@@ -73,7 +73,7 @@ end
 return lastApplied
 `
 
-// ADVANCE_APPLIED_OFFSET_LUA 在不修改 cnt:* 的前提下推进共享水位线。
+// advanceAppliedOffsetLua 在不修改 cnt:* 的前提下推进共享水位线。
 //
 // 用途：
 //   - 对于无法解析、字段非法等"明确要丢弃"的消息，也要推进 partition 水位线，
@@ -81,7 +81,7 @@ return lastApplied
 //
 // KEYS[1]：applied_offset key
 // ARGV[1]：目标 offset
-const ADVANCE_APPLIED_OFFSET_LUA = `
+const advanceAppliedOffsetLua = `
 local appliedKey = KEYS[1]
 local target = tonumber(ARGV[1])
 local current = tonumber(redis.call('GET', appliedKey) or '-1')
@@ -95,8 +95,8 @@ return target
 `
 
 var (
-	applyPartitionBatchScript  = redis.NewScript(APPLY_PARTITION_BATCH_LUA)
-	advanceAppliedOffsetScript = redis.NewScript(ADVANCE_APPLIED_OFFSET_LUA)
+	applyPartitionBatchScript  = redis.NewScript(applyPartitionBatchLua)
+	advanceAppliedOffsetScript = redis.NewScript(advanceAppliedOffsetLua)
 )
 
 func AppliedOffsetKey(groupID, topic string, partition int) string {

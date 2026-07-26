@@ -140,7 +140,7 @@ func (s *KnowPostDetailService) GetDetail(ctx context.Context, id uint64, curren
 			base := p.l2Base + jitterN(p.l2Jitter)
 			if s.hotKey != nil {
 				// 热点内容拿更长的 L2 TTL，降低周期性回源。
-				base = s.hotKey.TtlForPublic(ctx, base, hotKeyID(id))
+				base = s.hotKey.TTLForPublic(ctx, base, hotKeyID(id))
 			}
 			return time.Duration(base) * time.Second
 		},
@@ -215,13 +215,13 @@ func (s *KnowPostDetailService) queryDetailFromDB(ctx context.Context, id uint64
 		ID:             strconv.FormatUint(row.ID, 10),
 		Title:          row.Title,
 		Description:    row.Description,
-		ContentUrl:     row.ContentUrl,
+		ContentURL:     row.ContentURL,
 		Images:         jsonutil.ParseStringArray(row.ImgUrls),
 		Tags:           jsonutil.ParseStringArray(row.Tags),
 		AuthorID:       strconv.FormatUint(row.CreatorID, 10),
 		AuthorAvatar:   row.AuthorAvatar,
 		AuthorNickname: row.AuthorNickname,
-		AuthorTagJson:  row.AuthorTagJson,
+		AuthorTagJSON:  row.AuthorTagJSON,
 		IsTop:          row.IsTop,
 		Visible:        string(row.Visible),
 		Type:           row.Type,
@@ -286,7 +286,7 @@ func (s *KnowPostDetailService) recordHotKeyAndExtendTTL(ctx context.Context, id
 	s.hotKey.Record(hotKeyID(id)) // 纯本地计数，无 Redis IO
 
 	baseTTL := s.detailCacheTTLValues().ttlMedium
-	target := s.hotKey.TtlForPublic(ctx, baseTTL, hotKeyID(id))
+	target := s.hotKey.TTLForPublic(ctx, baseTTL, hotKeyID(id))
 	if target <= baseTTL {
 		return
 	}

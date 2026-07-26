@@ -484,7 +484,7 @@ type BootstrapConfig struct {
 	RelationOutboxIntervalMs int `yaml:"relation_outbox_interval_ms"`
 }
 
-// Validate 校验配置中的关键字段是否合法。
+// ApplyDefaults 为未设置的字段填入默认值（先于 Validate 调用）。
 func (c *Config) ApplyDefaults() {
 	if c.Server.Port <= 0 {
 		c.Server.Port = DefaultServerPort

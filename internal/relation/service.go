@@ -15,8 +15,8 @@ import (
 	"github.com/zhiguang/app/pkg/config"
 )
 
-// TOKEN_BUCKET_LUA 实现一个通用令牌桶限流器。
-const TOKEN_BUCKET_LUA = `
+// tokenBucketLua 实现一个通用令牌桶限流器。
+const tokenBucketLua = `
 local key = KEYS[1]
 local capacity = tonumber(ARGV[1])
 local rate = tonumber(ARGV[2])

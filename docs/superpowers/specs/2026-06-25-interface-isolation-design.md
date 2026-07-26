@@ -31,7 +31,7 @@ type FeedItem struct {
     Tags           []string
     AuthorAvatar   *string
     AuthorNickname string
-    TagJson        *string
+    TagJSON        *string
     LikeCount      int64
     FavoriteCount  int64
     Liked          *bool

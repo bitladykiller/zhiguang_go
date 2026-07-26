@@ -4,7 +4,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// TOGGLE_LUA 以原子方式切换位图中的单个位，并返回状态是否发生变化。
+// toggleLua 以原子方式切换位图中的单个位，并返回状态是否发生变化。
 //
 // 功能：如果操作是 "add"，当前位为 0 则设为 1 并返回 1；已为 1 则返回 0。
 // 如果操作是 "remove"，当前位为 1 则设为 0 并返回 1；已为 0 则返回 0。
@@ -24,7 +24,7 @@ import (
 //	两个结构必须原子同步——分两次调用会在崩溃窗口留下真值与索引不一致。
 //
 // 返回值：1=状态发生变化，0=无变化，-1=未知操作
-const TOGGLE_LUA = `
+const toggleLua = `
 local bmKey = KEYS[1]
 local zKey = KEYS[2]
 local offset = tonumber(ARGV[1])
@@ -46,7 +46,7 @@ end
 return -1
 `
 
-// RATE_LIMIT_LUA 原子递增限流计数器并设置过期时间。
+// rateLimitLua 原子递增限流计数器并设置过期时间。
 //
 // 解决 INCR + 条件 EXPIRE 的竞态条件：
 //
@@ -58,7 +58,7 @@ return -1
 // ARGV[1]：过期时间（秒）
 //
 // 返回值：递增后的计数值
-const RATE_LIMIT_LUA = `
+const rateLimitLua = `
 local val = redis.call('INCR', KEYS[1])
 if val == 1 then
     redis.call('EXPIRE', KEYS[1], ARGV[1])
@@ -66,4 +66,4 @@ end
 return val
 `
 
-var rateLimitScript = redis.NewScript(RATE_LIMIT_LUA)
+var rateLimitScript = redis.NewScript(rateLimitLua)

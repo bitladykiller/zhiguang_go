@@ -186,7 +186,7 @@ func (s *KnowPostService) ConfirmContent(ctx context.Context, creatorID, id uint
 		ContentEtag:      &etag,
 		ContentSize:      &size,
 		ContentSha256:    &sha256,
-		ContentUrl:       jsonutil.StrPtr(s.publicURL(objectKey)),
+		ContentURL:       jsonutil.StrPtr(s.publicURL(objectKey)),
 		UpdateTime:       time.Now(),
 	}
 

@@ -65,7 +65,7 @@ func (r *KnowPostRepository) UpdateContent(ctx context.Context, post *KnowPost) 
 		`UPDATE know_posts
 		 SET content_object_key = ?, content_etag = ?, content_size = ?, content_sha256 = ?, content_url = ?, update_time = ?
 		 WHERE id = ? AND creator_id = ?`,
-		post.ContentObjectKey, post.ContentEtag, post.ContentSize, post.ContentSha256, post.ContentUrl, time.Now(), post.ID, post.CreatorID,
+		post.ContentObjectKey, post.ContentEtag, post.ContentSize, post.ContentSha256, post.ContentURL, time.Now(), post.ID, post.CreatorID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("update content: %w", err)

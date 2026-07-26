@@ -1,3 +1,4 @@
+// Package idgen 提供雪花算法的分布式唯一 ID 生成器。
 package idgen
 
 import (

@@ -470,7 +470,7 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 	for i, idStr := range idStrs {
 		itemKeys[i] = feedItemKey(idStr)
 	}
-	itemJsons, err := s.redis.MGet(ctx, itemKeys...).Result()
+	itemJSONs, err := s.redis.MGet(ctx, itemKeys...).Result()
 	if err != nil {
 		s.logger.Warn("failed to MGet feed item cache entries", zap.Strings("itemKeys", itemKeys), zap.Error(err))
 		return nil
@@ -478,11 +478,11 @@ func (s *KnowPostFeedService) assembleFromCache(ctx context.Context, idsKey, has
 
 	// 解析条目内容
 	items := make([]FeedItemResponse, 0, len(idStrs))
-	for _, itemJson := range itemJsons {
-		if itemJson == nil {
+	for _, itemJSON := range itemJSONs {
+		if itemJSON == nil {
 			return nil // 任意碎片缺失则视为缓存未命中
 		}
-		itemStr, ok := itemJson.(string)
+		itemStr, ok := itemJSON.(string)
 		if !ok {
 			return nil
 		}
@@ -682,7 +682,7 @@ func (s *KnowPostFeedService) mapRowsToItems(ctx context.Context, rows []KnowPos
 			Tags:           tags,
 			AuthorAvatar:   r.AuthorAvatar,
 			AuthorNickname: r.AuthorNickname,
-			TagJson:        r.AuthorTagJson,
+			TagJSON:        r.AuthorTagJSON,
 		}
 
 		if countsBatch != nil {
@@ -798,7 +798,7 @@ func (s *KnowPostFeedService) recordItemHotKeys(ctx context.Context, items []Fee
 	}
 
 	baseTTL := s.feedCacheTTLValues().extendBase
-	targets := s.hotKey.TtlForPublicBatch(ctx, baseTTL, hotKeyIDs)
+	targets := s.hotKey.TTLForPublicBatch(ctx, baseTTL, hotKeyIDs)
 
 	itemKeys := make([]string, 0, len(items))
 	itemTTLs := make([]any, 0, len(items))

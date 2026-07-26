@@ -1193,7 +1193,7 @@ flowchart TD
 - **职责**：详情读取唯一入口。编排＝配置一次 `cache.Tiered` + 提供 Loader。
 - **逐步**：
   1. `versions().Get(detailVersionKey(id))` 取版本号（进程内短缓存优先）→ `detailPageKey(id, ver)` 拼键；
-  2. 组装 `Tiered`：Decode=parseJSON、`L2TTL` 闭包内叠加热点延长（`hotKey.TtlForPublic`）、NullSentinel="NULL"、`PreLoad`=Bloom 预判、LockKey=`lock:{pageKey}`；
+  2. 组装 `Tiered`：Decode=parseJSON、`L2TTL` 闭包内叠加热点延长（`hotKey.TTLForPublic`）、NullSentinel="NULL"、`PreLoad`=Bloom 预判、LockKey=`lock:{pageKey}`；
   3. `tiered.Get(pageKey, loader)`；Loader：repo 为 nil → found=false（写哨兵，零依赖单测语义）；`queryDetailFromDB` 返回 ErrNotFound → found=false；**ErrForbidden → 存入闭包变量 `forbiddenErr` 并作为 err 返回（不写任何缓存）**；成功 → `bloom.AddUint64`（渐进补齐过滤器）→ `fillCounts` → found=true；
   4. 错误翻译：`ErrNullCached` → `errcode.ErrNotFound`；`forbiddenErr` 非 nil → 原样 403；
   5. `recordHotKeyAndExtendTTL`（本地计数 + 冷键零往返）；
@@ -1212,7 +1212,7 @@ flowchart TD
 - **边界**：直接改 `base` 并返回同一指针（Tiered 已在返回前定格缓存，改它污染不了缓存）；counter nil / 查询失败均静默降级。
 
 #### `recordHotKeyAndExtendTTL(ctx, id, pageKey)`
-- **逐步**：`hotKey.Record(hotKeyID(id))` 纯本地计数（零 Redis IO）→ `TtlForPublic` 取目标 TTL → **target<=base 直接 return**（冷键不付 Lua 往返，绝大多数键是冷的）→ `extendTTLDualScript` 原子只增不减地延长 pageKey 与 `feed:item:{id}` 两键。
+- **逐步**：`hotKey.Record(hotKeyID(id))` 纯本地计数（零 Redis IO）→ `TTLForPublic` 取目标 TTL → **target<=base 直接 return**（冷键不付 Lua 往返，绝大多数键是冷的）→ `extendTTLDualScript` 原子只增不减地延长 pageKey 与 `feed:item:{id}` 两键。
 
 #### `WarmDetailBloom(ctx) error`
 - **职责**：启动期预热过滤器。`repo.ListIDsForBloom(lastID, 1000)` 游标批扫未删除 ID → 逐个 `CF.ADD`；失败不阻塞启动（fail-open，未预热期间由 NULL 哨兵兜底）。bootstrap 以独立 goroutine + 2 分钟超时调用。
@@ -1289,7 +1289,7 @@ flowchart TD
 
 #### `recordItemHotKeys(ctx, items)`
 - **职责**：整页批量热点记录 + 热点碎片 TTL 延长。
-- **逐步**：逐条 `hotKey.Record`（纯本地）→ `TtlForPublicBatch` 一次 MGET 定级全页 → 过滤出 target>base 的热点 → 一次 `batchExtendFeedItemTTLScript`（EVAL）延长。整页全冷 → **零 Redis 往返**。旧实现逐条 EXISTS+EVAL，一页 50 条上百次串行往返压在 L1 命中路径上。
+- **逐步**：逐条 `hotKey.Record`（纯本地）→ `TTLForPublicBatch` 一次 MGET 定级全页 → 过滤出 target>base 的热点 → 一次 `batchExtendFeedItemTTLScript`（EVAL）延长。整页全冷 → **零 Redis 往返**。旧实现逐条 EXISTS+EVAL，一页 50 条上百次串行往返压在 L1 命中路径上。
 
 #### `currentPublicFeedVersion / currentMineFeedVersion / feedVersion / feedVersions`
 - **职责**：Feed 版本号读取，统一走 `cache.Versions`（前缀 `fv:`、Default=1、固定 2s 本地 TTL——feed 服务只持有 FeedCache 节，拿不到 detail 的 TTL 配置项，诚实固定而非传假参数）。

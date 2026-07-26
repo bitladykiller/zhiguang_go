@@ -1,3 +1,4 @@
+// Package profile 维护用户资料（昵称、头像、标签等）的读写与缓存。
 package profile
 
 import (
@@ -42,5 +43,5 @@ func (s *Service) UpdateProfile(ctx context.Context, callerID, targetID uint64, 
 // isNoOp 判断资料更新请求是否所有字段都为空（无实际操作）。
 func isNoOp(req *ProfilePatchRequest) bool {
 	return req.Nickname == nil && req.Avatar == nil && req.Bio == nil && req.Gender == nil &&
-		req.Birthday == nil && req.School == nil && req.TagsJson == nil
+		req.Birthday == nil && req.School == nil && req.TagsJSON == nil
 }

@@ -1,3 +1,4 @@
+// Package metrics 定义 Prometheus 指标（HTTP 请求量/时延、DB 查询时延），由中间件与数据层埋点。
 package metrics
 
 import (
@@ -6,7 +7,7 @@ import (
 )
 
 var (
-	HttpRequestTotal = promauto.NewCounterVec(
+	HTTPRequestTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
 			Help: "Total number of HTTP requests",
@@ -14,7 +15,7 @@ var (
 		[]string{"method", "path", "status"},
 	)
 
-	HttpRequestDuration = promauto.NewHistogramVec(
+	HTTPRequestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
 			Help:    "HTTP request latency in seconds",
@@ -39,7 +40,7 @@ var (
 		[]string{"cache_layer"},
 	)
 
-	DbQueryDuration = promauto.NewHistogramVec(
+	DBQueryDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "db_query_duration_seconds",
 			Help:    "Database query latency in seconds",

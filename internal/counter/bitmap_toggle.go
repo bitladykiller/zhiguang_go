@@ -41,7 +41,7 @@ func (s *CounterService) toggle(ctx context.Context, userID uint64, entityType, 
 	zKey := likersZSetKey(metric, entityType, entityID)
 	now := time.Now().Unix()
 
-	changed, err := s.redis.Eval(ctx, TOGGLE_LUA,
+	changed, err := s.redis.Eval(ctx, toggleLua,
 		[]string{bmKey, zKey},
 		offset, op, strconv.FormatUint(userID, 10), now,
 	).Int()

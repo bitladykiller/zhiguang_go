@@ -1,3 +1,4 @@
+// Package errcode 定义业务错误码与 AppError 类型，是 API 错误响应的唯一词汇表。
 package errcode
 
 import "fmt"

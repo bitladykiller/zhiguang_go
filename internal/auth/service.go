@@ -674,12 +674,12 @@ func mapUserToResponse(user *User) AuthUserResponse {
 		Nickname: user.Nickname,
 		Avatar:   user.Avatar,
 		Phone:    user.Phone,
-		ZgId:     user.ZgID,
+		ZgID:     user.ZgID,
 		Birthday: user.Birthday,
 		School:   user.School,
 		Bio:      user.Bio,
 		Gender:   user.Gender,
-		TagsJson: user.TagsJSON,
+		TagsJSON: user.TagsJSON,
 	}
 }
 

@@ -876,7 +876,7 @@ flowchart TD
 
 #### `Follow(ctx, fromUserID, toUserID) (bool, error)`
 - **逐步**：
-  1. `TOKEN_BUCKET_LUA` 用户级令牌桶限流（容量/速率可配；Redis 故障时保守拒绝返回 false,nil）；
+  1. `tokenBucketLua` 用户级令牌桶限流（容量/速率可配；Redis 故障时保守拒绝返回 false,nil）；
   2. 预生成三个雪花 ID（正向行/反向行/outbox）与 `FollowCreated` 载荷（含 RelationID）；
   3. `outbox.RunInTx`：事务内 `UpsertFollowing`（返回 **transitioned**）+ `UpsertFollower`；`!transitioned`（已在关注）→ 返回哨兵 `errNothingToFollow` 让事务回滚空事务、**跳过事件写入**；
   4. 哨兵被调用方翻译为 `(false, nil)` 幂等成功——无事件/无回填/无审计（重复 Follow 计数漂移的闸门，见 6.8）；

@@ -32,6 +32,9 @@ linters:
     - gocritic
     - prealloc
     - bodyclose
+    # 与编辑器 gopls 的 staticcheck 保持同一套 ST 规则（包注释、命名 initialisms 等），
+    # 避免「CI 绿但 IDE 黄」的双轨告警。
+    - stylecheck
   disable:
 
 run:

@@ -59,7 +59,7 @@ func RecordError(c *gin.Context, err error) {
 	}
 }
 
-// toAppErr 将任意 error 转换为 *errcode.AppError。
+// ToAppErr 将任意 error 转换为 *errcode.AppError。
 //
 // 功能：如果原始错误已经是 AppError 类型，直接原样返回。
 // 如果是其他类型的 error（如数据库查询错误），包装为 ErrInternal。

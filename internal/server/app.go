@@ -1,4 +1,4 @@
-// server 包是 HTTP 应用的顶层容器与启动入口。
+// Package server 是 HTTP 应用的顶层容器与启动入口。
 // 它持有 Gin 路由引擎、全局配置和后台 Runner 集合，
 // 通过统一的 Run() 方法启动服务和所有后台 goroutine。
 package server

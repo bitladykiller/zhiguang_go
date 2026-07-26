@@ -448,7 +448,7 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
 **水位线幂等**：
 
 - Kafka 消费者的每个 partition 通过 Redis 键 `counter:applied-offset:{groupID}:{topic}:{partition}` 记录已应用的 offset
-- 同一批消息内用 Lua 脚本 `APPLY_PARTITION_BATCH_LUA` 原子执行：
+- 同一批消息内用 Lua 脚本 `applyPartitionBatchLua` 原子执行：
   - 跳过 offset <= 已水位线的消息
   - 检测 offset 连续性（不允许空洞）
   - 只有所有校验通过后才写入 cnt:*
@@ -489,7 +489,7 @@ Bloom 检查移到 L1/L2 都未命中之后（命中即证明存在，且扫号�
 
 - TTL 延长统一走 Lua 脚本，语义为**只增不减**（仅当键存在且当前 TTL 小于目标值才 EXPIRE），多实例并发延长不会互相把 TTL 改短。
 - 热度等级缓存（`levels`）**按窗口整体重建**而非累加：每轮 flush 用本轮观测结果整体替换，本轮无流量则清空。这样既让降温的键自动退出热点集合，也使其规模始终受 `max_local_keys` 约束，不会随内容总量无上界增长。
-- 列表场景使用 `TtlForPublicBatch` 批量定级：本地等级缓存未命中的键合并为**一次** MGET，TTL 延长合并为**一次** EVAL，整页无热点时零 Redis 往返。避免逐条 `EXISTS + EVAL` 在 L1 命中路径上产生上百次串行往返。
+- 列表场景使用 `TTLForPublicBatch` 批量定级：本地等级缓存未命中的键合并为**一次** MGET，TTL 延长合并为**一次** EVAL，整页无热点时零 Redis 往返。避免逐条 `EXISTS + EVAL` 在 L1 命中路径上产生上百次串行往返。
 
 ### 点赞者列表（`internal/counter/likers.go`）
 
