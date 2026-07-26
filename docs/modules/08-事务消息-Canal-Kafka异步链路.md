@@ -454,7 +454,7 @@ sequenceDiagram
 | Relation | 更新 Redis ZSet 和用户计数 | dedupe key + ZADD/ZREM | dedupe 先落标后失败可能吞重试 |
 | Counter（旁路） | 累加实体 cnt SDS | partition applied offset + AggregationConsumer 内 dirty repairLoop | 只适用于 `counter-events`，不是 outbox 通用能力；**无独立 FailureWorker Runner** |
 | Relation 用户计数 | following/follower SDS | 消费端 `HIncrBy`（跟 ZSet 同一次 EventProcessor） | **不经** counter-events；半成功 + dedupe 先落标是已知边界 |
-| Fanout（旁路） | timeline ZSet | 业务幂等/截断在 FanoutService | 算法与 Consumer 在；**生产端未往 fanout topic 写消息** |
+| Fanout | timeline / authorbox ZSet | ZADD 天然幂等 + 长度截断 | 与搜索共享 `canal-outbox`，过滤 `KnowPostPublished` |
 
 面试时可以说：我不会把所有 consumer 说成一套幂等模型，而是按副作用语义分别处理；更不会把 fanout、counter-events 和 canal-outbox 讲成一条 topic。
 
@@ -513,7 +513,7 @@ flowchart TD
 
 ## B8. 2 分钟展开回答
 
-> 这条异步链路解决的是双写一致性。业务服务不直接同时写 MySQL 和 ES/Redis/Kafka，而是在同一个 MySQL 事务里写主表和 outbox。事务提交后，Canal 订阅 outbox 的 binlog，把事件桥接到 Kafka 的 `canal-outbox` topic。下游 search 与 relation 两个 consumer group 各自投影：搜索回查 MySQL 后写 ES；关系更新 ZSet，并对 following/follower 做 HIncrBy。通用 outbox consumer 负责拉消息、解析、重试、失败记录和 commit 跳过，但不替业务保证副作用只执行一次。like/fav 计数是另一条 `counter-events`（Bitmap + 水位 + AggregationConsumer 内 dirty repair）；写扩散是 topic `fanout`，当前生产端未闭环。
+> 这条异步链路解决的是双写一致性。业务服务不直接同时写 MySQL 和 ES/Redis/Kafka，而是在同一个 MySQL 事务里写主表和 outbox。事务提交后，Canal 订阅 outbox 的 binlog，把事件桥接到 Kafka 的 `canal-outbox` topic。下游 search 与 relation 两个 consumer group 各自投影：搜索回查 MySQL 后写 ES；关系更新 ZSet，并对 following/follower 做 HIncrBy。通用 outbox consumer 负责拉消息、解析、重试、失败记录和 commit 跳过，但不替业务保证副作用只执行一次。like/fav 计数是另一条 `counter-events`（Bitmap + 水位 + AggregationConsumer 内 dirty repair）；信息流扩散与 search、relation 共享 `canal-outbox`，只是消费者组不同，各自独立推进位点。
 
 ---
 

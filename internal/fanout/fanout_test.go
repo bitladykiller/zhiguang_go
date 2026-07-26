@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/model"
+	"github.com/zhiguang/app/internal/outbox"
 )
 
 // ============================================================================
@@ -494,5 +495,107 @@ func TestMergeTimelines_StableOrderOnEqualScores(t *testing.T) {
 func TestMergeTimelines_Empty(t *testing.T) {
 	if got := mergeTimelines(nil, nil, 10); got != nil {
 		t.Errorf("mergeTimelines(nil, nil) = %+v, want nil", got)
+	}
+}
+
+// ============================================================================
+// 事件消费：从 outbox 行到扩散动作
+// ============================================================================
+
+func newHandlerFixture(t *testing.T) (*miniredis.Miniredis, *publishRowHandler) {
+	t.Helper()
+	srv, rdb := newTestRedis(t)
+	svc := NewService(rdb, &stubFollowers{fans: []uint64{1001}},
+		&stubFollowerCount{counts: map[uint64]int64{7: 1}, known: true}, zap.NewNop(), testConfig())
+	return srv, &publishRowHandler{service: svc, logger: zap.NewNop()}
+}
+
+// TestHandleRow_TriggersFanoutOnPublish 验证发布事件被正确解析并触发扩散。
+func TestHandleRow_TriggersFanoutOnPublish(t *testing.T) {
+	srv, h := newHandlerFixture(t)
+
+	row := outbox.Row{
+		AggregateType: "knowpost",
+		AggregateID:   "42",
+		Type:          knowPostPublishedType,
+		Payload: []byte(`{"entity":"knowpost","type":"KnowPostPublished",
+			"id":42,"creator_id":7,"published_at":1700000000}`),
+	}
+	if err := h.HandleRow(context.Background(), row); err != nil {
+		t.Fatalf("HandleRow: %v", err)
+	}
+
+	if members, _ := srv.ZMembers(timelineKey(1001)); len(members) != 1 || members[0] != "42" {
+		t.Errorf("timeline = %v, want [42]", members)
+	}
+	if box, _ := srv.ZMembers(authorBoxKey(7)); len(box) != 1 {
+		t.Errorf("author box = %v, want the post to be recorded", box)
+	}
+}
+
+// TestHandleRow_IgnoresOtherEventTypes 验证非发布事件被放行。
+//
+// canal-outbox 是多消费者共享主题，里面混有关系、搜索等各类事件。
+func TestHandleRow_IgnoresOtherEventTypes(t *testing.T) {
+	srv, h := newHandlerFixture(t)
+
+	row := outbox.Row{
+		Type:    "FollowCreated",
+		Payload: []byte(`{"event_type":"FollowCreated","from_user_id":1,"to_user_id":2}`),
+	}
+	if err := h.HandleRow(context.Background(), row); err != nil {
+		t.Fatalf("HandleRow should pass non-publish events through: %v", err)
+	}
+	if srv.Exists(timelineKey(1001)) {
+		t.Error("a non-publish event must not trigger fanout")
+	}
+}
+
+// TestHandleRow_MalformedPayloadIsSkipped 验证载荷损坏时放行而非卡住分区。
+func TestHandleRow_MalformedPayloadIsSkipped(t *testing.T) {
+	_, h := newHandlerFixture(t)
+
+	for _, payload := range []string{
+		`{not json`,                    // 解析失败
+		`{"type":"KnowPostPublished"}`, // 缺 id 与 creator_id
+		`{"id":42,"creator_id":0}`,     // creator_id 为 0
+	} {
+		row := outbox.Row{Type: knowPostPublishedType, Payload: []byte(payload)}
+		if err := h.HandleRow(context.Background(), row); err != nil {
+			t.Errorf("payload %q: got error %v, want nil (retrying cannot fix a broken payload)", payload, err)
+		}
+	}
+}
+
+// TestHandleRow_MissingPublishedAtFallsBack 验证兼容升级前不带时间戳的历史事件。
+func TestHandleRow_MissingPublishedAtFallsBack(t *testing.T) {
+	srv, h := newHandlerFixture(t)
+
+	row := outbox.Row{
+		Type:    knowPostPublishedType,
+		Payload: []byte(`{"id":42,"creator_id":7}`),
+	}
+	if err := h.HandleRow(context.Background(), row); err != nil {
+		t.Fatalf("HandleRow: %v", err)
+	}
+	if members, _ := srv.ZMembers(timelineKey(1001)); len(members) != 1 {
+		t.Errorf("timeline = %v, want the post fanned out with a fallback timestamp", members)
+	}
+}
+
+// TestRemovePost 验证删除知文时清理发件箱。
+func TestRemovePost(t *testing.T) {
+	srv, rdb := newTestRedis(t)
+	svc := NewService(rdb, &stubFollowers{}, &stubFollowerCount{known: false}, zap.NewNop(), testConfig())
+
+	srv.ZAdd(authorBoxKey(7), 1000, "42")
+	srv.ZAdd(authorBoxKey(7), 2000, "43")
+
+	if err := svc.RemovePost(context.Background(), 7, 42); err != nil {
+		t.Fatalf("RemovePost: %v", err)
+	}
+	members, _ := srv.ZMembers(authorBoxKey(7))
+	if len(members) != 1 || members[0] != "43" {
+		t.Errorf("author box = %v, want only [43]", members)
 	}
 }

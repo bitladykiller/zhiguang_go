@@ -15,7 +15,7 @@
 - `canal.enabled=true` 时，启动 `Canal -> Kafka(canal-outbox) -> relation/search consumers` 链路
 - `canal.enabled=false` 时，不启动上述 outbox 异步投影；**不会**自动切换 outbox DirectPoll
 - like/fav 走独立 topic `counter-events`（AggregationConsumer + 进程内 dirty repairLoop）
-- 写扩散 `internal/fanout`：**Consumer/算法已实现**，但 **Publisher 未注入发布路径**（半接线）；与 `canal-outbox` 不是同一 topic
+- 信息流扩散 `internal/fanout`：**推拉结合已闭环**。普通作者走写扩散（推入粉丝收件箱），大 V 走读扩散（读者读取时拉发件箱），首页归并两路。事件复用 `canal-outbox`（不再有独立 `fanout` topic，避免双写丢事件）。详见 [`docs/modules/14`](docs/modules/14-信息流扩散-读扩散写扩散与推拉结合.md)
 - 跨模块流程图与接线核对：[`docs/跨模块流程图.md`](docs/跨模块流程图.md)
 - Kafka 本地环境已调整为 3 broker；`counter-events` 与 `canal-outbox` 主题使用 3 副本并要求 `min.insync.replicas=2`
 - `docker-compose.yml` 已包含本地 Canal 服务，默认会订阅 `zhiguang.outbox`
@@ -193,6 +193,11 @@ env GOCACHE=$(pwd)/.gocache go run ./cmd/server -config config/config-local.yaml
 - API 服务：`http://localhost:8080`
 - 健康检查：`http://localhost:8080/health`
 - 就绪检查：`http://localhost:8080/health/ready`
+- 后台链路状态：`http://localhost:8080/health/runners`（任一后台消费者未运行则返回 503）
+
+> **探针该指向哪个端点**：编排系统的存活/就绪探针请用 `/health` 与 `/health/ready`，它们只探 DB 和 Redis。
+> `/health/runners` 反映的是 Canal 桥接、Kafka 消费者等**异步链路**的存活，供监控告警使用——
+> 异步投影故障时 HTTP 接口其实完好，把它接进就绪探针会导致摘流量，反而放大故障。
 - 如需前端，可单独启动前端开发服务器（见 `frontend/` 目录）
 
 ---
@@ -260,7 +265,7 @@ docker compose build
 |--------|----------|------|
 | `AggregationConsumer` | **始终启动**（依赖 Kafka reader） | 消费 `counter-events` 主题，内嵌 **dirty repairLoop** 从 Bitmap 修复 SDS |
 | `hotKeyRunner` | **始终启动** | HotKeyDetector 后台 flush 本地计数到 Redis |
-| `FanoutConsumer` | Kafka brokers 非空时启动 | 消费 `fanout` 主题（**生产端未闭环**，通常无消息） |
+| `fanout.Consumer` | Kafka brokers 非空时启动 | 消费 `canal-outbox`，过滤 `KnowPostPublished` 后执行扩散 |
 | `canal.Bridge` | `canal.enabled=true` | 订阅 MySQL binlog，将 outbox 变更写入 `canal-outbox` topic |
 | `relationOutboxConsumer` | `canal.enabled=true` | 消费 `canal-outbox` 中关系类事件，投影 Redis ZSet + HIncrBy 用户计数 |
 | `searchOutboxConsumer` | `canal.enabled=true` 且 ES 可用 | 消费 `canal-outbox` 中知文类事件，回查 MySQL + 补计数后写入 ES |
@@ -307,7 +312,8 @@ docker compose build
 | DELETE | `/api/v1/knowposts/:id` | 删除知文 | 需登录 |
 | GET | `/api/v1/knowposts/:id` | 知文详情 | 可选登录 |
 | GET | `/api/v1/knowposts/feed/public` | 公共 Feed | 可选登录 |
-| GET | `/api/v1/knowposts/feed/mine` | 我的发布 | 需登录 |
+| GET | `/api/v1/knowposts/feed/mine` | 我自己发布的内容 | 需登录 |
+| GET | `/api/v1/knowposts/feed/home` | 关注流（我关注的人的内容） | 需登录 |
 
 ### Counter 计数
 
@@ -398,7 +404,16 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
 
 当 `canal.enabled=false` 时，不会启动上述两个消费者与 Canal Bridge，应用仍可正常提供 API 服务（仅丢失异步投影能力；**不会**自动启用 DirectPoll）。
 
-写扩散 topic `fanout` 与 `canal-outbox` 分离：`FanoutConsumer` 在 Kafka 可用时会启动，但当前发布路径**不会**调用 `FanoutPublisher`，时间线通常依赖读侧降级（见 `docs/modules/06`、`docs/跨模块流程图.md` §6）。
+信息流扩散采用**推拉结合**，事件复用 `canal-outbox`（不再有独立的 `fanout` topic）：
+
+- 普通作者（粉丝数 < `fanout.celebrity_threshold`）→ **推**：发帖时写入每个粉丝的 `timeline:{fanID}`
+- 大 V（粉丝数 ≥ 阈值）→ **拉**：只写 `authorbox:{authorID}`，由读者在读取时拉取
+- 读首页 = 收件箱 ⊕ 所关注大 V 的发件箱，归并去重后按时间倒序分页
+
+这样写侧扇出被配置阈值封死，读侧成本被「读者关注的大 V 数」封死，两者都不再随用户行为无界增长。
+原设计的独立 `fanout` topic 需要「事务提交 + Kafka 投递」双写，中间崩溃会丢事件；
+复用事务性 outbox 后投递保证与搜索投影一致。完整原理与取舍见
+[`docs/modules/14-信息流扩散`](docs/modules/14-信息流扩散-读扩散写扩散与推拉结合.md)。
 
 ### 计数器修复机制
 
@@ -446,6 +461,13 @@ MySQL binlog -> Canal Server -> Kafka (canal-outbox) -> relation outbox consumer
 | L2 | Redis（Feed 为碎片缓存，详情为整页） | ID 列表 60s+jitter，条目碎片 60s+jitter，详情 60s+jitter |
 | L3 | MySQL（权威数据源） | — |
 
+**详情读路径的 L1 已能真正零 Redis IO**：缓存键里编码了版本号，因此「读 L1」必须先「知道版本号」。
+早期实现每次都去 Redis 取版本号，导致 L1 命中也要付一次网络往返，进程内缓存名存实亡
+（再加上前置的 Bloom 查询与每次命中都执行的 TTL 延长 Lua，一次 L1 命中要 3 次 Redis 往返）。
+现在版本号有进程内短缓存（`knowpost.detail_cache.version_cache_ttl_seconds`，默认 2 秒，设为负数可关闭），
+Bloom 检查移到 L1/L2 都未命中之后（命中即证明存在，且扫号攻击的成本完全不变），
+冷键跳过 TTL 延长。
+
 **L1 公共 Feed 缓存只存「公共视图」**：`feed:public:{size}:{page}:v{layout}:{version}` 这个键不含用户 ID，是全体用户共享的一份数据。因此缓存中**不得**包含 `liked` / `faved` 这类用户维度字段——它们由 `withUserState` 在每次读出后即时叠加。若把某个用户的状态写进共享缓存，后续命中该键的其他用户就会读到别人的点赞收藏状态。
 
 **HotKeyDetector 工作原理**（`internal/cache/hotkey.go`）：
@@ -490,7 +512,7 @@ ZhiGuang 是一个知识内容社区后端，核心业务是让用户发布图�
 | 知文 | 草稿、内容确认、元数据编辑、发布、详情、Feed | `internal/knowpost` |
 | 计数 | 点赞、收藏、计数快照、点赞人列表 | `internal/counter` |
 | 关系 | 关注、取关、关注列表、粉丝列表、关系状态 | `internal/relation` |
-| Feed 扩散 | 粉丝时间线写扩散（算法+Consumer 在；Publisher 生产路径未闭环） | `internal/fanout` |
+| Feed 扩散 | 推拉结合：普通作者写扩散 + 大 V 读扩散，首页归并 | `internal/fanout` |
 | 搜索 | 全文检索、标签过滤、自动补全、ES 投影 | `internal/search` |
 | 异步链路 | 事务 outbox、Canal、Kafka、消费者幂等 | `internal/outbox` / `internal/canal` |
 | 存储 | OSS 预签名上传与业务元数据确认 | `internal/storage` |
@@ -690,8 +712,8 @@ flowchart TD
 4. **异步不是直接双写**：通过事务 outbox 绑定业务写入和事件，再由 Canal/Kafka 驱动下游。
 5. **计数有可恢复设计**：Lua 保证状态翻转原子性，Kafka 水位保证消费幂等，AggregationConsumer 内 dirty repairLoop 从 Bitmap 修复 SDS。
 6. **关系模块承认边界**：双表和 Redis ZSet 是合理建模；用户关注数消费端 HIncrBy；dedupe/排序/深分页/大 V 冷启动仍有演进空间。
-7. **写扩散半接线**：fanout 算法与 Consumer 在，发布路径未灌 `fanout` topic，读侧需降级（见跨模块流程图）。
+7. **推拉结合扩散**：按粉丝数分流，普通作者推、大 V 拉，读时归并；关注要回填、取关要清理副本（见 `docs/modules/14`）。
 
 ### 7. 面试 1 分钟介绍
 
-> 这是一个知识内容社区后端，核心模块包括知文发布、关注关系、点赞收藏计数、搜索和 AI 增强。技术上我重点处理了三类问题：第一是缓存和高并发读，比如知文详情用 RedisBloom 可删除 Cuckoo（CF.*）、空值缓存、L1/L2、多实例版本号和分布式锁；第二是异步一致性，比如知文和关系写入通过事务 outbox 进入 Canal/Kafka 的 `canal-outbox`，再投影到 ES 和关系 ZSet；第三是高频互动计数，点赞状态用 Bitmap 做真值，展示计数用 SDS 快照，失败后走 dirty set + AggregationConsumer 内 repairLoop。写扩散我会诚实说算法在、生产端未闭环。整体设计上我会先区分真值和投影，再分别处理性能、幂等和补偿。
+> 这是一个知识内容社区后端，核心模块包括知文发布、关注关系、点赞收藏计数、搜索和 AI 增强。技术上我重点处理了三类问题：第一是缓存和高并发读，比如知文详情用 RedisBloom 可删除 Cuckoo（CF.*）、空值缓存、L1/L2、多实例版本号和分布式锁；第二是异步一致性，比如知文和关系写入通过事务 outbox 进入 Canal/Kafka 的 `canal-outbox`，再投影到 ES 和关系 ZSet；第三是高频互动计数，点赞状态用 Bitmap 做真值，展示计数用 SDS 快照，失败后走 dirty set + AggregationConsumer 内 repairLoop。信息流扩散是推拉结合：按粉丝数分流，普通作者推入粉丝收件箱、大 V 只写发件箱由读者拉，读首页归并两路——这样写侧扇出和读侧拉取数都被配置封死；关注要回填、取关要清理收件箱副本。整体设计上我会先区分真值和投影，再分别处理性能、幂等和补偿。
