@@ -331,7 +331,7 @@ func TestTtlForPublicBatch_MixedSources(t *testing.T) {
 	d.levelMu.Lock()
 	d.levels["k1"] = LevelHigh
 	d.levelMu.Unlock()
-	if err := rdb.Set(context.Background(), hotkeyActivePrefix+"k2", "1", time.Minute).Err(); err != nil {
+	if err := rdb.Set(context.Background(), hotkeyActivePrefix+"k2", "2", time.Minute).Err(); err != nil {
 		t.Fatalf("seed hot mark: %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestTtlForPublicBatch_MatchesTtlForPublic(t *testing.T) {
 
 	d := NewHotKeyDetector(cfg, rdb, nil)
 	keys := []string{"x", "y", "z"}
-	if err := rdb.Set(context.Background(), hotkeyActivePrefix+"y", "1", time.Minute).Err(); err != nil {
+	if err := rdb.Set(context.Background(), hotkeyActivePrefix+"y", "2", time.Minute).Err(); err != nil {
 		t.Fatalf("seed hot mark: %v", err)
 	}
 
@@ -456,7 +456,7 @@ func TestGetLevel_RespectsMaxKeys(t *testing.T) {
 	d.levels["occupied"] = LevelLow
 	d.levelMu.Unlock()
 
-	if err := rdb.Set(context.Background(), hotkeyActivePrefix+"newcomer", "1", time.Minute).Err(); err != nil {
+	if err := rdb.Set(context.Background(), hotkeyActivePrefix+"newcomer", "2", time.Minute).Err(); err != nil {
 		t.Fatalf("seed hot mark: %v", err)
 	}
 
@@ -629,5 +629,39 @@ func TestRunUntilDone_FinalFlushPersistsLastWindow(t *testing.T) {
 	}
 	if n == 0 {
 		t.Error("final flush should have persisted the last window's counts")
+	}
+}
+
+// TestMarkStoresLevel_RemoteReadsExactLevel 验证跨实例热度等级无损。
+//
+// 旧实现的标记值恒为 "1"，远端实例只能一律按 Medium 回退——High 键被降档。
+// 现在标记存等级本身，远端读到什么等级就是什么等级；"1" 仍兼容为 Medium。
+func TestMarkStoresLevel_RemoteReadsExactLevel(t *testing.T) {
+	cfg := defaultHotKeyConfig()
+	rdb, shutdown := startTestRedis(t)
+	defer shutdown()
+
+	// 实例 A：制造一个 HIGH 键并 flush
+	a := NewHotKeyDetector(cfg, rdb, nil)
+	for i := 0; i < cfg.LevelHigh+5; i++ {
+		a.Record("hotK")
+	}
+	a.flushOnce(context.Background())
+
+	// 实例 B：本地无等级，回退 Redis 标记应还原 High
+	b := NewHotKeyDetector(cfg, rdb, nil)
+	if lvl := b.getLevel(context.Background(), "hotK"); lvl != LevelHigh {
+		t.Fatalf("remote level = %v, want LevelHigh (mark must carry the level)", lvl)
+	}
+
+	// 历史 "1" 标记按新格式解读为 Low（保守方向；旧标记最多存活一个 markTTL）
+	rdb.Set(context.Background(), hotkeyActivePrefix+"legacy", "1", time.Minute)
+	if lvl := b.getLevel(context.Background(), "legacy"); lvl != LevelLow {
+		t.Fatalf("legacy mark level = %v, want LevelLow", lvl)
+	}
+	// 非法值回退 Medium
+	rdb.Set(context.Background(), hotkeyActivePrefix+"junk", "xx", time.Minute)
+	if lvl := b.getLevel(context.Background(), "junk"); lvl != LevelMedium {
+		t.Fatalf("junk mark level = %v, want LevelMedium", lvl)
 	}
 }

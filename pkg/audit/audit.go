@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/zhiguang/app/pkg/contextutil"
 )
 
 type Action string
@@ -41,7 +43,7 @@ func (a *AuditLogger) LogAction(ctx context.Context, action Action, userID int64
 		zap.Time("timestamp", time.Now()),
 	}
 
-	if traceID, ok := ctx.Value("trace_id").(string); ok {
+	if traceID := contextutil.TraceIDFrom(ctx); traceID != "" {
 		fields = append(fields, zap.String("trace_id", traceID))
 	}
 

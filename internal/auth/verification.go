@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"time"
 
@@ -237,8 +238,8 @@ func (s *VerificationService) Verify(ctx context.Context, scene VerificationScen
 		return fail(StatusNotFound)
 	}
 
-	// 比较验证码
-	if luaResult[1] != code {
+	// 常数时间比较：杜绝按字节短路的时序侧信道（虽有 MaxAttempts 限次，防御纵深零成本）。
+	if subtle.ConstantTimeCompare([]byte(luaResult[1]), []byte(code)) != 1 {
 		return fail(StatusMismatch)
 	}
 

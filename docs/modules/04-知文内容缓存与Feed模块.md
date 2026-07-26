@@ -1,5 +1,31 @@
 # 知文模块
 
+## 0. 本模块的架构落点（重构后）
+
+知文按读写路径拆为三个服务，依赖面互不重叠：
+
+| 服务 | 职责 | 关键依赖 |
+|---|---|---|
+| `KnowPostService` | 写路径（草稿/发布/编辑/删除 + 写后失效） | db / repo / outbox / bloom / versions |
+| `KnowPostDetailService` | 详情读（`cache.Tiered` 三级缓存 + Bloom + 热点） | repo / redis / l1 / hotKey / bloom / 窄接口 counter |
+| `KnowPostFeedService` | 列表读（public 碎片缓存 / mine 整页 / home 关注流） | repo / redis / l1×2 / hotKey / 窄接口 counter |
+
+三条通用约定在本模块落地（详见 [15-设计约定与模式](15-设计约定与模式.md)）：
+
+- **读穿编排复用 `cache.Tiered[T]`**（详情与 mine 整页）：缓存只存 Loader 原始产物，
+  用户态在 Get 返回后由 `withUserState`/`enrichDetail` 叠加——跨用户串号从结构上不可能复发。
+- **版本号读取统一走 `cache.Versions`**（详情 per-post / feed 全局与 per-user 三处共用），
+  自带进程内短缓存：L1 命中不再为版本号付 Redis 往返；写侧失效后 `Drop` 保证自读自写一致。
+- **键 schema 集中在 `keys.go`**：模块占用的全部 Redis 键一页可查。
+
+三个列表接口语义与分页制式：
+
+| 接口 | 语义 | 分页 |
+|---|---|---|
+| `GET /feed/public` | 全站公开内容 | page/size（缓存页天然稳定） |
+| `GET /feed/home` | 关注流（推拉归并） | **游标**（`cursor`/`next_cursor` 不透明） |
+| `GET /feed/mine` | 我自己发布的内容 | page/size；现同样叠加 liked/faved |
+
 ## 1. 模块定位
 
 `knowpost` 是这个项目最核心的业务模块，它承载了内容平台的主流程：

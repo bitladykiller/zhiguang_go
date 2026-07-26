@@ -471,6 +471,9 @@ func (r *captureDraftRepo) ListIDsForBloom(ctx context.Context, lastID uint64, l
 func (r *captureDraftRepo) FindByIDs(ctx context.Context, ids []uint64) ([]KnowPostFeedRow, error) {
 	return nil, nil
 }
+func (r *captureDraftRepo) FindFeedRowsByIDs(_ context.Context, _ []uint64, _ []KnowPostVisibility) ([]KnowPostFeedRow, error) {
+	return nil, nil
+}
 func (r *captureDraftRepo) WithDB(db sqlx.ExtContext) Repo { return r }
 
 func TestCreateDraft_NoIdemKey(t *testing.T) {
@@ -604,6 +607,10 @@ func TestCreateDraft_ConcurrentSameKeySingleInsert(t *testing.T) {
 type slowInsertRepo struct {
 	inner Repo
 	delay time.Duration
+}
+
+func (r *slowInsertRepo) FindFeedRowsByIDs(_ context.Context, _ []uint64, _ []KnowPostVisibility) ([]KnowPostFeedRow, error) {
+	return nil, nil
 }
 
 func (r *slowInsertRepo) InsertDraft(ctx context.Context, post *KnowPost) error {

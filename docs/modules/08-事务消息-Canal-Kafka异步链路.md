@@ -1,5 +1,19 @@
 # Outbox + Canal + Kafka 异步链路
 
+## 0. 两个必须知道的生命周期组件（重构后新增）
+
+1. **outbox.Cleaner**：标准部署（canal.enabled=true）下 outbox 表的消费者是 binlog——
+   Canal 不读表本身，行插入后永远不会被读取或删除，表只增不减。
+   Cleaner 作为后台任务分批删除保留期（默认 7 天）外的行；删行对链路完全安全
+   （Canal 消费的是 INSERT 事件，DELETE 变更会被消费端过滤）。
+2. **outbox.DeadLetterRepository**：消费者「重试 3 次 → 记死信 → commit 跳过」，
+   死信落 `counter_failed_messages`（stage=outbox，表名为历史遗留、列本就通用），
+   search / relation / fanout 三个消费者统一注入。此前该挂点从无调用方，
+   重试耗尽的消息只剩一行 Warn、随 commit 永久消失。
+
+另：relation 消费端的幂等协议为「幂等的 ZSet 投影先行 + 去重落标与计数同段 Lua 原子」，
+详见 [15-设计约定与模式](15-设计约定与模式.md) 第 5 条。
+
 ## 1. 模块定位
 
 这条链路是整个项目最核心的异步骨架之一。  

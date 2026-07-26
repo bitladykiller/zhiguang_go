@@ -55,4 +55,30 @@ var (
 		},
 		[]string{"topic", "status"},
 	)
+
+	// FanoutPostsTotal 按处理模式统计扩散过的帖子：
+	// push=推送完成 / pull=大 V 跳过推送 / promoted=边推边数中越过阈值 / guard=触发兜底上限
+	FanoutPostsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fanout_posts_total",
+			Help: "Posts processed by the fan-out pipeline, by mode",
+		},
+		[]string{"mode"},
+	)
+
+	// FanoutPushedFollowersTotal 是写扩散累计触达的收件箱数（写放大的直接观测值）。
+	FanoutPushedFollowersTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "fanout_pushed_followers_total",
+			Help: "Total follower inboxes written by fan-out pushes",
+		},
+	)
+
+	// HomeTimelinePulledAuthorsTotal 是读路径累计拉取的大 V 发件箱数（读成本的直接观测值）。
+	HomeTimelinePulledAuthorsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "home_timeline_pulled_authors_total",
+			Help: "Total celebrity author boxes pulled while serving home timelines",
+		},
+	)
 )

@@ -24,7 +24,7 @@ func (s *Service) OnFollow(ctx context.Context, followerID, authorID uint64) err
 		return nil
 	}
 
-	if celebrity, known := s.isCelebrity(ctx, authorID); known && celebrity {
+	if celebrity, known := s.celebrities.IsCelebrity(ctx, authorID); known && celebrity {
 		return nil // 走拉路，无需回填
 	}
 

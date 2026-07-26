@@ -263,9 +263,9 @@ func TestHomeTimeline_MergesPushAndPull(t *testing.T) {
 	srv.ZAdd(authorBoxKey(celeb), 4000, "4")
 	srv.SAdd(celebritySetKey, strconv.FormatUint(celeb, 10))
 
-	rd := NewTimelineReader(rdb, &stubFollowing{authors: []uint64{celeb, 999}}, svc, zap.NewNop(), cfg)
+	rd := NewTimelineReader(rdb, &stubFollowing{authors: []uint64{celeb, 999}}, svc.Celebrities(), zap.NewNop(), cfg)
 
-	entries, hasMore, err := rd.HomeTimeline(context.Background(), reader, 0, 10)
+	entries, _, hasMore, err := rd.HomeTimeline(context.Background(), reader, "", 10)
 	if err != nil {
 		t.Fatalf("HomeTimeline: %v", err)
 	}
@@ -297,8 +297,8 @@ func TestHomeTimeline_Deduplicates(t *testing.T) {
 	srv.ZAdd(authorBoxKey(celeb), 1000, "7")
 	srv.SAdd(celebritySetKey, strconv.FormatUint(celeb, 10))
 
-	rd := NewTimelineReader(rdb, &stubFollowing{authors: []uint64{celeb}}, svc, zap.NewNop(), cfg)
-	entries, _, err := rd.HomeTimeline(context.Background(), reader, 0, 10)
+	rd := NewTimelineReader(rdb, &stubFollowing{authors: []uint64{celeb}}, svc.Celebrities(), zap.NewNop(), cfg)
+	entries, _, _, err := rd.HomeTimeline(context.Background(), reader, "", 10)
 	if err != nil {
 		t.Fatalf("HomeTimeline: %v", err)
 	}
@@ -318,9 +318,9 @@ func TestHomeTimeline_Pagination(t *testing.T) {
 		srv.ZAdd(timelineKey(reader), float64(1000*i), strconv.Itoa(i))
 	}
 
-	rd := NewTimelineReader(rdb, &stubFollowing{}, svc, zap.NewNop(), cfg)
+	rd := NewTimelineReader(rdb, &stubFollowing{}, svc.Celebrities(), zap.NewNop(), cfg)
 
-	page1, hasMore, err := rd.HomeTimeline(context.Background(), reader, 0, 2)
+	page1, cur1, hasMore, err := rd.HomeTimeline(context.Background(), reader, "", 2)
 	if err != nil {
 		t.Fatalf("page1: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestHomeTimeline_Pagination(t *testing.T) {
 		t.Fatalf("page1 = %+v hasMore=%v, want [5 4] true", page1, hasMore)
 	}
 
-	page2, hasMore, err := rd.HomeTimeline(context.Background(), reader, 2, 2)
+	page2, cur2, hasMore, err := rd.HomeTimeline(context.Background(), reader, cur1, 2)
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestHomeTimeline_Pagination(t *testing.T) {
 		t.Fatalf("page2 = %+v hasMore=%v, want [3 2] true", page2, hasMore)
 	}
 
-	page3, hasMore, err := rd.HomeTimeline(context.Background(), reader, 4, 2)
+	page3, _, hasMore, err := rd.HomeTimeline(context.Background(), reader, cur2, 2)
 	if err != nil {
 		t.Fatalf("page3: %v", err)
 	}
@@ -357,13 +357,23 @@ func TestHomeTimeline_DepthLimit(t *testing.T) {
 		srv.ZAdd(timelineKey(reader), float64(1000*i), strconv.Itoa(i))
 	}
 
-	rd := NewTimelineReader(rdb, &stubFollowing{}, svc, zap.NewNop(), cfg)
-	entries, hasMore, err := rd.HomeTimeline(context.Background(), reader, 3, 10)
-	if err != nil {
-		t.Fatalf("HomeTimeline: %v", err)
+	rd := NewTimelineReader(rdb, &stubFollowing{}, svc.Celebrities(), zap.NewNop(), cfg)
+	// 逐页翻到尽头：可见条目受收件箱保留长度约束
+	cursor := ""
+	total := 0
+	for i := 0; i < 10; i++ {
+		entries, next, hasMore, err := rd.HomeTimeline(context.Background(), reader, cursor, 2)
+		if err != nil {
+			t.Fatalf("HomeTimeline: %v", err)
+		}
+		total += len(entries)
+		if !hasMore {
+			break
+		}
+		cursor = next
 	}
-	if len(entries) != 0 || hasMore {
-		t.Errorf("beyond the depth limit: got %+v hasMore=%v, want empty/false", entries, hasMore)
+	if total != 5 {
+		t.Errorf("paged total=%d, want 5", total)
 	}
 }
 
@@ -377,8 +387,8 @@ func TestHomeTimeline_PullFailureDegradesGracefully(t *testing.T) {
 	srv.ZAdd(timelineKey(reader), 1000, "1")
 
 	// 关注列表查询失败 → 拉路整体失败
-	rd := NewTimelineReader(rdb, &stubFollowing{err: errors.New("relation down")}, svc, zap.NewNop(), cfg)
-	entries, _, err := rd.HomeTimeline(context.Background(), reader, 0, 10)
+	rd := NewTimelineReader(rdb, &stubFollowing{err: errors.New("relation down")}, svc.Celebrities(), zap.NewNop(), cfg)
+	entries, _, _, err := rd.HomeTimeline(context.Background(), reader, "", 10)
 	if err != nil {
 		t.Fatalf("pull failure must not fail the whole timeline: %v", err)
 	}
@@ -387,8 +397,8 @@ func TestHomeTimeline_PullFailureDegradesGracefully(t *testing.T) {
 	}
 }
 
-// TestHomeTimelinePostIDs 验证适配方法只暴露有序 ID。
-func TestHomeTimelinePostIDs(t *testing.T) {
+// TestHomeTimelinePage 验证适配方法暴露有序 ID 与游标。
+func TestHomeTimelinePage(t *testing.T) {
 	srv, rdb := newTestRedis(t)
 	cfg := testConfig()
 	svc := NewService(rdb, &stubFollowers{}, &stubFollowerCount{known: false}, zap.NewNop(), cfg)
@@ -397,10 +407,10 @@ func TestHomeTimelinePostIDs(t *testing.T) {
 	srv.ZAdd(timelineKey(reader), 1000, "1")
 	srv.ZAdd(timelineKey(reader), 2000, "2")
 
-	rd := NewTimelineReader(rdb, &stubFollowing{}, svc, zap.NewNop(), cfg)
-	ids, _, err := rd.HomeTimelinePostIDs(context.Background(), reader, 0, 10)
+	rd := NewTimelineReader(rdb, &stubFollowing{}, svc.Celebrities(), zap.NewNop(), cfg)
+	ids, _, _, err := rd.HomeTimelinePage(context.Background(), reader, "", 10)
 	if err != nil {
-		t.Fatalf("HomeTimelinePostIDs: %v", err)
+		t.Fatalf("HomeTimelinePage: %v", err)
 	}
 	if len(ids) != 2 || ids[0] != 2 || ids[1] != 1 {
 		t.Errorf("ids = %v, want [2 1]", ids)
@@ -603,5 +613,161 @@ func TestRemovePost(t *testing.T) {
 	members, _ := srv.ZMembers(authorBoxKey(7))
 	if len(members) != 1 || members[0] != "43" {
 		t.Errorf("author box = %v, want only [43]", members)
+	}
+}
+
+// ============================================================================
+// CelebrityRegistry：惰性降级
+// ============================================================================
+
+// TestCelebrityRegistry_LazyDemotion 验证掉粉的大 V 在下一次判定时自动回到推模式。
+//
+// 名单此前只进不出：掉粉后永远走拉。惰性降级在 IsCelebrity 内完成，
+// 无需任何离线任务；滞回线（threshold×0.8）防止阈值附近反复横跳。
+func TestCelebrityRegistry_LazyDemotion(t *testing.T) {
+	_, rdb := newTestRedis(t)
+	counts := &stubFollowerCount{counts: map[uint64]int64{7: 100}, known: true}
+	reg := NewCelebrityRegistry(rdb, counts, 100, zap.NewNop())
+	ctx := context.Background()
+
+	reg.Mark(ctx, 7)
+	if celeb, known := reg.IsCelebrity(ctx, 7); !known || !celeb {
+		t.Fatalf("at threshold: celeb=%v known=%v, want true/true", celeb, known)
+	}
+
+	// 掉到滞回线以内（80~100）：仍视为大 V，避免反复横跳
+	counts.counts[7] = 85
+	if celeb, _ := reg.IsCelebrity(ctx, 7); !celeb {
+		t.Fatal("within hysteresis band: should remain celebrity")
+	}
+
+	// 跌破滞回线：当场降级
+	counts.counts[7] = 50
+	if celeb, known := reg.IsCelebrity(ctx, 7); celeb || !known {
+		t.Fatalf("below demote line: celeb=%v known=%v, want false/true", celeb, known)
+	}
+	if member, _ := rdb.SIsMember(ctx, celebritySetKey, uint64(7)).Result(); member {
+		t.Fatal("author should be removed from the celebrity set after demotion")
+	}
+}
+
+// ============================================================================
+// 消费者：删除 / 可见性收紧 → 清发件箱
+// ============================================================================
+
+func TestHandleRow_DeleteCleansAuthorBox(t *testing.T) {
+	srv, h := newHandlerFixture(t)
+	srv.ZAdd(authorBoxKey(7), 1000, "42")
+	srv.ZAdd(authorBoxKey(7), 2000, "43")
+
+	row := outbox.Row{
+		Type:    knowPostDeletedType,
+		Payload: []byte(`{"id":42,"creator_id":7}`),
+	}
+	if err := h.HandleRow(context.Background(), row); err != nil {
+		t.Fatalf("HandleRow: %v", err)
+	}
+	members, _ := srv.ZMembers(authorBoxKey(7))
+	if len(members) != 1 || members[0] != "43" {
+		t.Fatalf("author box = %v, want only [43] after delete", members)
+	}
+}
+
+func TestHandleRow_VisibilityTightenedCleansAuthorBox(t *testing.T) {
+	srv, h := newHandlerFixture(t)
+	srv.ZAdd(authorBoxKey(7), 1000, "42")
+
+	// 转 private：拉路不应再分发
+	row := outbox.Row{
+		Type:    knowPostVisibilityUpdatedType,
+		Payload: []byte(`{"id":42,"creator_id":7,"visible":"private"}`),
+	}
+	if err := h.HandleRow(context.Background(), row); err != nil {
+		t.Fatalf("HandleRow: %v", err)
+	}
+	if members, _ := srv.ZMembers(authorBoxKey(7)); len(members) != 0 {
+		t.Fatalf("author box = %v, want empty after tightening", members)
+	}
+
+	// 转 followers：仍可被信息流分发，不清理
+	srv.ZAdd(authorBoxKey(7), 1000, "44")
+	row.Payload = []byte(`{"id":44,"creator_id":7,"visible":"followers"}`)
+	if err := h.HandleRow(context.Background(), row); err != nil {
+		t.Fatalf("HandleRow: %v", err)
+	}
+	if members, _ := srv.ZMembers(authorBoxKey(7)); len(members) != 1 {
+		t.Fatalf("author box = %v, want [44] kept for followers visibility", members)
+	}
+}
+
+// ============================================================================
+// 读路径：关注列表全量扫描
+// ============================================================================
+
+// TestFollowedCelebrities_ScansBeyondFirstPage 验证大 V 识别覆盖整个关注列表。
+//
+// 早期缺陷：循环在收集到 MaxPullAuthors 个「关注对象」后即停止，
+// 实际只检查最近关注的 500 人——早年关注的大 V 从首页凭空消失。
+func TestFollowedCelebrities_ScansBeyondFirstPage(t *testing.T) {
+	srv, rdb := newTestRedis(t)
+	cfg := testConfig()
+	cfg.MaxPullAuthors = 10
+
+	// 关注 1200 人；唯一的大 V 排在列表最末（最早关注）
+	authors := make([]uint64, 1200)
+	for i := range authors {
+		authors[i] = uint64(10000 + i)
+	}
+	celebID := authors[len(authors)-1]
+	srv.SAdd(celebritySetKey, strconv.FormatUint(celebID, 10))
+
+	reg := NewCelebrityRegistry(rdb, nil, cfg.CelebrityThreshold, zap.NewNop())
+	rd := NewTimelineReader(rdb, &stubFollowing{authors: authors}, reg, zap.NewNop(), cfg)
+
+	celebs, err := rd.followedCelebrities(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("followedCelebrities: %v", err)
+	}
+	if len(celebs) != 1 || celebs[0] != celebID {
+		t.Fatalf("celebs = %v, want [%d] found beyond the first 500 followings", celebs, celebID)
+	}
+}
+
+// TestHomeTimeline_CursorTiesNotSkipped 验证并列发布时间横跨页边界时不丢条目。
+func TestHomeTimeline_CursorTiesNotSkipped(t *testing.T) {
+	srv, rdb := newTestRedis(t)
+	cfg := testConfig()
+	svc := NewService(rdb, &stubFollowers{}, &stubFollowerCount{known: false}, zap.NewNop(), cfg)
+
+	const reader = uint64(100)
+	// 同一秒发布 5 条 + 前后各一条
+	srv.ZAdd(timelineKey(reader), 300, "90")
+	for i := 1; i <= 5; i++ {
+		srv.ZAdd(timelineKey(reader), 200, strconv.Itoa(i))
+	}
+	srv.ZAdd(timelineKey(reader), 100, "80")
+
+	rd := NewTimelineReader(rdb, &stubFollowing{}, svc.Celebrities(), zap.NewNop(), cfg)
+
+	seen := map[uint64]bool{}
+	cursor := ""
+	for page := 0; page < 10; page++ {
+		entries, next, hasMore, err := rd.HomeTimeline(context.Background(), reader, cursor, 2)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		for _, e := range entries {
+			if seen[e.PostID] {
+				t.Fatalf("post %d returned twice", e.PostID)
+			}
+			seen[e.PostID] = true
+		}
+		if !hasMore {
+			break
+		}
+		cursor = next
+	}
+	if len(seen) != 7 {
+		t.Fatalf("paged %d unique posts, want 7 (ties across page boundaries must survive)", len(seen))
 	}
 }

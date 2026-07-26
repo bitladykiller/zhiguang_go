@@ -52,7 +52,7 @@ func initFanout(
 	}
 
 	svc := fanout.NewService(redisClient, relSvc, followerCounter, logger, fanoutCfg)
-	reader := fanout.NewTimelineReader(redisClient, relSvc, svc, logger, fanoutCfg)
+	reader := fanout.NewTimelineReader(redisClient, relSvc, svc.Celebrities(), logger, fanoutCfg)
 
 	if len(cfg.Kafka.Brokers) == 0 {
 		logger.Warn("Kafka 未配置：扩散写路径已禁用，首页信息流将只走拉路")

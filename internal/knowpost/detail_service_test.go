@@ -81,6 +81,9 @@ func (r *mockRepo) ListMyPublished(_ context.Context, _ uint64, _, _ int) ([]Kno
 func (r *mockRepo) FindByIDs(_ context.Context, _ []uint64) ([]KnowPostFeedRow, error) {
 	return nil, nil
 }
+func (r *mockRepo) FindFeedRowsByIDs(_ context.Context, _ []uint64, _ []KnowPostVisibility) ([]KnowPostFeedRow, error) {
+	return nil, nil
+}
 func (r *mockRepo) ListIDsForBloom(_ context.Context, _ uint64, _ int) ([]uint64, error) {
 	return nil, nil
 }

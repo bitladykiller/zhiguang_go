@@ -49,6 +49,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/zhiguang/app/internal/model"
+	"github.com/zhiguang/app/pkg/metrics"
 )
 
 // FollowerLister 提供按游标分页的粉丝列表。
@@ -66,11 +67,11 @@ type FollowingLister interface {
 
 // Service 承载扩散的写路径。
 type Service struct {
-	redisClient     redis.UniversalClient
-	followerLister  FollowerLister
-	followerCounter FollowerCounter
-	logger          *zap.Logger
-	cfg             Config
+	redisClient    redis.UniversalClient
+	followerLister FollowerLister
+	celebrities    *CelebrityRegistry
+	logger         *zap.Logger
+	cfg            Config
 }
 
 // NewService 创建扩散服务。
@@ -87,13 +88,22 @@ func NewService(
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+	cfg = cfg.withDefaults()
 	return &Service{
-		redisClient:     redisClient,
-		followerLister:  followerLister,
-		followerCounter: followerCounter,
-		logger:          logger,
-		cfg:             cfg.withDefaults(),
+		redisClient:    redisClient,
+		followerLister: followerLister,
+		celebrities:    NewCelebrityRegistry(redisClient, followerCounter, cfg.CelebrityThreshold, logger),
+		logger:         logger,
+		cfg:            cfg,
 	}
+}
+
+// Celebrities 暴露大 V 名单，供读路径（TimelineReader）共享同一份判定逻辑。
+func (s *Service) Celebrities() *CelebrityRegistry {
+	if s == nil {
+		return nil
+	}
+	return s.celebrities
 }
 
 // FanoutPost 处理一条新发布的知文。
@@ -120,8 +130,9 @@ func (s *Service) FanoutPost(ctx context.Context, event *model.FanoutEvent) erro
 	}
 
 	// 2) 大 V 直接走拉，不做任何推送。
-	celebrity, known := s.isCelebrity(ctx, event.CreatorID)
+	celebrity, known := s.celebrities.IsCelebrity(ctx, event.CreatorID)
 	if known && celebrity {
+		metrics.FanoutPostsTotal.WithLabelValues("pull").Inc()
 		s.logger.Debug("fanout skipped for celebrity author; readers will pull",
 			zap.Uint64("authorID", event.CreatorID), zap.Uint64("postID", event.PostID))
 		return nil
@@ -169,12 +180,14 @@ func (s *Service) pushToFollowers(ctx context.Context, event *model.FanoutEvent)
 			return err
 		}
 		reached += len(fans)
+		metrics.FanoutPushedFollowersTotal.Add(float64(len(fans)))
 
 		// 边推边数：真实触达量超过阈值 → 该作者其实是大 V。
 		// 已推出去的部分不需要回滚（收件箱里多几条是无害的），
 		// 从此刻起停止推送，并把作者补记进名单，后续帖子直接走拉路。
 		if reached >= s.cfg.CelebrityThreshold {
-			s.markCelebrity(ctx, event.CreatorID)
+			s.celebrities.Mark(ctx, event.CreatorID)
+			metrics.FanoutPostsTotal.WithLabelValues("promoted").Inc()
 			s.logger.Info("author crossed the celebrity threshold during fanout; switching to pull",
 				zap.Uint64("authorID", event.CreatorID),
 				zap.Int("reached", reached),
@@ -185,7 +198,8 @@ func (s *Service) pushToFollowers(ctx context.Context, event *model.FanoutEvent)
 
 		// 兜底保护：粉丝计数失真等异常情况下，防止单条消息拖垮消费者。
 		if reached >= s.cfg.FanoutMaxFans {
-			s.markCelebrity(ctx, event.CreatorID)
+			s.celebrities.Mark(ctx, event.CreatorID)
+			metrics.FanoutPostsTotal.WithLabelValues("guard").Inc()
 			s.logger.Warn("fanout hit the max-fans guard; author marked as celebrity",
 				zap.Uint64("authorID", event.CreatorID), zap.Int("reached", reached))
 			return nil
@@ -197,6 +211,7 @@ func (s *Service) pushToFollowers(ctx context.Context, event *model.FanoutEvent)
 		cursor = next
 	}
 
+	metrics.FanoutPostsTotal.WithLabelValues("push").Inc()
 	s.logger.Debug("fanout pushed to followers",
 		zap.Uint64("postID", event.PostID),
 		zap.Uint64("authorID", event.CreatorID),

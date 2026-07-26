@@ -87,3 +87,12 @@ type KnowPostVisibilityPatchRequest struct {
 type KnowPostTopPatchRequest struct {
 	IsTop bool `json:"is_top"`
 }
+
+// HomeFeedResponse 是关注流的分页响应（游标制）。
+//
+// NextCursor 不透明，客户端原样回传取下一页；空串表示第一页请求或没有更多。
+type HomeFeedResponse struct {
+	Items      []FeedItemResponse `json:"items"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+	HasMore    bool               `json:"has_more"`
+}

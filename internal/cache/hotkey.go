@@ -20,6 +20,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -299,7 +300,9 @@ func (d *HotKeyDetector) flushOnce(ctx context.Context) {
 			level := d.calcLevel(total)
 			newLevels[cacheKey] = level
 			if level >= LevelLow {
-				pipeMark.Set(ctx, hotkeyActivePrefix+cacheKey, "1", d.markTTL)
+				// 标记值存**等级本身**而非 "1"：远端实例回退读取时能还原真实等级。
+				// 旧实现只存 "1"，其他实例一律按 Medium 处理——High 键的信息被白白丢弃。
+				pipeMark.Set(ctx, hotkeyActivePrefix+cacheKey, strconv.Itoa(int(level)), d.markTTL)
 			}
 		}
 		if _, err := pipeMark.Exec(ctx); err != nil {
@@ -469,9 +472,11 @@ func (d *HotKeyDetector) TtlForPublicBatch(ctx context.Context, baseTTL int, key
 		if n >= len(marks) || marks[n] == nil {
 			continue
 		}
-		ttls[i] = d.ttlForLevel(baseTTL, LevelMedium)
+		markStr, _ := marks[n].(string)
+		level := parseMarkLevel(markStr)
+		ttls[i] = d.ttlForLevel(baseTTL, level)
 		if len(d.levels) < d.maxKeys {
-			d.levels[keys[i]] = LevelMedium
+			d.levels[keys[i]] = level
 		}
 	}
 	d.levelMu.Unlock()
@@ -485,24 +490,36 @@ func (d *HotKeyDetector) getLevel(ctx context.Context, key string) HotKeyLevel {
 		return level
 	}
 
-	exists, err := d.redis.Exists(ctx, hotkeyActivePrefix+key).Result()
+	val, err := d.redis.Get(ctx, hotkeyActivePrefix+key).Result()
 	if err != nil {
-		d.logger.Warn("hotkey: redis Exists failed", zap.String("key", key), zap.Error(err))
+		if !errors.Is(err, redis.Nil) {
+			d.logger.Warn("hotkey: redis Get failed", zap.String("key", key), zap.Error(err))
+		}
 		return LevelCold
 	}
-	if exists > 0 {
-		// 写回本地缓存，避免下次再查 Redis。
-		// 上限保护：levels 每轮 flush 会被整体替换（见 replaceLevels），
-		// 这里再加一道闸，防止两轮之间被大量陌生键灌爆。
-		d.levelMu.Lock()
-		if len(d.levels) < d.maxKeys {
-			d.levels[key] = LevelMedium
-		}
-		d.levelMu.Unlock()
+	level := parseMarkLevel(val)
+
+	// 写回本地缓存，避免下次再查 Redis。
+	// 上限保护：levels 每轮 flush 会被整体替换（见 replaceLevels），
+	// 这里再加一道闸，防止两轮之间被大量陌生键灌爆。
+	d.levelMu.Lock()
+	if len(d.levels) < d.maxKeys {
+		d.levels[key] = level
+	}
+	d.levelMu.Unlock()
+	return level
+}
+
+// parseMarkLevel 解析 hotkey:active 标记值（值即等级整数）。
+//
+// 非法值回退 Medium。历史格式恰好是常量 "1"，会被解读为 Low——
+// 方向保守（延长得更少），且旧标记最多存活一个 markTTL（默认 60s），无迁移成本。
+func parseMarkLevel(val string) HotKeyLevel {
+	n, err := strconv.Atoi(val)
+	if err != nil || n < int(LevelLow) || n > int(LevelHigh) {
 		return LevelMedium
 	}
-
-	return LevelCold
+	return HotKeyLevel(n)
 }
 
 // readLevelCache 从本地 levels 映射中读取热度等级。
