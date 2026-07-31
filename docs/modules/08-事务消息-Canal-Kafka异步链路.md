@@ -107,7 +107,7 @@ flowchart TD
 
 ### 3.1 事务 outbox 写入 Step-by-Step
 
-业务模块在 `runKnowPostTx()` 或 `runRelationTx()` 内做两件事：
+业务模块在事务回调内做两件事（knowpost 侧封装为 `runKnowPostTx()`；relation 侧直接调用 `outbox.RunInTx(ctx, s.db, ...)`）：
 
 1. **写业务主表**（如 `know_posts` 或 `user_followings` / `user_followers`）；
 2. **同事务写 `outbox` 表**（写入 JSON 格式的 `payload`、`aggregate_type` 与 `type`）。

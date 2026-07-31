@@ -232,7 +232,7 @@ flowchart TD
 
 行为：
 
-1. **读路径最前**：`MightContain=false` → 一定不存在 → 直接 404，不打 L1/L2/DB。
+1. **读路径位置**：`CF.EXISTS` 在两级缓存 miss 后、抢锁前执行；`MightContain=false` → 一定不存在 → 直接 404，不打 L1/L2/DB。
 2. **写路径维护**：`CreateDraft` 成功、详情回源成功 → `CF.ADD`。
 3. **软删维护**：`Delete` 成功后 → `CF.DEL`。
 4. **启动预热**：`initKnowPost` 异步 `WarmDetailBloom`，游标扫描 `ListIDsForBloom`。
@@ -764,14 +764,8 @@ L1（共享 freecache）前缀由 bootstrap 分配：`d:` 详情、`fp:` 公共�
 
 **推荐回答：**
 
-我会先按用户规模分层。
-
-- 普通用户可以偏写扩散，把内容预推送到收件箱
-- 大 V 用户不能纯写扩散，否则一次发文会把系统写爆
-
-对大 V 更适合读扩散或混合模式。  
-这个项目里 relation 已经有 BigV 思路，说明系统本身已经接受“不同用户规模用不同策略”的设计哲学。  
-所以关注 Feed 最合理的是分层混合方案，不是全局只选一种。
+我会先按用户规模分层：普通用户偏写扩散（预推送到收件箱），大 V 不能纯写扩散（一次发文会写爆系统），更适合读扩散或混合模式。  
+本模块的回答框架与完整论证见 [06-关注关系与Feed扩散模块](06-关注关系与Feed扩散模块.md) 场景题 3、[14-信息流扩散](14-信息流扩散-读扩散写扩散与推拉结合.md)，这里不重复展开。
 
 ### 场景题 3：如果搜索要支持“草稿预览搜索”，你怎么改？
 
@@ -999,7 +993,7 @@ flowchart TD
 1. L1 删 key 可能不带完整版本段（靠版本 miss 缓解）。
 2. RedisBloom `CF.DEL` 支持删除；软删写路径调用，NULL 仍作兜底；无模块时 fail-open。
 3. 私有内容若先被作者写入共享详情缓存，L1/L2 命中会绕过回源授权；这是待修复的越权缺口。
-4. `GetMyPublished` SQL 实际使用 `status != deleted`，会包含草稿；接口名与查询语义不一致。
+4. ~~`GetMyPublished` SQL 实际使用 `status != deleted`，会包含草稿~~（**已修复**：现为 `ListMyPublished`，条件 `creator_id = ? AND status = published`，见 §3.3.2）。
 5. 「我的已发布」走整页缓存 + 读库；关注流由扩散模块提供，见 `docs/modules/14`。
 
 ## A8. 60 秒口述稿
@@ -1143,7 +1137,7 @@ flowchart TD
 
 ## B9. 2 分钟展开回答
 
-> 知文模块我会按写路径和读路径分开讲。写路径里，草稿创建支持幂等键，正文上传走 OSS 直传，业务侧只保存 object key、etag、sha256 和 size；发布、删除、置顶、可见性这些会影响下游读模型的操作，都在事务内写 outbox；软删后 CF.DEL。读路径里，详情先过 CF.EXISTS，再查 freecache 和 Redis，未命中后用 Redis 分布式锁回源 MySQL，避免击穿；不存在数据写 NULL，避免穿透。公共 Feed 用 ID 列表和 item 碎片组合，避免整页缓存大范围失效。整个模块的核心不是 CRUD，而是内容真值、缓存、搜索投影和用户态数据之间的边界。
+> 知文模块我会按写路径和读路径分开讲。写路径里，草稿创建支持幂等键，正文上传走 OSS 直传，业务侧只保存 object key、etag、sha256 和 size；发布、删除、置顶、可见性这些会影响下游读模型的操作，都在事务内写 outbox；软删后 CF.DEL。读路径里，先查 freecache 和 Redis 两级缓存，miss 后再过 CF.EXISTS 拦截一定不存在的 ID（直接 404 不打 DB），随后用 Redis 分布式锁回源 MySQL，避免击穿；不存在数据写 NULL，避免穿透。公共 Feed 用 ID 列表和 item 碎片组合，避免整页缓存大范围失效。整个模块的核心不是 CRUD，而是内容真值、缓存、搜索投影和用户态数据之间的边界。
 
 ---
 
@@ -1272,7 +1266,7 @@ flowchart TD
 #### `GetMyPublished(ctx, userID, page, size)`
 - **职责**：「我的已发布」，整页缓存跑在 `cache.Tiered` 上（键 `feed:mine:{uid}:{size}:{page}:{ver}`）。
 - **两个刻意的行为差异**（对旧实现）：回源加了锁+double check（旧路径无击穿保护）；返回统一 `withUserState`（旧实现三个列表只有部分叠用户态——契约不该取决于走了哪条代码路径）。
-- **诚实注记**：SQL 条件是 `status != deleted`，因此含草稿；仅本人可见故不泄露，但方法名与语义有出入（见 3.3.2）。
+- **诚实注记**：底层 `ListMyPublished` 条件已收紧为 `status = published`，不再含草稿；方法名与语义一致（见 3.3.2）。
 
 #### `GetHomeFeed(ctx, userID, cursor, size) (*HomeFeedResponse, error)`
 - **逐步**：`homeTimeline.HomeTimelinePage`（fanout 推拉归并，游标不透明穿透）→ 空 → 空响应；→ `FindFeedRowsByIDs(ids, {public, followers})`（关注流放行 followers 档）→ `reorderRowsByIDs`（时间线顺序是权威，SQL 排序无关）→ `mapRowsToItems` → `withUserState` → 组装 `{Items, NextCursor, HasMore}`。

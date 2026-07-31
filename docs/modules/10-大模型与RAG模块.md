@@ -365,7 +365,7 @@ flowchart TD
 
 | 函数 | 要点 |
 |---|---|
-| `NewKnowPostDescriptionService(cfg,logger)` | 校验 api_key/base_url，不全 → 返回 err，handler 侧降级 503（可选能力不阻塞启动） |
+| `NewKnowPostDescriptionService(cfg,logger)` | 仅 cfg==nil 时返回 err；api_key/base_url 缺失只 logger.Warn（运行时报错）；完整性校验实际由 bootstrap 的 `buildDescriptionService` 在构造前完成，不完整 → 返回 nil，handler 侧降级 503（可选能力不阻塞启动） |
 | `SuggestDescription(ctx,title,content)` | 组 chat 请求（system 约束输出风格 + 截断超长 content）→ HTTP 调 DeepSeek/OpenAI 兼容端点 → 解析 choices[0]；超时/非 200/空结果分类报错 |
 | `NewRagQueryService(llmCfg,esURL)` | 轻构造，不校验（查询时报错） |
-| `RagQueryService.Query(ctx,postID,question,streamChan)` | ①ES 取该帖正文做上下文；②组带上下文的流式 chat 请求；③逐 SSE 行解析 delta 写入 streamChan（"data: [DONE]" 结束）；ctx 取消（客户端断开）即中止上游请求。handler 侧 goroutine 已 recover + 请求级 30s 读超时 |
+| `RagQueryService.Query(ctx,postID,question,streamChan)` | 占位实现（代码自带 TODO 注释：未接真实 RAG 检索与 LLM 流式生成）：仅检查 ctx、向 streamChan 写一条固定消息 `data: {"token": "RAG 问答系统已就绪，等待接入向量检索和流式生成。"}` 与 `data: [DONE]` 后 close；不查 ES、不调 chat API、不解析 SSE（与正文 3.2/8 节"占位实现"一致）。handler 侧 goroutine 已 recover + 请求级 30s 读超时 |

@@ -12,13 +12,33 @@ import auth from "@/pages/AuthPages.module.css";
 const LoginPage = () => {
   const [account, setAccount] = useState("creator@zhiguang.local");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  const submit = (event: React.FormEvent) => {
+  const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    login(account);
-    navigate("/profile");
+    setError("");
+
+    if (!account.trim()) {
+      setError("请输入邮箱或手机号。");
+      return;
+    }
+    if (!password) {
+      setError("请输入密码。");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await login({ account: account.trim(), password });
+      navigate("/profile");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "登录失败，请稍后重试。");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -42,7 +62,7 @@ const LoginPage = () => {
             <em className="gilded">知识星图</em>。
           </h1>
           <p className={clsx("rise", "d4")}>
-            当前登录页使用本地状态模拟登录，后续接入 Go 后端认证接口时，不需要重做页面结构。
+            当前登录页已接入 Go 后端认证接口，登录成功后会保存 access token 与 refresh token。
           </p>
           <ul className={clsx(auth.points, "rise", "d5")}>
             <li>继续管理你的发布、收藏与学习星轨。</li>
@@ -75,10 +95,13 @@ const LoginPage = () => {
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                placeholder="任意输入即可演示"
+                placeholder="请输入后端账号密码"
               />
             </label>
-            <Button type="submit">提灯入院</Button>
+            {error ? <div className={styles.error}>{error}</div> : null}
+            <Button type="submit" disabled={loading}>
+              {loading ? "正在校验..." : "提灯入院"}
+            </Button>
           </div>
           <p className={auth.linkText}>
             还没有账号？<Link to="/register">创建一个</Link>

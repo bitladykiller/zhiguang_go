@@ -7,6 +7,7 @@
 - 工程化：按 `app / layouts / components / features / services / pages / styles / types` 分层；所有颜色、字体、阴影、圆角集中在 `src/styles/tokens.css` 设计 token 中。
 - 可运行：后端不可用时，内容服务会回退到本地 mock 数据，便于独立开发和视觉验证。
 - 可接入：开发服务继续代理 `/api` 到 `http://localhost:8080`，生产 Nginx 代理到 Docker Compose 内的 `app:8080`。
+- 认证接入：登录成功后前端将 `access_token` / `refresh_token` 保存到 `localStorage` 的 `zhiguang.auth`，请求自动携带 `Authorization: Bearer <access_token>`；遇到 401 时使用 `refresh_token` 调用 `/api/v1/auth/refresh` 轮换令牌。
 - 可访问性：全局 `prefers-reduced-motion` 兜底、`:focus-visible` 鎏金焦点环、语义化导航与表单标签。
 
 ## 本地开发
@@ -36,6 +37,15 @@ npm run lint
 ```
 
 当前 `build` 会先运行 TypeScript 类型检查，再执行 Vite 生产构建。
+
+## 认证流程
+
+- 登录：`POST /api/v1/auth/login`，前端提交 `identifier`、`identifier_type`、`password`，成功后保存用户资料和 token pair。
+- 注册：先通过 `POST /api/v1/auth/send-code` 发送 `REGISTER` 场景验证码，再提交 `POST /api/v1/auth/register`；前端要求设置密码，便于后续直接密码登录。
+- 访问受保护接口：`src/services/apiClient.ts` 会自动从 `zhiguang.auth` 读取 access token 并写入 `Authorization` 请求头。
+- 刷新：当接口返回 401 时，前端使用 refresh token 调用 `/api/v1/auth/refresh`，保存新 token pair 后重试原请求一次。
+- 登出：调用 `/api/v1/auth/logout` 吊销当前 refresh token，随后清理本地 `zhiguang.user` 和 `zhiguang.auth`。
+- 安全边界：当前实现选择与现有后端 JSON token 响应兼容的 `localStorage` 方案；生产环境若要进一步降低 XSS 窃取 refresh token 的风险，建议后端改为下发 `HttpOnly + Secure + SameSite` Cookie 保存 refresh token。
 
 ## 目录结构
 
