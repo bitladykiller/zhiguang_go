@@ -11,14 +11,61 @@ import auth from "@/pages/AuthPages.module.css";
 
 const RegisterPage = () => {
   const [account, setAccount] = useState("new@zhiguang.local");
-  const [name, setName] = useState("新创作者");
-  const { login } = useAuth();
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [sendingCode, setSendingCode] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const { register, sendCode } = useAuth();
   const navigate = useNavigate();
 
-  const submit = (event: React.FormEvent) => {
+  const requestCode = async () => {
+    setError("");
+    setMessage("");
+    if (!account.trim()) {
+      setError("请先填写邮箱或手机号。");
+      return;
+    }
+
+    setSendingCode(true);
+    try {
+      const expireSeconds = await sendCode(account.trim(), "REGISTER");
+      setMessage(`验证码已发送，${expireSeconds} 秒内有效。`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "验证码发送失败，请稍后重试。");
+    } finally {
+      setSendingCode(false);
+    }
+  };
+
+  const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    login(account || name);
-    navigate("/profile");
+    setError("");
+    setMessage("");
+
+    if (!account.trim()) {
+      setError("请输入邮箱或手机号。");
+      return;
+    }
+    if (!code.trim()) {
+      setError("请输入验证码。");
+      return;
+    }
+    if (!password) {
+      setError("请设置密码，后续可直接使用密码登录。");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await register({ account: account.trim(), password, code: code.trim() });
+      navigate("/profile");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "注册失败，请稍后重试。");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -42,7 +89,7 @@ const RegisterPage = () => {
             <em className="gilded">可复用的光</em>。
           </h1>
           <p className={clsx("rise", "d4")}>
-            注册流程先以本地状态完成交互闭环，后续可接短信验证码、邮箱验证和用户资料 API。
+            注册流程已接入后端验证码与令牌签发，成功后会直接进入登录态。
           </p>
           <ul className={clsx(auth.points, "rise", "d5")}>
             <li>发布结构清晰、可被检索与收藏的知文。</li>
@@ -65,14 +112,31 @@ const RegisterPage = () => {
           </div>
           <div className={auth.form}>
             <label className={styles.field}>
-              <span>昵称 · NAME</span>
-              <input className={styles.input} value={name} onChange={(event) => setName(event.target.value)} />
-            </label>
-            <label className={styles.field}>
-              <span>邮箱 · EMAIL</span>
+              <span>邮箱或手机号 · ACCOUNT</span>
               <input className={styles.input} value={account} onChange={(event) => setAccount(event.target.value)} />
             </label>
-            <Button type="submit">落笔为星，注册进入</Button>
+            <label className={styles.field}>
+              <span>密码 · PASSWORD</span>
+              <input
+                className={styles.input}
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="至少 8 位，包含字母和数字"
+              />
+            </label>
+            <label className={styles.field}>
+              <span>验证码 · CODE</span>
+              <input className={styles.input} value={code} onChange={(event) => setCode(event.target.value)} />
+            </label>
+            {message ? <div className={styles.message}>{message}</div> : null}
+            {error ? <div className={styles.error}>{error}</div> : null}
+            <Button type="button" variant="secondary" onClick={requestCode} disabled={sendingCode}>
+              {sendingCode ? "发送中..." : "发送验证码"}
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? "正在注册..." : "落笔为星，注册进入"}
+            </Button>
           </div>
           <p className={auth.linkText}>
             已有账号？<Link to="/login">去登录</Link>
